@@ -24,6 +24,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - README rewritten to be quickstart-first and documentation-index oriented.
 - CONTRIBUTING guide expanded with setup/checklists and validation guidance.
 - Release automation split: `v*` tags now publish Rust binaries/GitHub release only; npm CLI publish moved to dedicated `npm-cli-v*` workflow.
+- Server and agent startup now install a Rustls process-level crypto provider to avoid runtime TLS panics.
 
 ### Security
 

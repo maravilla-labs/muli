@@ -19,6 +19,7 @@ muli-queue = { workspace = true }
 muli-registry = { workspace = true }
 muli-git = { workspace = true }
 tonic = { workspace = true }
+rustls = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true }

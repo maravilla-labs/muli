@@ -8,9 +8,14 @@ mod cli;
 use anyhow::Context;
 use clap::Parser;
 use muli_server::config::ServerConfig;
+use rustls::crypto::ring;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Rustls 0.23 requires an explicit process-level crypto provider in some
+    // feature combinations. Install ring provider at startup to avoid runtime panics.
+    let _ = ring::default_provider().install_default();
+
     let _ = dotenvy::dotenv();
 
     // Parse CLI flags before tracing init so --help/--version exit cleanly

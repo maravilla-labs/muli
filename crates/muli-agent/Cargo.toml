@@ -14,6 +14,7 @@ muli-core = { workspace = true }
 muli-proto = { workspace = true }
 muli-engine = { workspace = true }
 tonic = { workspace = true }
+rustls = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

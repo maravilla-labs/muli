@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use clap::Parser;
+use rustls::crypto::ring;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{info, warn};
 
@@ -22,6 +23,9 @@ use muli_engine::resource_manager::ResourceManager;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Ensure a process-level rustls crypto provider is installed before any TLS use.
+    let _ = ring::default_provider().install_default();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
