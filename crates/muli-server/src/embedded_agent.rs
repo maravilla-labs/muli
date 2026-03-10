@@ -39,9 +39,12 @@ pub async fn spawn(config: &ServerConfig, cancel: CancellationToken) -> anyhow::
     ));
     let agent_executor = Arc::new(DockerExecutor::new(agent_docker, agent_rm));
 
+    let grpc_tls_enabled = config.tls_cert_path.is_some() && config.tls_key_path.is_some();
+    let grpc_scheme = if grpc_tls_enabled { "https" } else { "http" };
+
     let agent_cfg = EmbeddedAgentConfig {
         name: "embedded".to_string(),
-        server_url: format!("http://127.0.0.1:{}", config.grpc_port),
+        server_url: format!("{grpc_scheme}://127.0.0.1:{}", config.grpc_port),
         heartbeat_interval_secs: 10,
         max_concurrent_jobs: config.max_concurrent_jobs as u32,
         total_cpu_millicores: config.total_cpu_millicores,
@@ -49,7 +52,11 @@ pub async fn spawn(config: &ServerConfig, cancel: CancellationToken) -> anyhow::
         labels: vec![],
         shutdown_timeout_secs: config.shutdown_timeout_seconds,
         api_key: config.api_key.clone(),
-        tls_ca_cert: None,
+        tls_ca_cert: if grpc_tls_enabled {
+            config.tls_cert_path.clone()
+        } else {
+            None
+        },
     };
 
     let (agent_shutdown_tx, _) = broadcast::channel::<()>(1);
@@ -65,7 +72,7 @@ pub async fn spawn(config: &ServerConfig, cancel: CancellationToken) -> anyhow::
         let (client, agent_id) = match registration::register(&agent_cfg).await {
             Ok(v) => v,
             Err(e) => {
-                error!(error = %e, "embedded agent registration failed");
+                error!(error = %format!("{e:#}"), "embedded agent registration failed");
                 return;
             }
         };

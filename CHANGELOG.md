@@ -25,6 +25,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - CONTRIBUTING guide expanded with setup/checklists and validation guidance.
 - Release automation split: `v*` tags now publish Rust binaries/GitHub release only; npm CLI publish moved to dedicated `npm-cli-v*` workflow.
 - Server and agent startup now install a Rustls process-level crypto provider to avoid runtime TLS panics.
+- Embedded agent now auto-selects `https://` + local CA when gRPC TLS is enabled, fixing secure-local registration failures.
 
 ### Security
 
