@@ -77,6 +77,11 @@ muli setup doctor
 muli setup rerun
 ```
 
+### Release Channels
+
+- `vX.Y.Z` tags publish Rust binaries (`muli-server`, `muli-agent`) and GitHub Release assets.
+- `npm-cli-vX.Y.Z` tags publish the npm CLI package `@maravilla-labs/muli`.
+
 ## Production Hardening
 
 Before internet-facing deployment:
