@@ -40,7 +40,7 @@ jobs:
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#npm-cli-v}"
           echo "Setting package version to ${TAG_VERSION} from tag"
-          npm version --no-git-tag-version "${TAG_VERSION}"
+          npm version --no-git-tag-version --allow-same-version "${TAG_VERSION}"
 
       - name: Set version from manual input (optional)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.version != ''
@@ -48,7 +48,7 @@ jobs:
         run: |
           INPUT_VERSION="${{ github.event.inputs.version }}"
           echo "Setting package version to ${INPUT_VERSION} from workflow input"
-          npm version --no-git-tag-version "${INPUT_VERSION}"
+          npm version --no-git-tag-version --allow-same-version "${INPUT_VERSION}"
 
       - name: Resolve final package version
         id: pkg
