@@ -1,0 +1,77 @@
+name: Publish CLI to npm
+
+on:
+  push:
+    tags:
+      - 'npm-cli-v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (defaults to package.json version)'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish-cli:
+    name: Publish @maravilla-labs/muli
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/cli
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+          scope: '@maravilla-labs'
+          cache: npm
+          cache-dependency-path: packages/cli/package-lock.json
+
+      - name: Set version from tag (optional)
+        if: startsWith(github.ref_name, 'npm-cli-v')
+        shell: bash
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#npm-cli-v}"
+          echo "Setting package version to ${TAG_VERSION} from tag"
+          npm version --no-git-tag-version "${TAG_VERSION}"
+
+      - name: Set version from manual input (optional)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.version != ''
+        shell: bash
+        run: |
+          INPUT_VERSION="${{ github.event.inputs.version }}"
+          echo "Setting package version to ${INPUT_VERSION} from workflow input"
+          npm version --no-git-tag-version "${INPUT_VERSION}"
+
+      - name: Resolve final package version
+        id: pkg
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Publishing @maravilla-labs/muli v${VERSION}"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      - name: Publish package
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish summary
+        shell: bash
+        run: |
+          echo "Published @maravilla-labs/muli v${{ steps.pkg.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"

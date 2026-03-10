@@ -1,0 +1,55 @@
+// Copyright 2026 Maravilla Labs
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+syntax = "proto3";
+
+package muli.v1;
+
+import "muli/v1/common.proto";
+
+// User management service for tenant users.
+service UserService {
+  rpc CreateUser(CreateUserRequest) returns (TenantUser);
+  rpc GetUser(GetUserRequest) returns (TenantUser);
+  rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse);
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
+}
+
+// A user identity within a tenant.
+message TenantUser {
+  string id = 1;
+  string tenant_id = 2;
+  // Unique handle within the tenant (maps to repo namespace).
+  string handle = 3;
+  // External ID from the calling platform (e.g., staticlab user ObjectId).
+  string external_id = 4;
+  string email = 5;
+  Timestamp created_at = 6;
+}
+
+message CreateUserRequest {
+  string tenant_id = 1;
+  string handle = 2;
+  string external_id = 3;
+  string email = 4;
+}
+
+message GetUserRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+}
+
+message DeleteUserRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+}
+
+message ListUsersRequest {
+  string tenant_id = 1;
+}
+
+message ListUsersResponse {
+  repeated TenantUser users = 1;
+}
+
+message DeleteUserResponse {}

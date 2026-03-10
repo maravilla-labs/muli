@@ -1,0 +1,305 @@
+// Copyright 2026 Maravilla Labs
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+syntax = "proto3";
+
+package muli.v1;
+
+import "muli/v1/common.proto";
+
+// Git hosting management service.
+service GitService {
+  // Repository management
+  rpc CreateRepository(CreateRepositoryRequest) returns (GitRepository);
+  rpc GetRepository(GetRepositoryRequest) returns (GitRepository);
+  rpc DeleteRepository(DeleteRepositoryRequest) returns (DeleteRepositoryResponse);
+  rpc ListRepositories(ListRepositoriesRequest) returns (ListRepositoriesResponse);
+  rpc ForkRepository(ForkRepositoryRequest) returns (GitRepository);
+  rpc TransferRepository(TransferRepositoryRequest) returns (GitRepository);
+
+  // Token management
+  rpc CreateAccessToken(CreateGitTokenRequest) returns (CreateGitTokenResponse);
+  rpc ListAccessTokens(ListGitTokensRequest) returns (ListGitTokensResponse);
+  rpc ListAccessTokensByUser(ListGitTokensByUserRequest) returns (ListGitTokensResponse);
+  rpc RevokeAccessToken(RevokeGitTokenRequest) returns (RevokeGitTokenResponse);
+
+  // SSH key management
+  rpc AddSshKey(AddSshKeyRequest) returns (SshKey);
+  rpc RemoveSshKey(RemoveSshKeyRequest) returns (RemoveSshKeyResponse);
+  rpc ListSshKeys(ListSshKeysRequest) returns (ListSshKeysResponse);
+  rpc ListSshKeysByUser(ListSshKeysByUserRequest) returns (ListSshKeysResponse);
+
+  // Webhook management
+  rpc CreateWebhook(CreateWebhookRequest) returns (GitWebhook);
+  rpc ListWebhooks(ListWebhooksRequest) returns (ListWebhooksResponse);
+  rpc DeleteWebhook(DeleteWebhookRequest) returns (DeleteWebhookResponse);
+
+  // Repository collaborator management
+  rpc AddRepositoryCollaborator(AddCollaboratorRequest) returns (CollaboratorResponse);
+  rpc RemoveRepositoryCollaborator(RemoveCollaboratorRequest) returns (CollaboratorResponse);
+  rpc ListRepositoryCollaborators(ListCollaboratorsRequest) returns (ListCollaboratorsResponse);
+
+  // Repository visibility
+  rpc UpdateRepositoryVisibility(UpdateVisibilityRequest) returns (GitRepository);
+
+  // Impersonation tokens (admin creates short-lived token on behalf of a user)
+  rpc CreateImpersonationToken(CreateImpersonationTokenRequest) returns (CreateGitTokenResponse);
+}
+
+// Permission levels for git tokens.
+enum GitPermission {
+  GIT_PERMISSION_UNSPECIFIED = 0;
+  GIT_PERMISSION_PULL = 1;
+  GIT_PERMISSION_PUSH = 2;
+  GIT_PERMISSION_ADMIN = 3;
+}
+
+// Webhook event types.
+enum WebhookEvent {
+  WEBHOOK_EVENT_UNSPECIFIED = 0;
+  WEBHOOK_EVENT_PUSH = 1;
+  WEBHOOK_EVENT_CREATE = 2;
+  WEBHOOK_EVENT_DELETE = 3;
+  WEBHOOK_EVENT_PR_OPENED = 4;
+  WEBHOOK_EVENT_PR_MERGED = 5;
+  WEBHOOK_EVENT_PR_CLOSED = 6;
+}
+
+// A git repository.
+message GitRepository {
+  string id = 1;
+  string tenant_id = 2;
+  string namespace = 3;
+  string name = 4;
+  string description = 5;
+  bool is_private = 6;
+  string default_branch = 7;
+  optional string fork_of = 8;
+  Timestamp created_at = 9;
+  Timestamp updated_at = 10;
+  string owner_id = 11;
+  string owner_type = 12;
+}
+
+// An SSH public key.
+message SshKey {
+  string id = 1;
+  string tenant_id = 2;
+  string fingerprint = 3;
+  string public_key = 4;
+  string title = 5;
+  Timestamp created_at = 6;
+  optional string user_id = 7;
+  repeated GitPermission permissions = 8;
+}
+
+// A webhook configuration.
+message GitWebhook {
+  string id = 1;
+  string tenant_id = 2;
+  string repo_id = 3;
+  string url = 4;
+  repeated WebhookEvent events = 5;
+  bool active = 6;
+  Timestamp created_at = 7;
+}
+
+// Git token metadata (without plaintext token).
+message GitTokenInfo {
+  string id = 1;
+  string tenant_id = 2;
+  repeated GitPermission permissions = 3;
+  string description = 4;
+  Timestamp created_at = 5;
+  optional Timestamp expires_at = 6;
+  bool revoked = 7;
+  optional string user_id = 8;
+}
+
+// --- Repository RPCs ---
+
+message CreateRepositoryRequest {
+  string tenant_id = 1;
+  string namespace = 2;
+  string name = 3;
+  string description = 4;
+  bool is_private = 5;
+}
+
+message GetRepositoryRequest {
+  string tenant_id = 1;
+  string namespace = 2;
+  string name = 3;
+}
+
+message DeleteRepositoryRequest {
+  string tenant_id = 1;
+  string namespace = 2;
+  string name = 3;
+}
+
+message ListRepositoriesRequest {
+  string tenant_id = 1;
+}
+
+message ListRepositoriesResponse {
+  repeated GitRepository repositories = 1;
+}
+
+message ForkRepositoryRequest {
+  string tenant_id = 1;
+  string source_namespace = 2;
+  string source_name = 3;
+  string dest_namespace = 4;
+  string dest_name = 5;
+}
+
+message TransferRepositoryRequest {
+  string tenant_id = 1;
+  string namespace = 2;
+  string name = 3;
+  string new_namespace = 4;
+}
+
+// --- Token RPCs ---
+
+message CreateGitTokenRequest {
+  string tenant_id = 1;
+  repeated GitPermission permissions = 2;
+  string description = 3;
+  optional int64 ttl_seconds = 4;
+  optional string user_id = 5;
+}
+
+message CreateGitTokenResponse {
+  string token_id = 1;
+  string plaintext_token = 2;
+}
+
+message ListGitTokensRequest {
+  string tenant_id = 1;
+}
+
+message ListGitTokensResponse {
+  repeated GitTokenInfo tokens = 1;
+}
+
+message RevokeGitTokenRequest {
+  string token_id = 1;
+}
+
+// --- SSH Key RPCs ---
+
+message AddSshKeyRequest {
+  string tenant_id = 1;
+  string public_key = 2;
+  string title = 3;
+  optional string user_id = 4;
+  repeated GitPermission permissions = 5;
+}
+
+message RemoveSshKeyRequest {
+  string key_id = 1;
+}
+
+message ListSshKeysRequest {
+  string tenant_id = 1;
+}
+
+message ListSshKeysResponse {
+  repeated SshKey keys = 1;
+}
+
+// --- Webhook RPCs ---
+
+message CreateWebhookRequest {
+  string tenant_id = 1;
+  string repo_id = 2;
+  string url = 3;
+  string secret = 4;
+  repeated WebhookEvent events = 5;
+}
+
+message ListWebhooksRequest {
+  string tenant_id = 1;
+  string repo_id = 2;
+}
+
+message ListWebhooksResponse {
+  repeated GitWebhook webhooks = 1;
+}
+
+message DeleteWebhookRequest {
+  string webhook_id = 1;
+}
+
+message ListGitTokensByUserRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+}
+
+message ListSshKeysByUserRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+}
+
+// --- Collaborator RPCs ---
+
+message AddCollaboratorRequest {
+  string tenant_id = 1;
+  string namespace = 2;
+  string repo = 3;
+  string user_id = 4;
+  repeated GitPermission permissions = 5;
+}
+
+message RemoveCollaboratorRequest {
+  string tenant_id = 1;
+  string namespace = 2;
+  string repo = 3;
+  string user_id = 4;
+}
+
+message ListCollaboratorsRequest {
+  string tenant_id = 1;
+  string namespace = 2;
+  string repo = 3;
+}
+
+message CollaboratorInfo {
+  string user_id = 1;
+  repeated GitPermission permissions = 2;
+  Timestamp created_at = 3;
+}
+
+message ListCollaboratorsResponse {
+  repeated CollaboratorInfo collaborators = 1;
+}
+
+message CollaboratorResponse {
+  bool success = 1;
+}
+
+// --- Visibility RPC ---
+
+message UpdateVisibilityRequest {
+  string tenant_id = 1;
+  string namespace = 2;
+  string repo = 3;
+  bool is_private = 4;
+}
+
+// --- Impersonation Token RPC ---
+
+message CreateImpersonationTokenRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  repeated GitPermission permissions = 3;
+  optional int64 ttl_seconds = 4;
+  string description = 5;
+}
+
+message DeleteWebhookResponse {}
+message DeleteRepositoryResponse {}
+message RevokeGitTokenResponse {}
+message RemoveSshKeyResponse {}

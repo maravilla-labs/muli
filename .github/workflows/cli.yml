@@ -1,0 +1,46 @@
+name: CLI
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "packages/cli/**"
+      - "proto/**"
+      - ".github/workflows/cli.yml"
+  pull_request:
+    paths:
+      - "packages/cli/**"
+      - "proto/**"
+      - ".github/workflows/cli.yml"
+
+jobs:
+  cli-build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/cli
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: packages/cli/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build CLI
+        run: npm run build
+
+      - name: Run CLI tests
+        run: npm test
+
+      - name: Smoke check CLI binary
+        run: node dist/index.js --help
+
+      - name: Verify npm package contents
+        run: npm pack --dry-run

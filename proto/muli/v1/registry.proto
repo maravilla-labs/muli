@@ -1,0 +1,101 @@
+// Copyright 2026 Maravilla Labs
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+syntax = "proto3";
+
+package muli.v1;
+
+import "muli/v1/common.proto";
+
+service RegistryService {
+  rpc CreateRegistryToken(CreateRegistryTokenRequest) returns (CreateRegistryTokenResponse);
+  rpc ListRegistryTokens(ListRegistryTokensRequest) returns (ListRegistryTokensResponse);
+  rpc RevokeRegistryToken(RevokeRegistryTokenRequest) returns (RevokeRegistryTokenResponse);
+  rpc RotateRegistryToken(RotateRegistryTokenRequest) returns (RotateRegistryTokenResponse);
+  rpc GetRegistryUsage(GetRegistryUsageRequest) returns (GetRegistryUsageResponse);
+  rpc SetTenantQuota(SetTenantQuotaRequest) returns (SetTenantQuotaResponse);
+  rpc GetTenantQuota(GetTenantQuotaRequest) returns (GetTenantQuotaResponse);
+}
+
+enum RegistryPermission {
+  REGISTRY_PERMISSION_UNSPECIFIED = 0;
+  REGISTRY_PERMISSION_PULL = 1;
+  REGISTRY_PERMISSION_PUSH = 2;
+  REGISTRY_PERMISSION_ADMIN = 3;
+}
+
+// --- Token management ---
+
+message CreateRegistryTokenRequest {
+  string tenant_id = 1;
+  repeated RegistryPermission permissions = 2;
+  string description = 3;
+  optional uint64 ttl_seconds = 4;
+}
+
+message CreateRegistryTokenResponse {
+  string token_id = 1;
+  string plaintext_token = 2;
+}
+
+message ListRegistryTokensRequest {
+  string tenant_id = 1;
+}
+
+message ListRegistryTokensResponse {
+  repeated RegistryTokenInfo tokens = 1;
+}
+
+message RegistryTokenInfo {
+  string id = 1;
+  repeated RegistryPermission permissions = 2;
+  string description = 3;
+  optional Timestamp created_at = 4;
+  optional Timestamp expires_at = 5;
+  bool revoked = 6;
+}
+
+message RevokeRegistryTokenRequest {
+  string token_id = 1;
+}
+
+message RevokeRegistryTokenResponse {}
+
+message RotateRegistryTokenRequest {
+  string token_id = 1;
+  optional uint64 grace_period_seconds = 2;
+}
+
+message RotateRegistryTokenResponse {
+  string token_id = 1;
+  string plaintext_token = 2;
+}
+
+// --- Usage and quotas ---
+
+message GetRegistryUsageRequest {
+  string tenant_id = 1;
+}
+
+message GetRegistryUsageResponse {
+  uint64 storage_bytes = 1;
+  uint64 blob_count = 2;
+  uint64 manifest_count = 3;
+  uint64 repository_count = 4;
+}
+
+message SetTenantQuotaRequest {
+  string tenant_id = 1;
+  uint64 max_storage_bytes = 2;
+}
+
+message SetTenantQuotaResponse {}
+
+message GetTenantQuotaRequest {
+  string tenant_id = 1;
+}
+
+message GetTenantQuotaResponse {
+  uint64 max_storage_bytes = 1;
+  uint64 current_usage_bytes = 2;
+}

@@ -1,0 +1,22 @@
+/target
+**/*.rs.bk
+*.pdb
+.env
+.DS_Store
+/uploads
+/registry-data
+data/
+node_modules/
+packages/cli/proto/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Cargo local config
+/.cargo/
+
+VISION.md
+.tmp-muli-home

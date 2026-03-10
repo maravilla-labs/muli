@@ -1,0 +1,46 @@
+[package]
+name = "muli-registry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+muli-core = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+sha1 = { workspace = true }
+hex = { workspace = true }
+base64 = { workspace = true }
+semver = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+futures = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+prometheus = { workspace = true }
+reqwest = { workspace = true }
+quick-xml = { workspace = true }
+md-5 = { workspace = true }
+tempfile = { workspace = true }
+
+[dev-dependencies]
+muli-core = { workspace = true }
+muli-store = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true, features = ["util"] }
+http-body-util = { workspace = true }
+axum = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+sha1 = { workspace = true }
+md-5 = { workspace = true }
+hex = { workspace = true }
+base64 = { workspace = true }
+reqwest = { workspace = true }

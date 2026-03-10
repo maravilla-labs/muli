@@ -1,0 +1,125 @@
+// Copyright 2026 Maravilla Labs
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+syntax = "proto3";
+
+package muli.v1;
+
+import "muli/v1/common.proto";
+
+service JobService {
+  rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
+  rpc GetJobStatus(GetJobStatusRequest) returns (GetJobStatusResponse);
+  rpc GetDetailedJobStatus(GetDetailedJobStatusRequest) returns (GetDetailedJobStatusResponse);
+  rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
+  rpc DeleteJob(DeleteJobRequest) returns (DeleteJobResponse);
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
+  rpc WatchJobStatus(WatchJobStatusRequest) returns (stream JobStatusEvent);
+}
+
+message SubmitJobRequest {
+  string deployment_id = 1;
+  string project_id = 2;
+  string workspace_id = 3;
+  string runner_image = 4;
+  repeated EnvVar env_vars = 5;
+  ResourceSpec resources = 6;
+  PriorityTier priority_tier = 7;
+  string framework = 8;
+  string tenant_id = 9;
+  string idempotency_key = 10;
+  optional RegistryCredentials registry_credentials = 11;
+}
+
+message SubmitJobResponse {
+  string job_id = 1;
+  string job_name = 2;
+  JobState state = 3;
+}
+
+message GetJobStatusRequest {
+  string job_id = 1;
+}
+
+message GetJobStatusResponse {
+  string job_id = 1;
+  JobState state = 2;
+  string message = 3;
+}
+
+message GetDetailedJobStatusRequest {
+  string job_id = 1;
+}
+
+message GetDetailedJobStatusResponse {
+  string job_id = 1;
+  JobState state = 2;
+  string container_id = 3;
+  string pod_phase = 4;
+  string pod_reason = 5;
+  string pod_message = 6;
+  string container_state = 7;
+  string container_reason = 8;
+  string container_message = 9;
+  optional int32 exit_code = 10;
+  optional Timestamp started_at = 11;
+  optional Timestamp finished_at = 12;
+  uint32 restart_count = 13;
+}
+
+message CancelJobRequest {
+  string job_id = 1;
+  string reason = 2;
+}
+
+message CancelJobResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message DeleteJobRequest {
+  string job_id = 1;
+}
+
+message DeleteJobResponse {
+  bool success = 1;
+}
+
+message ListJobsRequest {
+  optional JobState state_filter = 1;
+  optional string tenant_id = 2;
+  optional PriorityTier priority_filter = 3;
+  uint32 limit = 4;
+  uint32 offset = 5;
+}
+
+message ListJobsResponse {
+  repeated JobSummary jobs = 1;
+  uint32 total_count = 2;
+}
+
+message JobSummary {
+  string job_id = 1;
+  string job_name = 2;
+  string deployment_id = 3;
+  string project_id = 4;
+  string tenant_id = 5;
+  JobState state = 6;
+  PriorityTier priority_tier = 7;
+  string framework = 8;
+  optional Timestamp created_at = 9;
+  optional Timestamp started_at = 10;
+  optional Timestamp finished_at = 11;
+}
+
+message WatchJobStatusRequest {
+  string job_id = 1;
+}
+
+message JobStatusEvent {
+  string job_id = 1;
+  JobState previous_state = 2;
+  JobState current_state = 3;
+  string message = 4;
+  Timestamp timestamp = 5;
+}

@@ -1,0 +1,105 @@
+// Copyright 2026 Maravilla Labs
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+syntax = "proto3";
+
+package muli.v1;
+
+import "muli/v1/common.proto";
+
+// Organization management service.
+service OrgService {
+  rpc CreateOrg(CreateOrgRequest)           returns (Organization);
+  rpc GetOrg(GetOrgRequest)                 returns (Organization);
+  rpc DeleteOrg(DeleteOrgRequest)           returns (DeleteOrgResponse);
+  rpc ListOrgs(ListOrgsRequest)             returns (ListOrgsResponse);
+  rpc AddMember(AddMemberRequest)           returns (OrgMember);
+  rpc RemoveMember(RemoveMemberRequest)     returns (RemoveMemberResponse);
+  rpc ListMembers(ListMembersRequest)       returns (ListMembersResponse);
+  rpc UpdateMemberRole(UpdateMemberRoleRequest) returns (OrgMember);
+}
+
+// An organization within a tenant.
+message Organization {
+  string id = 1;
+  string tenant_id = 2;
+  // Unique handle within the tenant — becomes the repo namespace for org repos.
+  string handle = 3;
+  string display_name = 4;
+  string description = 5;
+  Timestamp created_at = 6;
+}
+
+// A member of an organization.
+message OrgMember {
+  string id = 1;
+  string org_id = 2;
+  string user_id = 3;
+  OrgRole role = 4;
+  Timestamp created_at = 5;
+}
+
+enum OrgRole {
+  ORG_ROLE_UNSPECIFIED = 0;
+  ORG_ROLE_OWNER = 1;
+  ORG_ROLE_ADMIN = 2;
+  ORG_ROLE_MEMBER = 3;
+}
+
+message CreateOrgRequest {
+  string tenant_id = 1;
+  string handle = 2;
+  string display_name = 3;
+  string description = 4;
+}
+
+message GetOrgRequest {
+  string tenant_id = 1;
+  string org_id = 2;
+}
+
+message DeleteOrgRequest {
+  string tenant_id = 1;
+  string org_id = 2;
+}
+
+message DeleteOrgResponse {}
+
+message ListOrgsRequest {
+  string tenant_id = 1;
+}
+
+message ListOrgsResponse {
+  repeated Organization orgs = 1;
+}
+
+message AddMemberRequest {
+  string tenant_id = 1;
+  string org_id = 2;
+  string user_id = 3;
+  OrgRole role = 4;
+}
+
+message RemoveMemberRequest {
+  string tenant_id = 1;
+  string org_id = 2;
+  string user_id = 3;
+}
+
+message RemoveMemberResponse {}
+
+message ListMembersRequest {
+  string tenant_id = 1;
+  string org_id = 2;
+}
+
+message ListMembersResponse {
+  repeated OrgMember members = 1;
+}
+
+message UpdateMemberRoleRequest {
+  string tenant_id = 1;
+  string org_id = 2;
+  string user_id = 3;
+  OrgRole role = 4;
+}

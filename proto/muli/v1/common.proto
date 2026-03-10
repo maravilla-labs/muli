@@ -1,0 +1,50 @@
+// Copyright 2026 Maravilla Labs
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+syntax = "proto3";
+
+package muli.v1;
+
+enum JobState {
+  JOB_STATE_UNSPECIFIED = 0;
+  JOB_STATE_PENDING = 1;
+  JOB_STATE_SCHEDULED = 2;
+  JOB_STATE_PULLING = 3;
+  JOB_STATE_RUNNING = 4;
+  JOB_STATE_SUCCEEDED = 5;
+  JOB_STATE_FAILED = 6;
+  JOB_STATE_CANCELLED = 7;
+  JOB_STATE_TIMED_OUT = 8;
+}
+
+enum PriorityTier {
+  PRIORITY_TIER_UNSPECIFIED = 0;
+  PRIORITY_TIER_FREE = 1;
+  PRIORITY_TIER_STANDARD = 2;
+  PRIORITY_TIER_PREMIUM = 3;
+  PRIORITY_TIER_ENTERPRISE = 4;
+}
+
+message EnvVar {
+  string name = 1;
+  string value = 2;
+}
+
+message ResourceSpec {
+  string cpu_request = 1;
+  string cpu_limit = 2;
+  string memory_request = 3;
+  string memory_limit = 4;
+  uint64 timeout_seconds = 5;
+}
+
+message RegistryCredentials {
+  string server = 1;
+  string username = 2;
+  string password = 3;
+}
+
+message Timestamp {
+  int64 seconds = 1;
+  int32 nanos = 2;
+}

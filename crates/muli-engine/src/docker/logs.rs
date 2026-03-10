@@ -1,0 +1,243 @@
+// Copyright 2026 Maravilla Labs
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! Real-time container log streaming and collection.
+
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use bollard::container::LogsOptions;
+use futures::StreamExt;
+use serde::{Deserialize, Serialize};
+use tokio::sync::{RwLock, broadcast};
+use tracing::{debug, warn};
+
+use super::client::DockerClient;
+
+const DEFAULT_RING_BUFFER_SIZE: usize = 10_000;
+const BROADCAST_CHANNEL_SIZE: usize = 1_024;
+
+/// A single log line with metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogLine {
+    pub sequence: u64,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub stream: LogStream,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LogStream {
+    Stdout,
+    Stderr,
+}
+
+/// Manages log collection for a single container.
+pub struct LogCollector {
+    buffer: Arc<RwLock<VecDeque<LogLine>>>,
+    tx: broadcast::Sender<LogLine>,
+    sequence: Arc<AtomicU64>,
+    max_lines: usize,
+}
+
+impl Default for LogCollector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LogCollector {
+    pub fn new() -> Self {
+        Self::with_capacity(DEFAULT_RING_BUFFER_SIZE)
+    }
+
+    pub fn with_capacity(max_lines: usize) -> Self {
+        let (tx, _) = broadcast::channel(BROADCAST_CHANNEL_SIZE);
+        Self {
+            buffer: Arc::new(RwLock::new(VecDeque::with_capacity(max_lines))),
+            tx,
+            sequence: Arc::new(AtomicU64::new(0)),
+            max_lines,
+        }
+    }
+
+    /// Start streaming logs from a container. Returns a JoinHandle for the background task.
+    pub fn start_log_stream(
+        &self,
+        docker: DockerClient,
+        container_id: String,
+    ) -> tokio::task::JoinHandle<()> {
+        let buffer = self.buffer.clone();
+        let tx = self.tx.clone();
+        let sequence = self.sequence.clone();
+        let max_lines = self.max_lines;
+
+        tokio::spawn(async move {
+            let options = LogsOptions::<String> {
+                follow: true,
+                stdout: true,
+                stderr: true,
+                timestamps: true,
+                tail: "all".to_string(),
+                ..Default::default()
+            };
+
+            let mut stream = docker.inner().logs(&container_id, Some(options));
+
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(output) => {
+                        let (stream_type, message) = match output {
+                            bollard::container::LogOutput::StdOut { message } => {
+                                (LogStream::Stdout, message)
+                            }
+                            bollard::container::LogOutput::StdErr { message } => {
+                                (LogStream::Stderr, message)
+                            }
+                            _ => continue,
+                        };
+
+                        let text = String::from_utf8_lossy(&message).to_string();
+
+                        let line = LogLine {
+                            sequence: sequence.fetch_add(1, Ordering::SeqCst),
+                            timestamp: chrono::Utc::now(),
+                            stream: stream_type,
+                            message: text,
+                        };
+
+                        // Trace container output so it appears in muli's logs
+                        match line.stream {
+                            LogStream::Stderr => {
+                                warn!(job_id = %container_id, "[container:stderr] {}", line.message)
+                            }
+                            LogStream::Stdout => {
+                                debug!(job_id = %container_id, "[container:stdout] {}", line.message)
+                            }
+                        }
+
+                        // Push to ring buffer
+                        {
+                            let mut buf = buffer.write().await;
+                            if buf.len() >= max_lines {
+                                buf.pop_front();
+                            }
+                            buf.push_back(line.clone());
+                        }
+
+                        // Broadcast to live subscribers (ignore if no receivers)
+                        let _ = tx.send(line);
+                    }
+                    Err(e) => {
+                        warn!(
+                            container_id = %container_id,
+                            error = %e,
+                            "Error reading container logs"
+                        );
+                        break;
+                    }
+                }
+            }
+
+            debug!(container_id = %container_id, "Log stream ended");
+        })
+    }
+
+    /// Subscribe to live log events.
+    pub fn subscribe(&self) -> broadcast::Receiver<LogLine> {
+        self.tx.subscribe()
+    }
+
+    /// Get the last N lines from the ring buffer.
+    pub async fn get_historical(&self, tail: usize) -> Vec<LogLine> {
+        let buf = self.buffer.read().await;
+        let start = buf.len().saturating_sub(tail);
+        buf.iter().skip(start).cloned().collect()
+    }
+
+    /// Push a log line from an external source (e.g. a remote agent).
+    /// The line's sequence number is preserved as-is; no re-sequencing is applied.
+    pub async fn push_line(&self, line: LogLine) {
+        {
+            let mut buf = self.buffer.write().await;
+            if buf.len() >= self.max_lines {
+                buf.pop_front();
+            }
+            buf.push_back(line.clone());
+        }
+        let _ = self.tx.send(line);
+    }
+
+    /// One-shot fetch of all container logs (non-follow). Called as a safety net
+    /// after the follow stream ends — only actually fetches if the buffer is empty,
+    /// meaning the follow stream missed all output.
+    pub async fn fetch_remaining_logs(&self, docker: &DockerClient, container_id: &str) {
+        if !self.buffer.read().await.is_empty() {
+            return;
+        }
+
+        debug!(container_id = %container_id, "Follow stream captured 0 lines — fetching logs with one-shot request");
+
+        let options = LogsOptions::<String> {
+            follow: false,
+            stdout: true,
+            stderr: true,
+            timestamps: true,
+            tail: "all".to_string(),
+            ..Default::default()
+        };
+
+        let mut stream = docker.inner().logs(container_id, Some(options));
+
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(output) => {
+                    let (stream_type, message) = match output {
+                        bollard::container::LogOutput::StdOut { message } => {
+                            (LogStream::Stdout, message)
+                        }
+                        bollard::container::LogOutput::StdErr { message } => {
+                            (LogStream::Stderr, message)
+                        }
+                        _ => continue,
+                    };
+
+                    let text = String::from_utf8_lossy(&message).to_string();
+
+                    let line = LogLine {
+                        sequence: self.sequence.fetch_add(1, Ordering::SeqCst),
+                        timestamp: chrono::Utc::now(),
+                        stream: stream_type,
+                        message: text,
+                    };
+
+                    match line.stream {
+                        LogStream::Stderr => {
+                            warn!(job_id = %container_id, "[container:stderr] {}", line.message)
+                        }
+                        LogStream::Stdout => {
+                            debug!(job_id = %container_id, "[container:stdout] {}", line.message)
+                        }
+                    }
+
+                    self.push_line(line).await;
+                }
+                Err(e) => {
+                    warn!(
+                        container_id = %container_id,
+                        error = %e,
+                        "Error reading container logs (one-shot fallback)"
+                    );
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Drain all lines from the buffer, clearing it. Used when persisting logs on job completion.
+    pub async fn drain(&self) -> Vec<LogLine> {
+        let mut buf = self.buffer.write().await;
+        buf.drain(..).collect()
+    }
+}

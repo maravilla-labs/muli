@@ -1,0 +1,22 @@
+[package]
+name = "muli-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+muli-core = { workspace = true }
+muli-proto = { workspace = true }
+muli-store = { workspace = true }
+muli-engine = { workspace = true }
+muli-queue = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true }
+bollard = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+anyhow = { workspace = true }

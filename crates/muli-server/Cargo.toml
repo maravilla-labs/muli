@@ -1,0 +1,52 @@
+[package]
+name = "muli-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "muli-server"
+path = "src/main.rs"
+
+[dependencies]
+muli-core = { workspace = true }
+muli-proto = { workspace = true }
+muli-store = { workspace = true }
+muli-engine = { workspace = true }
+mongodb = { workspace = true }
+muli-queue = { workspace = true }
+muli-registry = { workspace = true }
+muli-git = { workspace = true }
+tonic = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
+axum = { workspace = true }
+axum-server = { workspace = true }
+tower = { workspace = true }
+prometheus = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+dotenvy = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+figment = { version = "0.10", features = ["toml", "env"] }
+dirs = "5"
+dashmap = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+base64 = { workspace = true }
+muli-agent = { workspace = true }
+subtle = { workspace = true }
+
+[dev-dependencies]
+muli-test = { workspace = true }
+tokio = { workspace = true, features = ["full", "test-util"] }
+tempfile = { workspace = true }
+serde_json = { workspace = true }

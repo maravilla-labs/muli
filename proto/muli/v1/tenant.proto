@@ -1,0 +1,34 @@
+// Copyright 2026 Maravilla Labs
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+syntax = "proto3";
+
+package muli.v1;
+
+import "muli/v1/common.proto";
+
+service TenantService {
+  rpc CreateTenant(CreateTenantRequest)   returns (Tenant);
+  rpc GetTenant(GetTenantRequest)         returns (Tenant);
+  rpc ListTenants(ListTenantsRequest)     returns (ListTenantsResponse);
+  rpc DeleteTenant(DeleteTenantRequest)   returns (DeleteTenantResponse);
+}
+
+message Tenant {
+  string id          = 1;   // user-supplied slug, e.g. "local"
+  string name        = 2;
+  string description = 3;
+  Timestamp created_at = 4;
+}
+
+message CreateTenantRequest {
+  string id          = 1;   // required; becomes the x-tenant-id value
+  string name        = 2;
+  string description = 3;
+}
+
+message GetTenantRequest    { string id = 1; }
+message ListTenantsRequest  {}
+message ListTenantsResponse { repeated Tenant tenants = 1; }
+message DeleteTenantRequest { string id = 1; }
+message DeleteTenantResponse {}

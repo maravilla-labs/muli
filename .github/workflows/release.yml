@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build-binaries:
+    name: Build binaries (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            target: linux-x86_64
+            ext: ''
+            server_bin: target/release/muli-server
+            agent_bin: target/release/muli-agent
+            shell: bash
+          - name: macos-x86_64
+            os: macos-13
+            target: darwin-x86_64
+            ext: ''
+            server_bin: target/release/muli-server
+            agent_bin: target/release/muli-agent
+            shell: bash
+          - name: macos-aarch64
+            os: macos-14
+            target: darwin-aarch64
+            ext: ''
+            server_bin: target/release/muli-server
+            agent_bin: target/release/muli-agent
+            shell: bash
+          - name: windows-x86_64
+            os: windows-latest
+            target: windows-x86_64
+            ext: '.exe'
+            server_bin: target/release/muli-server.exe
+            agent_bin: target/release/muli-agent.exe
+            shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build server and agent
+        run: cargo build --release -p muli-server -p muli-agent
+
+      - name: Prepare release artifact names (Unix)
+        if: matrix.shell == 'bash'
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cp "${{ matrix.server_bin }}" "muli-server-${VERSION}-${{ matrix.target }}${{ matrix.ext }}"
+          cp "${{ matrix.agent_bin }}" "muli-agent-${VERSION}-${{ matrix.target }}${{ matrix.ext }}"
+
+      - name: Prepare release artifact names (Windows)
+        if: matrix.shell == 'pwsh'
+        shell: pwsh
+        run: |
+          $version = "${env:GITHUB_REF_NAME}".TrimStart('v')
+          Copy-Item "${{ matrix.server_bin }}" "muli-server-$version-${{ matrix.target }}${{ matrix.ext }}"
+          Copy-Item "${{ matrix.agent_bin }}" "muli-agent-$version-${{ matrix.target }}${{ matrix.ext }}"
+
+      - name: Upload binary artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.name }}
+          path: |
+            muli-server-*
+            muli-agent-*
+
+  release:
+    name: Publish GitHub release
+    needs: build-binaries
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          merge-multiple: true
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sha256sum muli-server-* muli-agent-* > "checksums-${VERSION}.txt"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            muli-server-*
+            muli-agent-*
+            checksums-*.txt
+          generate_release_notes: true

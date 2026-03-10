@@ -1,0 +1,25 @@
+[package]
+name = "muli-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "muli-agent"
+path = "src/main.rs"
+
+[dependencies]
+muli-core = { workspace = true }
+muli-proto = { workspace = true }
+muli-engine = { workspace = true }
+tonic = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+dotenvy = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tokio-stream = { workspace = true }

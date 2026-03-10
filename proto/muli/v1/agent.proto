@@ -1,0 +1,84 @@
+// Copyright 2026 Maravilla Labs
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+syntax = "proto3";
+
+package muli.v1;
+
+import "muli/v1/common.proto";
+import "muli/v1/log.proto";
+
+service AgentService {
+  rpc RegisterAgent(RegisterAgentRequest) returns (RegisterAgentResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc ReportJobResult(ReportJobResultRequest) returns (ReportJobResultResponse);
+  rpc StreamJobLogs(stream LogEntry) returns (StreamJobLogsResponse);
+  rpc DeregisterAgent(DeregisterAgentRequest) returns (DeregisterAgentResponse);
+}
+
+message RegisterAgentRequest {
+  string name = 1;
+  string hostname = 2;
+  AgentCapabilities capabilities = 3;
+  repeated string labels = 4;
+}
+
+message RegisterAgentResponse {
+  string agent_id = 1;
+  uint64 heartbeat_interval_seconds = 2;
+}
+
+message AgentCapabilities {
+  uint64 total_cpu_millicores = 1;
+  uint64 total_memory_bytes = 2;
+  uint64 available_cpu_millicores = 3;
+  uint64 available_memory_bytes = 4;
+  uint32 max_concurrent_jobs = 5;
+  uint32 running_jobs = 6;
+  repeated string pre_pulled_images = 7;
+}
+
+message HeartbeatRequest {
+  string agent_id = 1;
+  AgentCapabilities capabilities = 2;
+}
+
+message HeartbeatResponse {
+  bool acknowledged = 1;
+  repeated JobAssignment assignments = 2;
+}
+
+message JobAssignment {
+  string job_id = 1;
+  string runner_image = 2;
+  repeated EnvVar env_vars = 3;
+  ResourceSpec resources = 4;
+  optional RegistryCredentials registry_credentials = 5;
+}
+
+message ReportJobResultRequest {
+  string agent_id = 1;
+  string job_id = 2;
+  JobState final_state = 3;
+  optional int32 exit_code = 4;
+  string message = 5;
+  optional Timestamp started_at = 6;
+  optional Timestamp finished_at = 7;
+}
+
+message ReportJobResultResponse {
+  bool acknowledged = 1;
+}
+
+message StreamJobLogsResponse {
+  uint64 entries_received = 1;
+}
+
+message DeregisterAgentRequest {
+  string agent_id = 1;
+  string reason = 2;
+}
+
+message DeregisterAgentResponse {
+  bool acknowledged = 1;
+}
