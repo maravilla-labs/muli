@@ -20,7 +20,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Ensure clippy is installed
-        run: rustup component add clippy
+        run: rustup component add --toolchain 1.88-x86_64-unknown-linux-gnu clippy
 
       - name: Run clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
