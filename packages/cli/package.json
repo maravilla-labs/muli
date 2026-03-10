@@ -19,7 +19,7 @@
     "copy-proto": "node ./scripts/copy-proto.mjs",
     "build": "npm run copy-proto && tsc",
     "dev": "tsx src/index.ts",
-    "test": "node --import tsx --test test/**/*.test.ts",
+    "test": "node --import tsx --test test/*.test.ts",
     "prepublishOnly": "npm run build"
   },
   "files": [
