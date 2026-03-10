@@ -83,15 +83,33 @@ export function saveBootstrapState(state) {
         mode: 0o600,
     });
 }
-export async function isPortAvailable(port) {
+async function canBindHost(port, host) {
     return new Promise(resolve => {
         const server = net.createServer();
-        server.once('error', () => resolve(false));
-        server.once('listening', () => {
-            server.close(() => resolve(true));
+        server.once('error', (err) => {
+            if (err.code === 'EAFNOSUPPORT' || err.code === 'EADDRNOTAVAIL') {
+                resolve('unsupported');
+                return;
+            }
+            resolve('busy');
         });
-        server.listen(port, '127.0.0.1');
+        server.once('listening', () => {
+            server.close(() => resolve('ok'));
+        });
+        server.listen({ port, host, exclusive: true });
     });
+}
+export async function isPortAvailable(port) {
+    // Match server bind behavior (`0.0.0.0`) and also guard IPv6 wildcard conflicts.
+    const ipv4 = await canBindHost(port, '0.0.0.0');
+    if (ipv4 !== 'ok') {
+        return false;
+    }
+    const ipv6 = await canBindHost(port, '::');
+    if (ipv6 === 'busy') {
+        return false;
+    }
+    return true;
 }
 export async function resolveAvailablePort(preferred) {
     return resolveAvailablePortWithProbe(preferred, isPortAvailable);

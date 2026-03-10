@@ -1,6 +1,6 @@
 {
   "name": "@maravilla-labs/muli",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "muli CLI — manage git repos, jobs, and registries",
   "bin": {
     "muli": "dist/index.js"
