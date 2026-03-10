@@ -267,6 +267,12 @@ impl SqliteStoreFactory {
             c.execute_batch("PRAGMA journal_mode=WAL;")?;
             c.execute_batch("PRAGMA busy_timeout = 5000;")?;
             c.execute_batch("PRAGMA foreign_keys = ON;")?;
+            // Safe migration for older tenant DBs that predate token_prefix.
+            // Must run before TENANT_DDL because that DDL creates an index on token_prefix.
+            let _ = c.execute(
+                "ALTER TABLE git_tokens ADD COLUMN token_prefix TEXT NOT NULL DEFAULT ''",
+                [],
+            );
             c.execute_batch(TENANT_DDL)?;
             Ok(())
         })
