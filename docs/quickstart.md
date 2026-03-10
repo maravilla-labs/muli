@@ -57,9 +57,12 @@ ping -c1 local.localhost
 
 ## 3. Start the server
 
-`muli server start` now defaults to a local full-stack profile and runs first-run setup when needed.
+`muli server start` defaults to a local full-stack profile, runs first-run setup when needed, and stays in the foreground unless `--detach` is passed.
 
 ```bash
+muli server start
+
+# Optional: run in background
 muli server start --detach
 ```
 

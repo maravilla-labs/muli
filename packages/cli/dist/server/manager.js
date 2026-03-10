@@ -23,6 +23,18 @@ function statePath() {
 function logPath() {
     return path.join(runDir(), 'server.log');
 }
+function readLastLogLines(maxLines = 40) {
+    try {
+        const p = logPath();
+        if (!fs.existsSync(p))
+            return '';
+        const lines = fs.readFileSync(p, 'utf8').split(/\r?\n/);
+        return lines.slice(-maxLines).join('\n').trim();
+    }
+    catch {
+        return '';
+    }
+}
 function ensureDirs() {
     fs.mkdirSync(binDir(), { recursive: true, mode: 0o755 });
     fs.mkdirSync(runDir(), { recursive: true, mode: 0o755 });
@@ -35,7 +47,7 @@ function defaultState() {
         startedAt: null,
         managedArgs: [],
         managedEmbeddedAgent: false,
-        managedDetached: true,
+        managedDetached: false,
         lastCheckedAt: null,
         lastKnownLatestVersion: null,
     };
@@ -316,8 +328,18 @@ export async function startServer(options) {
             env: { ...process.env, ...(options.env ?? {}) },
             stdio: ['ignore', out, out],
         });
+        const pid = child.pid ?? null;
+        if (!pid) {
+            throw new Error('Failed to start server process (no PID returned)');
+        }
+        await new Promise(resolve => setTimeout(resolve, 400));
+        if (!isProcessRunning(pid)) {
+            const tail = readLastLogLines();
+            const detail = tail ? `\n\nRecent server log:\n${tail}` : '';
+            throw new Error(`muli-server exited immediately after launch. Check ${logPath()}${detail}`);
+        }
         child.unref();
-        state.pid = child.pid ?? null;
+        state.pid = pid;
         state.startedAt = new Date().toISOString();
         state.managedArgs = options.extraArgs;
         state.managedEmbeddedAgent = !!options.embeddedAgent;
@@ -326,7 +348,7 @@ export async function startServer(options) {
         state.binaryPath = install.binaryPath;
         saveState(state);
         return {
-            pid: child.pid ?? null,
+            pid,
             version: install.version,
             binaryPath: install.binaryPath,
         };

@@ -42,7 +42,10 @@ npm install -g .
 # Install latest release binary for your platform
 muli server install
 
-# Start server in background (first run triggers guided setup)
+# Start server in foreground (first run triggers guided setup)
+muli server start
+
+# Optional: run in background
 muli server start --detach
 
 # Show running state + latest-version awareness

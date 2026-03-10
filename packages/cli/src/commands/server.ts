@@ -39,7 +39,7 @@ export function registerServerCommands(program: Command): void {
     .description('Start local muli-server (defaults to local full stack profile)')
     .option('--version <version>', 'install/use specific server version')
     .option('--embedded-agent', 'start server with embedded agent')
-    .option('--detach', 'run in background (default)', true)
+    .option('--detach', 'run in background', false)
     .option('--force', 'stop managed running server and replace it', false)
     .option('--no-setup', 'skip first-run setup wizard')
     .option('--setup', 'force rerun first-run setup wizard', false)
@@ -66,13 +66,13 @@ export function registerServerCommands(program: Command): void {
         const result = await startServer({
           version: opts.version,
           embeddedAgent: opts.embeddedAgent,
-          detach: opts.detach !== false,
+          detach: !!opts.detach,
           extraArgs: prepared.extraArgs,
           force: !!opts.force,
           env: prepared.env,
         });
 
-        if (opts.detach !== false) {
+        if (opts.detach) {
           console.log(chalk.green('✓'), `Started muli-server ${result.version}`);
           if (result.pid) {
             console.log(chalk.dim(`PID: ${result.pid}`));

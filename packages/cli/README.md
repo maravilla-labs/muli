@@ -15,6 +15,9 @@ npm install -g @maravilla-labs/muli
 muli server install
 
 # Start local stack (first run includes setup wizard)
+muli server start
+
+# Optional: run in background
 muli server start --detach
 
 # Connect CLI to local server
