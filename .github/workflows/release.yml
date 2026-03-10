@@ -26,7 +26,7 @@ jobs:
             agent_bin: target/x86_64-unknown-linux-gnu/release/muli-agent
             shell: bash
           - name: macos-x86_64
-            os: macos-14
+            os: macos-15-intel
             rust_target: x86_64-apple-darwin
             target: darwin-x86_64
             ext: ''
@@ -59,8 +59,19 @@ jobs:
       - name: Add Rust target
         run: rustup target add ${{ matrix.rust_target }}
 
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
+      - name: Install protoc (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Install protoc (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - name: Install protoc (Windows)
+        if: runner.os == 'Windows'
+        run: choco install protoc -y
 
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
