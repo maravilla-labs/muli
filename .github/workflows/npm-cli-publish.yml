@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   publish-cli:
@@ -67,7 +68,14 @@ jobs:
         run: npm test
 
       - name: Publish package
-        run: npm publish --access public
+        shell: bash
+        run: |
+          if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "Publishing with NPM_TOKEN (bootstrap/fallback mode)"
+          else
+            echo "Publishing with npm trusted publishing (OIDC)"
+          fi
+          npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

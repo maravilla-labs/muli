@@ -35,8 +35,8 @@ On `v*` tags, GitHub Actions will:
 On `npm-cli-v*` tags (or manual dispatch), GitHub Actions will:
 
 1. Build and test CLI from `packages/cli`.
-2. Publish npm package `@maravilla-labs/muli`.
-3. Use repository secret `NPM_TOKEN` (npm token with access to the `@maravilla-labs` scope).
+2. Publish npm package `@maravilla-labs/muli` with provenance (`--provenance`).
+3. Prefer npm trusted publishing (OIDC). `NPM_TOKEN` is optional bootstrap/fallback.
 
 ## Release Artifact Contract
 
@@ -74,8 +74,26 @@ The CLI `muli server install/update` resolves the correct asset by OS/arch and v
    - `npm --prefix packages/cli test`
    - `npm --prefix packages/cli pack --dry-run`
 2. Ensure `packages/cli/package.json` uses the intended release version.
-3. Ensure repository secret `NPM_TOKEN` is configured.
+3. Ensure npm trusted publisher is configured on npm package settings.  
+   For first-ever publish only: configure temporary `NPM_TOKEN` repo secret.
 4. Create and push tag: `npm-cli-vX.Y.Z`.
+
+## Trusted Publishing Bootstrap (First Ever npm Publish)
+
+`@maravilla-labs/muli` does not exist on npm until first publish. Trusted publisher
+configuration is package-scoped, so initial bootstrap is:
+
+1. Create temporary npm automation token (write access to `@maravilla-labs` scope).
+2. Set repo secret:
+   - `gh secret set NPM_TOKEN --repo maravilla-labs/muli`
+3. Trigger first CLI publish (`npm-cli-vX.Y.Z` tag or workflow_dispatch).
+4. In npm package settings for `@maravilla-labs/muli`, add GitHub trusted publisher:
+   - owner: `maravilla-labs`
+   - repository: `muli`
+   - workflow: `npm-cli-publish.yml`
+   - environment: *(leave empty unless you use one)*
+5. Remove fallback token secret after trusted publishing is confirmed:
+   - `gh secret delete NPM_TOKEN --repo maravilla-labs/muli`
 
 ## Security Releases
 

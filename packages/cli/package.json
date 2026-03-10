@@ -7,6 +7,14 @@
   },
   "type": "module",
   "main": "dist/index.js",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/maravilla-labs/muli.git"
+  },
   "scripts": {
     "copy-proto": "node ./scripts/copy-proto.mjs",
     "build": "npm run copy-proto && tsc",
