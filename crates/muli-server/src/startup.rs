@@ -305,6 +305,9 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
     }
 
     server_builder
+        .http2_keepalive_interval(Some(Duration::from_secs(30)))
+        .http2_keepalive_timeout(Some(Duration::from_secs(10)))
+        .http2_adaptive_window(Some(true))
         .concurrency_limit_per_connection(100)
         .timeout(Duration::from_secs(300))
         .add_service(JobServiceServer::with_interceptor(
