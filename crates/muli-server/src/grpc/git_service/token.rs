@@ -49,7 +49,7 @@ impl GitServiceImpl {
             .collect::<Result<Vec<_>, _>>()?;
 
         let plaintext = generate_token();
-        let token_hash = hash_token(&plaintext);
+        let token_hash = hash_token(&plaintext).await;
         let prefix = token_prefix(&plaintext);
 
         let expires_at = req
@@ -241,7 +241,7 @@ impl GitServiceImpl {
             .collect::<Result<Vec<_>, _>>()?;
 
         let plaintext = generate_token();
-        let token_hash = hash_token(&plaintext);
+        let token_hash = hash_token(&plaintext).await;
         let prefix = token_prefix(&plaintext);
 
         let expires_at = req

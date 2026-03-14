@@ -80,7 +80,7 @@ impl RegistryService for RegistryServiceImpl {
         }
 
         let plaintext = generate_token();
-        let token_hash = hash_token(&plaintext);
+        let token_hash = hash_token(&plaintext).await;
         let prefix = token_prefix(&plaintext);
 
         let expires_at = req
@@ -202,7 +202,7 @@ impl RegistryService for RegistryServiceImpl {
         }
 
         let plaintext = generate_token();
-        let token_hash = hash_token(&plaintext);
+        let token_hash = hash_token(&plaintext).await;
         let prefix = token_prefix(&plaintext);
 
         let new_token = RegistryToken::new(

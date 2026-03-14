@@ -156,6 +156,8 @@ impl JobService for JobServiceImpl {
         tokio::spawn(async move {
             let mut last_state: Option<JobState> = None;
             let deadline = tokio::time::Instant::now() + MAX_WATCH_DURATION;
+            let mut consecutive_errors: u32 = 0;
+            const MAX_CONSECUTIVE_ERRORS: u32 = 3;
 
             loop {
                 if tokio::time::Instant::now() >= deadline {
@@ -173,6 +175,7 @@ impl JobService for JobServiceImpl {
 
                 match store.get_job(&job_id).await {
                     Ok(Some(job)) => {
+                        consecutive_errors = 0;
                         let current_state = job.state;
                         let should_send = match last_state {
                             Some(prev) => prev != current_state,
@@ -210,7 +213,21 @@ impl JobService for JobServiceImpl {
                         break;
                     }
                     Err(e) => {
-                        error!(job_id = %job_id, error = %e, "Error watching job status");
+                        consecutive_errors += 1;
+                        error!(
+                            job_id = %job_id,
+                            error = %e,
+                            consecutive_errors,
+                            "Error watching job status"
+                        );
+                        if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                            let _ = tx
+                                .send(Err(Status::internal(format!(
+                                    "Store unavailable after {consecutive_errors} consecutive errors: {e}"
+                                ))))
+                                .await;
+                            break;
+                        }
                     }
                 }
 

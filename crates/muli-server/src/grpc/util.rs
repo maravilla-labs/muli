@@ -40,8 +40,16 @@ pub fn generate_token() -> String {
 }
 
 /// Hash a plaintext token with Argon2id.
-pub fn hash_token(plaintext: &str) -> String {
-    token_hash::hash_token(plaintext).expect("Argon2id hashing failed")
+///
+/// Uses `spawn_blocking` to avoid blocking async workers with the
+/// CPU-intensive Argon2id computation (~50 ms).
+pub async fn hash_token(plaintext: &str) -> String {
+    let plaintext = plaintext.to_string();
+    tokio::task::spawn_blocking(move || {
+        token_hash::hash_token(&plaintext).expect("Argon2id hashing failed")
+    })
+    .await
+    .expect("spawn_blocking panicked")
 }
 
 /// Extract the lookup prefix from a plaintext token.

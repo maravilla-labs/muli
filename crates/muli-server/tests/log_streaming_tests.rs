@@ -9,8 +9,6 @@ use std::time::Duration;
 
 use muli_proto::StreamLogsRequest;
 use tokio_util::sync::CancellationToken;
-use tonic::Request;
-
 use muli_test::grpc_helpers::{job_client, log_client, test_submit_request};
 
 use common::{TestGrpcServer, dummy_executor, run_job, wait_for_terminal_state, with_tenant};
@@ -56,11 +54,14 @@ async fn test_stream_logs_follow() {
     });
 
     let mut stream = log_cl
-        .stream_logs(Request::new(StreamLogsRequest {
-            job_id: job_id.clone(),
-            follow: true,
-            since_sequence: None,
-        }))
+        .stream_logs(with_tenant(
+            StreamLogsRequest {
+                job_id: job_id.clone(),
+                follow: true,
+                since_sequence: None,
+            },
+            "test-tenant",
+        ))
         .await
         .unwrap()
         .into_inner();
@@ -75,6 +76,23 @@ async fn test_stream_logs_follow() {
             Ok(Err(_)) => break,
             Err(_) => break,
         }
+    }
+
+    assert!(!entries.is_empty(), "expected at least one log entry");
+
+    // Verify sequence numbers are monotonically increasing
+    for window in entries.windows(2) {
+        assert!(
+            window[1].sequence >= window[0].sequence,
+            "log entries should have non-decreasing sequence numbers: {} < {}",
+            window[1].sequence,
+            window[0].sequence,
+        );
+    }
+
+    // Verify all entries reference the correct job
+    for entry in &entries {
+        assert_eq!(entry.job_id, job_id, "log entry should reference the submitted job");
     }
 
     cancel.cancel();
@@ -125,13 +143,34 @@ async fn test_get_logs_after_completion() {
     cancel.cancel();
 
     let logs_resp = log_cl
-        .get_logs(Request::new(muli_proto::GetLogsRequest {
-            job_id: job_id.clone(),
-            tail: 100,
-        }))
+        .get_logs(with_tenant(
+            muli_proto::GetLogsRequest {
+                job_id: job_id.clone(),
+                tail: 100,
+            },
+            "test-tenant",
+        ))
         .await
         .unwrap();
-    let _ = logs_resp.into_inner();
+    let body = logs_resp.into_inner();
+
+    assert!(body.is_complete, "logs for a completed job should be marked complete");
+    assert!(!body.entries.is_empty(), "completed job should have at least one log entry");
+
+    // Verify sequence ordering
+    for window in body.entries.windows(2) {
+        assert!(
+            window[1].sequence >= window[0].sequence,
+            "log entries should have non-decreasing sequence numbers: {} < {}",
+            window[1].sequence,
+            window[0].sequence,
+        );
+    }
+
+    // Verify all entries reference the correct job
+    for entry in &body.entries {
+        assert_eq!(entry.job_id, job_id, "log entry should reference the submitted job");
+    }
 
     muli_test::docker_helpers::cleanup_test_containers(&docker).await;
 }

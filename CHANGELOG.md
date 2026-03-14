@@ -7,6 +7,20 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-03-14
+
+### Changed
+
+- Token hashing (Argon2id) moved to `spawn_blocking` to avoid blocking async workers during CPU-intensive computation.
+- Job watch streams now track consecutive errors and terminate cleanly after 3 failures instead of retrying indefinitely.
+
+### Fixed
+
+- Log streaming tests now send proper tenant metadata headers via `with_tenant` wrapper.
+- Log streaming tests verify sequence number ordering and job ID correctness.
+
+## [0.1.7] - 2026-03-09
+
 ### Added
 
 - Centralized webhook URL/target SSRF validation shared across REST and gRPC paths.
