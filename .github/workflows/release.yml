@@ -71,7 +71,7 @@ jobs:
 
       - name: Install protoc (Windows)
         if: runner.os == 'Windows'
-        run: choco install protoc -y
+        run: choco install protobuf -y
 
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
