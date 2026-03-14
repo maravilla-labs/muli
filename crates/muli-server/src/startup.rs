@@ -191,6 +191,8 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
             &stores.ssh_key_store,
             &stores.repo_store,
             &git_storage,
+            &stores.org_store,
+            &stores.org_member_store,
             &cancel,
         )
         .await?;
@@ -530,6 +532,8 @@ async fn start_git_ssh(
     ssh_key_store: &Arc<dyn muli_core::traits::SshKeyStore>,
     repo_store: &Arc<dyn muli_core::traits::RepositoryStore>,
     git_storage: &Arc<muli_git::storage::FilesystemStorage>,
+    org_store: &Arc<dyn muli_core::traits::OrgStore>,
+    org_member_store: &Arc<dyn muli_core::traits::OrgMemberStore>,
     cancel: &CancellationToken,
 ) -> anyhow::Result<()> {
     let host_key_path = config
@@ -546,6 +550,9 @@ async fn start_git_ssh(
         ssh_key_store: ssh_key_store.clone(),
         repo_store: repo_store.clone(),
         storage: git_storage.clone(),
+        default_tenant_id: config.default_tenant_id.clone(),
+        org_store: org_store.clone(),
+        org_member_store: org_member_store.clone(),
     };
 
     let ssh_addr = format!("0.0.0.0:{}", config.git_ssh_port);

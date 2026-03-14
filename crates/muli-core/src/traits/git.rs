@@ -83,6 +83,13 @@ pub trait SshKeyStore: Send + Sync {
     /// Find a key by its SHA256 fingerprint.
     async fn find_by_fingerprint(&self, fingerprint: &str) -> Result<Option<SshKey>>;
 
+    /// Find a key by fingerprint within a specific tenant.
+    async fn find_by_fingerprint_in_tenant(
+        &self,
+        tenant_id: &str,
+        fingerprint: &str,
+    ) -> Result<Option<SshKey>>;
+
     /// List all keys for a tenant.
     async fn list_keys(&self, tenant_id: &str) -> Result<Vec<SshKey>>;
 

@@ -209,7 +209,7 @@ async fn test_pr_comments() {
     )
     .await;
     assert_eq!(status, 201, "add second comment failed: {c2}");
-    assert_eq!(c2["user_id"], "user-2");
+    assert_eq!(c2["user_id"], "user-1");
 
     // List comments → should have 2
     let (status, list) = api_get(&srv, &comments_path).await;

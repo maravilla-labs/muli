@@ -30,6 +30,8 @@ impl SshKeyStore for SqliteSshKeyStore {
         let conn = self.factory.tenant_conn(&key.tenant_id).await?;
         let key = key.clone();
         let id = key.id.clone();
+        let fp = key.fingerprint.clone();
+        let tid = key.tenant_id.clone();
         conn.call(move |c| {
             let json = to_json(&key)?;
             c.execute(
@@ -41,39 +43,100 @@ impl SshKeyStore for SqliteSshKeyStore {
         })
         .await
         .map_err(store_err)?;
+
+        // Insert into global fingerprint index.
+        let global = self.factory.global_conn();
+        let key_id = id.clone();
+        global
+            .call(move |c| {
+                c.execute(
+                    "INSERT OR IGNORE INTO ssh_key_fingerprints (ssh_key_id, fingerprint, tenant_id)
+                     VALUES (?1, ?2, ?3)",
+                    rusqlite::params![key_id, fp, tid],
+                )?;
+                Ok(())
+            })
+            .await
+            .map_err(store_err)?;
+
         Ok(id)
     }
 
     async fn remove_key(&self, key_id: &str) -> Result<()> {
         let key_id = key_id.to_string();
-        for tenant_id in self.factory.all_tenant_ids().await? {
-            let conn = self.factory.tenant_conn(&tenant_id).await?;
-            let kid = key_id.clone();
-            let rows = conn
-                .call(move |c| {
-                    let rows =
-                        c.execute("DELETE FROM ssh_keys WHERE id = ?1", rusqlite::params![kid])?;
-                    Ok(rows)
-                })
-                .await
-                .map_err(store_err)?;
-            if rows > 0 {
-                return Ok(());
-            }
-        }
-        Err(MuliError::Storage(format!("SSH key {key_id} not found")))
+
+        // Look up tenant from global index.
+        let global = self.factory.global_conn();
+        let kid = key_id.clone();
+        let tenant_id: Option<String> = global
+            .call(move |c| {
+                let mut stmt = c.prepare(
+                    "SELECT tenant_id FROM ssh_key_fingerprints WHERE ssh_key_id = ?1",
+                )?;
+                let mut rows = stmt.query(rusqlite::params![kid])?;
+                if let Some(row) = rows.next()? {
+                    Ok(Some(row.get::<_, String>(0)?))
+                } else {
+                    Ok(None)
+                }
+            })
+            .await
+            .map_err(store_err)?;
+
+        let Some(tenant_id) = tenant_id else {
+            return Err(MuliError::Storage(format!("SSH key {key_id} not found")));
+        };
+
+        // Delete from tenant DB.
+        let conn = self.factory.tenant_conn(&tenant_id).await?;
+        let kid = key_id.clone();
+        conn.call(move |c| {
+            c.execute("DELETE FROM ssh_keys WHERE id = ?1", rusqlite::params![kid])?;
+            Ok(())
+        })
+        .await
+        .map_err(store_err)?;
+
+        // Delete from global index.
+        let kid = key_id.clone();
+        global
+            .call(move |c| {
+                c.execute(
+                    "DELETE FROM ssh_key_fingerprints WHERE ssh_key_id = ?1",
+                    rusqlite::params![kid],
+                )?;
+                Ok(())
+            })
+            .await
+            .map_err(store_err)?;
+
+        Ok(())
     }
 
     async fn find_by_fingerprint(&self, fingerprint: &str) -> Result<Option<SshKey>> {
+        // Query global index for tenant(s) that have this fingerprint.
+        let global = self.factory.global_conn();
         let fp = fingerprint.to_string();
-        for tenant_id in self.factory.all_tenant_ids().await? {
+        let entries: Vec<String> = global
+            .call(move |c| {
+                let mut stmt = c.prepare(
+                    "SELECT tenant_id FROM ssh_key_fingerprints WHERE fingerprint = ?1",
+                )?;
+                let rows = stmt.query_map(rusqlite::params![fp], |row| row.get(0))?;
+                Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)
+            })
+            .await
+            .map_err(store_err)?;
+
+        // Fetch full key from the first matching tenant DB.
+        for tenant_id in entries {
             let conn = self.factory.tenant_conn(&tenant_id).await?;
-            let f = fp.clone();
-            let result = conn
+            let fp = fingerprint.to_string();
+            let result: Option<SshKey> = conn
                 .call(move |c| {
                     let mut stmt =
                         c.prepare("SELECT full_json FROM ssh_keys WHERE fingerprint = ?1")?;
-                    let mut rows = stmt.query(rusqlite::params![f])?;
+                    let mut rows = stmt.query(rusqlite::params![fp])?;
                     if let Some(row) = rows.next()? {
                         let json: String = row.get(0)?;
                         Ok(Some(from_json::<SshKey>(&json)?))
@@ -88,6 +151,28 @@ impl SshKeyStore for SqliteSshKeyStore {
             }
         }
         Ok(None)
+    }
+
+    async fn find_by_fingerprint_in_tenant(
+        &self,
+        tenant_id: &str,
+        fingerprint: &str,
+    ) -> Result<Option<SshKey>> {
+        let conn = self.factory.tenant_conn(tenant_id).await?;
+        let fp = fingerprint.to_string();
+        conn.call(move |c| {
+            let mut stmt =
+                c.prepare("SELECT full_json FROM ssh_keys WHERE fingerprint = ?1")?;
+            let mut rows = stmt.query(rusqlite::params![fp])?;
+            if let Some(row) = rows.next()? {
+                let json: String = row.get(0)?;
+                Ok(Some(from_json::<SshKey>(&json)?))
+            } else {
+                Ok(None)
+            }
+        })
+        .await
+        .map_err(store_err)
     }
 
     async fn list_keys(&self, tenant_id: &str) -> Result<Vec<SshKey>> {

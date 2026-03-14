@@ -285,6 +285,7 @@ fn fire_webhook(
     let webhook_store = state.webhook_store.clone();
     let http_client = state.http_client.clone();
     let semaphore = state.webhook_semaphore.clone();
+    let allow_localhost = state.allow_localhost_webhooks;
     let tenant_id = tenant_id.to_string();
     let repo_id = repo_id.to_string();
     tokio::spawn(async move {
@@ -299,6 +300,7 @@ fn fire_webhook(
                 event,
                 payload: json!({ "number": pr_number }),
             },
+            allow_localhost,
         )
         .await;
     });

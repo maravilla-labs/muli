@@ -64,6 +64,21 @@ impl SshKeyStore for MemorySshKeyStore {
             .map(|e| e.value().clone()))
     }
 
+    async fn find_by_fingerprint_in_tenant(
+        &self,
+        tenant_id: &str,
+        fingerprint: &str,
+    ) -> Result<Option<SshKey>> {
+        Ok(self
+            .keys
+            .iter()
+            .find(|e| {
+                let k = e.value();
+                k.tenant_id == tenant_id && k.fingerprint == fingerprint
+            })
+            .map(|e| e.value().clone()))
+    }
+
     async fn list_keys(&self, tenant_id: &str) -> Result<Vec<SshKey>> {
         Ok(self
             .keys

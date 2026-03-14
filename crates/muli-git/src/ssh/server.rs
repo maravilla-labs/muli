@@ -18,8 +18,8 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use muli_core::git::{GitPermission, HasPermissions, SshKey};
-use muli_core::traits::{RepositoryStore, SshKeyStore};
+use muli_core::git::{GitPermission, HasPermissions};
+use muli_core::traits::{OrgMemberStore, OrgStore, RepositoryStore, SshKeyStore};
 
 use crate::ssh::auth::{parse_git_ssh_command, parse_repo_path};
 use crate::storage::FilesystemStorage;
@@ -38,6 +38,9 @@ pub struct SshServer {
     pub ssh_key_store: Arc<dyn SshKeyStore>,
     pub repo_store: Arc<dyn RepositoryStore>,
     pub storage: Arc<FilesystemStorage>,
+    pub default_tenant_id: Option<String>,
+    pub org_store: Arc<dyn OrgStore>,
+    pub org_member_store: Arc<dyn OrgMemberStore>,
 }
 
 impl SshServer {
@@ -71,7 +74,12 @@ impl SshServer {
                         ssh_key_store: self.ssh_key_store.clone(),
                         repo_store: self.repo_store.clone(),
                         storage: self.storage.clone(),
-                        authenticated_key: None,
+                        default_tenant_id: self.default_tenant_id.clone(),
+                        org_store: self.org_store.clone(),
+                        org_member_store: self.org_member_store.clone(),
+                        authenticated_fingerprint: None,
+                        authenticated_user_id: None,
+                        authenticated_key_tenant_id: None,
                         processes: HashMap::new(),
                     };
 
@@ -137,7 +145,13 @@ struct SshSessionHandler {
     ssh_key_store: Arc<dyn SshKeyStore>,
     repo_store: Arc<dyn RepositoryStore>,
     storage: Arc<FilesystemStorage>,
-    authenticated_key: Option<SshKey>,
+    default_tenant_id: Option<String>,
+    org_store: Arc<dyn OrgStore>,
+    org_member_store: Arc<dyn OrgMemberStore>,
+    authenticated_fingerprint: Option<String>,
+    authenticated_user_id: Option<String>,
+    /// The tenant_id from the SSH key record — tells us which tenant DB the key lives in.
+    authenticated_key_tenant_id: Option<String>,
     processes: HashMap<ChannelId, ProcessHandle>,
 }
 
@@ -156,11 +170,34 @@ impl Handler for SshSessionHandler {
         } else {
             format!("SHA256:{raw}")
         };
+
+        // Find the key across all tenants. The key's tenant_id tells us which
+        // DB it lives in, which works for every deployment model:
+        //   - Flightdeck (single tenant): key is in "local"
+        //   - Subdomain multi-tenant: key is in its respective tenant DB
         match self.ssh_key_store.find_by_fingerprint(&fingerprint).await {
-            Ok(Some(ssh_key)) => {
-                tracing::debug!(%fingerprint, tenant_id = %ssh_key.tenant_id, "SSH key accepted");
-                self.authenticated_key = Some(ssh_key);
-                Ok(Auth::Accept)
+            Ok(Some(key)) => {
+                // Require user_id on the key
+                match key.user_id {
+                    Some(ref uid) => {
+                        tracing::debug!(
+                            %fingerprint,
+                            user_id = %uid,
+                            key_tenant = %key.tenant_id,
+                            "SSH key accepted"
+                        );
+                        self.authenticated_fingerprint = Some(fingerprint);
+                        self.authenticated_user_id = Some(uid.clone());
+                        self.authenticated_key_tenant_id = Some(key.tenant_id.clone());
+                        Ok(Auth::Accept)
+                    }
+                    None => {
+                        tracing::info!(%fingerprint, "SSH key rejected: no user_id");
+                        Ok(Auth::Reject {
+                            proceed_with_methods: None,
+                        })
+                    }
+                }
             }
             Ok(None) => {
                 tracing::debug!(%fingerprint, "SSH key not found – rejecting");
@@ -194,15 +231,25 @@ impl Handler for SshSessionHandler {
         let command = std::str::from_utf8(data).unwrap_or("").trim().to_string();
         tracing::debug!(%command, "SSH exec request");
 
-        let tenant_id = match self.authenticated_key.as_ref().map(|k| k.tenant_id.clone()) {
-            Some(t) => t,
+        // 1. Check authentication
+        let fingerprint = match self.authenticated_fingerprint.as_deref() {
+            Some(fp) => fp.to_string(),
             None => {
                 tracing::warn!("exec on unauthenticated SSH session");
                 session.channel_failure(channel);
                 return Ok(());
             }
         };
+        let user_id = match self.authenticated_user_id.as_deref() {
+            Some(uid) => uid.to_string(),
+            None => {
+                tracing::warn!("exec on SSH session without authenticated user_id");
+                session.channel_failure(channel);
+                return Ok(());
+            }
+        };
 
+        // 2. Parse git command
         let (git_cmd, path) = match parse_git_ssh_command(&command) {
             Some(v) => v,
             None => {
@@ -212,6 +259,7 @@ impl Handler for SshSessionHandler {
             }
         };
 
+        // 3. Parse repo path → (namespace, repo_name)
         let (namespace, repo_name) = match parse_repo_path(&path) {
             Some(v) => v,
             None => {
@@ -221,38 +269,114 @@ impl Handler for SshSessionHandler {
             }
         };
 
-        // Validate the repository exists in the store
-        match self
+        // 4. Resolve tenant: try namespace as tenant first, then fall back to default
+        let tenant_id = match self
             .repo_store
-            .get_repository_by_name(&tenant_id, &namespace, &repo_name)
+            .get_repository_by_name(&namespace, &namespace, &repo_name)
             .await
         {
-            Ok(Some(_)) => {}
+            Ok(Some(_)) => namespace.clone(),
+            _ => {
+                // Try default tenant
+                if let Some(ref default_tid) = self.default_tenant_id {
+                    match self
+                        .repo_store
+                        .get_repository_by_name(default_tid, &namespace, &repo_name)
+                        .await
+                    {
+                        Ok(Some(_)) => default_tid.clone(),
+                        _ => {
+                            tracing::debug!(%namespace, %repo_name, "repository not found in any tenant");
+                            session.channel_failure(channel);
+                            return Ok(());
+                        }
+                    }
+                } else {
+                    tracing::debug!(%namespace, %repo_name, "repository not found and no default tenant configured");
+                    session.channel_failure(channel);
+                    return Ok(());
+                }
+            }
+        };
+        tracing::debug!(%tenant_id, %namespace, %repo_name, "resolved tenant for SSH exec");
+
+        // 5. Fetch SSH key from its tenant DB for permission check.
+        //    The key's tenant_id was captured at auth time.
+        let key_tenant_id = match self.authenticated_key_tenant_id.as_deref() {
+            Some(tid) => tid.to_string(),
+            None => {
+                tracing::warn!("exec without key tenant_id on session");
+                session.channel_failure(channel);
+                return Ok(());
+            }
+        };
+        let ssh_key = match self
+            .ssh_key_store
+            .find_by_fingerprint_in_tenant(&key_tenant_id, &fingerprint)
+            .await
+        {
+            Ok(Some(key)) => key,
             Ok(None) => {
-                tracing::debug!(%namespace, %repo_name, "repository not found");
+                tracing::info!(%fingerprint, %key_tenant_id, "SSH key not found – rejecting");
                 session.channel_failure(channel);
                 return Ok(());
             }
             Err(e) => {
-                tracing::error!(error = %e, "repo store error in SSH exec");
+                tracing::error!(error = %e, "SSH key store error during authorization");
                 session.channel_failure(channel);
                 return Ok(());
             }
+        };
+
+        // 6. Org membership check: if repo lives in a different tenant than
+        //    the key's tenant, verify the user is a member of that org.
+        if tenant_id != key_tenant_id {
+            // Namespace is an org handle — look up the org and check membership
+            match self
+                .org_store
+                .get_org_by_handle(&tenant_id, &namespace)
+                .await
+            {
+                Ok(Some(org)) => {
+                    match self
+                        .org_member_store
+                        .get_member(&org.id, &user_id)
+                        .await
+                    {
+                        Ok(Some(_)) => {
+                            tracing::debug!(%user_id, org_id = %org.id, "org membership verified for SSH");
+                        }
+                        Ok(None) => {
+                            tracing::info!(%user_id, org = %namespace, "SSH rejected: not an org member");
+                            session.channel_failure(channel);
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "org member store error");
+                            session.channel_failure(channel);
+                            return Ok(());
+                        }
+                    }
+                }
+                Ok(None) => {
+                    tracing::debug!(org = %namespace, %tenant_id, "org not found – skipping membership check");
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "org store error");
+                    session.channel_failure(channel);
+                    return Ok(());
+                }
+            }
+        }
+
+        // 7. Check permissions for push
+        if git_cmd == "git-receive-pack" && !ssh_key.has_permission(GitPermission::Push) {
+            tracing::info!("SSH push rejected: key lacks Push permission");
+            session.channel_failure(channel);
+            return Ok(());
         }
 
         let repo_path = self.storage.repo_path(&tenant_id, &namespace, &repo_name);
-
-        if git_cmd == "git-receive-pack" {
-            let can_push = self
-                .authenticated_key
-                .as_ref()
-                .map_or(false, |k| k.has_permission(GitPermission::Push));
-            if !can_push {
-                tracing::info!("SSH push rejected: key lacks Push permission");
-                session.channel_failure(channel);
-                return Ok(());
-            }
-        }
 
         spawn_git_process(
             git_cmd,

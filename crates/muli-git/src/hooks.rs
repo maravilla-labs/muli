@@ -27,6 +27,7 @@ pub async fn deliver_webhooks(
     tenant_id: &str,
     repo_id: &str,
     delivery: &HookDelivery,
+    allow_localhost_webhooks: bool,
 ) {
     let hooks = match webhook_store.list_webhooks(tenant_id, repo_id).await {
         Ok(h) => h,
@@ -46,7 +47,7 @@ pub async fn deliver_webhooks(
             continue;
         }
 
-        if let Err(e) = validate_webhook_target(&hook.url).await {
+        if !allow_localhost_webhooks && let Err(e) = validate_webhook_target(&hook.url).await {
             tracing::warn!(
                 hook_id = %hook.id,
                 url = %hook.url,

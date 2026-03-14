@@ -54,6 +54,17 @@ impl SshKeyStore for MongoSshKeyStore {
             .map_err(|e| MuliError::Storage(format!("Failed to find SSH key: {e}")))
     }
 
+    async fn find_by_fingerprint_in_tenant(
+        &self,
+        tenant_id: &str,
+        fingerprint: &str,
+    ) -> Result<Option<SshKey>> {
+        self.collection
+            .find_one(doc! { "tenant_id": tenant_id, "fingerprint": fingerprint })
+            .await
+            .map_err(|e| MuliError::Storage(format!("Failed to find SSH key in tenant: {e}")))
+    }
+
     async fn list_keys(&self, tenant_id: &str) -> Result<Vec<SshKey>> {
         let cursor = self
             .collection

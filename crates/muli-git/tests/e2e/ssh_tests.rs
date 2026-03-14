@@ -81,7 +81,7 @@ async fn test_ssh_clone_and_push() {
     let ssh_key = SshKey {
         id: uuid::Uuid::new_v4().to_string(),
         tenant_id: TENANT.to_string(),
-        user_id: None,
+        user_id: Some("user-1".to_string()),
         fingerprint: fingerprint.clone(),
         public_key: pub_key_str.trim().to_string(),
         title: "test key".to_string(),
@@ -247,7 +247,7 @@ async fn test_ssh_push_rejected_for_pull_only_key() {
     let ssh_key = SshKey {
         id: uuid::Uuid::new_v4().to_string(),
         tenant_id: TENANT.to_string(),
-        user_id: None,
+        user_id: Some("user-1".to_string()),
         fingerprint: fingerprint.clone(),
         public_key: pub_key_str,
         title: "pull-only key".to_string(),
@@ -364,7 +364,7 @@ async fn test_ssh_clone_with_pull_only_key() {
     let ssh_key = SshKey {
         id: uuid::Uuid::new_v4().to_string(),
         tenant_id: TENANT.to_string(),
-        user_id: None,
+        user_id: Some("user-1".to_string()),
         fingerprint: fingerprint.clone(),
         public_key: pub_key_str,
         title: "pull-only clone key".to_string(),

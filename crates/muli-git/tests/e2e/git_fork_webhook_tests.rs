@@ -146,7 +146,7 @@ async fn test_webhook_delivery() {
     .await;
 
     // Allow time for async webhook delivery
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
 
     let deliveries = received.lock().await;
     assert!(

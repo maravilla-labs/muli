@@ -157,6 +157,7 @@ pub async fn receive_pack(
         let webhook_store = state.webhook_store.clone();
         let http_client = state.http_client.clone();
         let semaphore = state.webhook_semaphore.clone();
+        let allow_localhost = state.allow_localhost_webhooks;
         let tenant_id = tenant.tenant_id.clone();
         let repo_id = repo.id.clone();
         let repo_name_clone = repo_name.clone();
@@ -176,6 +177,7 @@ pub async fn receive_pack(
                             "repository": repo_name_clone,
                         }),
                     },
+                    allow_localhost,
                 )
                 .await;
             } else {
@@ -198,6 +200,7 @@ pub async fn receive_pack(
                                 "after": new_sha,
                             }),
                         },
+                        allow_localhost,
                     )
                     .await;
                 }

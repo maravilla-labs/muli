@@ -75,6 +75,15 @@ CREATE TABLE IF NOT EXISTS tenants (
   name      TEXT NOT NULL,
   full_json TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS ssh_key_fingerprints (
+  ssh_key_id TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  tenant_id TEXT NOT NULL,
+  PRIMARY KEY (ssh_key_id)
+);
+CREATE INDEX IF NOT EXISTS ssh_key_fp_by_fingerprint ON ssh_key_fingerprints(fingerprint);
+CREATE INDEX IF NOT EXISTS ssh_key_fp_by_tenant ON ssh_key_fingerprints(tenant_id);
 ";
 
 // --- Per-tenant DB DDL ---
@@ -278,6 +287,43 @@ impl SqliteStoreFactory {
         })
         .await
         .map_err(|e| MuliError::Storage(format!("init tenant db {tenant_id}: {e}")))?;
+
+        // Backfill SSH key fingerprints into global index (one-time per tenant).
+        let global = self.global_conn.clone();
+        let tid = tenant_id.to_string();
+        let tenant_keys: Vec<(String, String)> = conn
+            .call(move |c| {
+                let mut stmt = c.prepare("SELECT id, fingerprint FROM ssh_keys")?;
+                let rows = stmt.query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?;
+                Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            })
+            .await
+            .map_err(|e| MuliError::Storage(format!("read ssh keys for backfill: {e}")))?;
+
+        if !tenant_keys.is_empty() {
+            let tid2 = tid.clone();
+            global
+                .call(move |c| {
+                    let count: i64 = c.query_row(
+                        "SELECT COUNT(*) FROM ssh_key_fingerprints WHERE tenant_id = ?1",
+                        rusqlite::params![tid2],
+                        |row| row.get(0),
+                    )?;
+                    if count == 0 {
+                        for (key_id, fingerprint) in &tenant_keys {
+                            c.execute(
+                                "INSERT OR IGNORE INTO ssh_key_fingerprints (fingerprint, tenant_id, ssh_key_id) VALUES (?1, ?2, ?3)",
+                                rusqlite::params![fingerprint, tid2, key_id],
+                            )?;
+                        }
+                    }
+                    Ok(())
+                })
+                .await
+                .map_err(|e| MuliError::Storage(format!("backfill ssh fingerprints: {e}")))?;
+        }
 
         let conn = Arc::new(conn);
         // Another racing caller may have inserted first; that's fine.

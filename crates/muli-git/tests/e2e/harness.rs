@@ -11,12 +11,13 @@ use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
 use muli_core::git::{GitPermission, GitToken};
-use muli_core::traits::{GitTokenStore, SshKeyStore};
+use muli_core::traits::{GitTokenStore, OrgMemberStore, OrgStore, SshKeyStore};
 use muli_git::auth::{hash_token, token_prefix};
 
 use muli_git::storage::FilesystemStorage;
 use muli_git::tenant::TenantConfig;
 use muli_git::{GitAuth, GitRouterConfig, SshServer, git_router};
+use muli_store::memory::{MemoryOrgMemberStore, MemoryOrgStore};
 use muli_store::sqlite::{
     SqliteGitTokenStore, SqlitePrCommentStore, SqlitePullRequestStore, SqliteRepositoryStore,
     SqliteSshKeyStore, SqliteStoreFactory, SqliteWebhookStore,
@@ -66,7 +67,7 @@ pub async fn start_server() -> TestServer {
 
     // Seed a token that has all permissions
     let token_store: Arc<dyn GitTokenStore> = Arc::new(SqliteGitTokenStore::new(factory.clone()));
-    let git_token = GitToken::new(
+    let mut git_token = GitToken::new(
         TENANT.into(),
         hash_token(TEST_TOKEN),
         token_prefix(TEST_TOKEN),
@@ -78,6 +79,7 @@ pub async fn start_server() -> TestServer {
         "e2e test token".into(),
         None,
     );
+    git_token.user_id = Some("user-1".to_string());
     token_store
         .create_token(&git_token)
         .await
@@ -292,12 +294,18 @@ pub async fn start_server_with_ssh() -> TestServerWithSsh {
     // Generate a temporary host key for this test run
     let host_key = russh_keys::key::KeyPair::generate_ed25519();
 
+    let org_store: Arc<dyn OrgStore> = Arc::new(MemoryOrgStore::new());
+    let org_member_store: Arc<dyn OrgMemberStore> = Arc::new(MemoryOrgMemberStore::new());
+
     let ssh_server = SshServer {
         ssh_key_store: srv.ssh_key_store.clone(),
         // Share the same repo_store and storage as the HTTP server so that
         // repos created via the REST API are visible to the SSH server.
         repo_store: srv.repo_store.clone(),
         storage: srv.storage.clone(),
+        default_tenant_id: Some(TENANT.to_string()),
+        org_store,
+        org_member_store,
     };
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
