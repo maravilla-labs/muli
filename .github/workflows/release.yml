@@ -59,19 +59,10 @@ jobs:
       - name: Add Rust target
         run: rustup target add ${{ matrix.rust_target }}
 
-      - name: Install protoc (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
-
-      - name: Install protoc (macOS)
-        if: runner.os == 'macOS'
-        run: brew install protobuf
-
-      - name: Install protoc (Windows)
-        if: runner.os == 'Windows'
-        run: choco install protobuf -y
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
