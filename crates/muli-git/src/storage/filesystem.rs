@@ -53,7 +53,7 @@ impl FilesystemStorage {
         })?;
 
         let status = tokio::process::Command::new("git")
-            .args(["init", "--bare", path_str])
+            .args(["init", "--bare", "-b", "main", path_str])
             .status()
             .await
             .map_err(GitStorageError::Io)?;

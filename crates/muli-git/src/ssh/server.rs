@@ -15,7 +15,7 @@ use russh::{Channel, ChannelId, CryptoVec};
 use russh_keys::key::{KeyPair, PublicKey};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use muli_core::git::{GitPermission, HasPermissions, RepoAccessVerdict, check_repo_access};
@@ -28,6 +28,9 @@ use crate::storage::FilesystemStorage;
 
 /// Maximum time to wait for a git SSH subprocess to complete (10 minutes).
 const GIT_SSH_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Maximum number of concurrent SSH sessions.
+const MAX_SSH_SESSIONS: usize = 128;
 
 /// Configuration used when starting the SSH server.
 pub struct SshConfig {
@@ -61,6 +64,8 @@ impl SshServer {
             ..Default::default()
         });
 
+        let semaphore = Arc::new(Semaphore::new(MAX_SSH_SESSIONS));
+
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => break,
@@ -68,8 +73,18 @@ impl SshServer {
                     let (stream, addr) = match result {
                         Ok(pair) => pair,
                         Err(e) => {
-                            tracing::error!(error = %e, "SSH accept error");
-                            break;
+                            tracing::error!(error = %e, "SSH accept error, retrying");
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            continue;
+                        }
+                    };
+
+                    let permit = match semaphore.clone().try_acquire_owned() {
+                        Ok(p) => p,
+                        Err(_) => {
+                            tracing::warn!(%addr, "SSH connection rejected: max sessions ({MAX_SSH_SESSIONS}) reached");
+                            drop(stream);
+                            continue;
                         }
                     };
 
@@ -89,6 +104,7 @@ impl SshServer {
 
                     let config = config.clone();
                     tokio::spawn(async move {
+                        let _permit = permit; // held until session ends
                         tracing::debug!(%addr, "new SSH connection");
                         if let Err(e) = russh::server::run_stream(config, stream, handler).await {
                             tracing::debug!(%addr, error = %e, "SSH session ended");

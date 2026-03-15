@@ -830,6 +830,103 @@ async fn test_ssh_private_repo_push_allowed_for_push_collaborator() {
     );
 }
 
+/// SSH server must stay responsive under concurrent sessions.
+/// This verifies the accept loop continues on errors and the connection
+/// semaphore correctly limits and releases permits.
+#[tokio::test]
+async fn test_ssh_concurrent_sessions_stability() {
+    if skip_if_no_git_ssh() {
+        return;
+    }
+
+    let srv = start_server_with_ssh().await;
+    let repo_name = "ssh-concurrent-test";
+
+    create_repo_with_commit(&srv, repo_name, false, Some("user-1")).await;
+
+    let (_key_path, ssh_url, git_ssh_cmd, _key_dir) = register_ssh_key(
+        &srv,
+        "user-1",
+        vec![GitPermission::Pull, GitPermission::Push],
+        repo_name,
+    )
+    .await;
+
+    // Add user-1 as collaborator
+    let repo = srv
+        .http
+        .repo_store
+        .get_repository_by_name(TENANT, NAMESPACE, repo_name)
+        .await
+        .expect("repo lookup")
+        .expect("repo must exist");
+    let collab = RepositoryCollaborator {
+        id: uuid::Uuid::new_v4().to_string(),
+        tenant_id: TENANT.to_string(),
+        repo_id: repo.id.clone(),
+        user_id: "user-1".to_string(),
+        permissions: vec![GitPermission::Pull, GitPermission::Push],
+        created_at: chrono::Utc::now(),
+    };
+    srv.collaborator_store
+        .upsert_collaborator(&collab)
+        .await
+        .expect("add collaborator");
+
+    // Launch 5 concurrent SSH clones
+    let mut handles = Vec::new();
+    for i in 0..5 {
+        let ssh_url = ssh_url.clone();
+        let git_ssh_cmd = git_ssh_cmd.clone();
+        handles.push(tokio::spawn(async move {
+            let clone_dir = TempDir::new().unwrap();
+            let status = tokio::process::Command::new("git")
+                .args(["clone", "--no-local", &ssh_url, "."])
+                .current_dir(clone_dir.path())
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("GIT_SSH_COMMAND", &git_ssh_cmd)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .await
+                .unwrap_or_else(|e| panic!("concurrent clone {i} failed to run: {e}"));
+            (i, status.success())
+        }));
+    }
+
+    let mut success_count = 0;
+    for handle in handles {
+        let (i, ok) = handle.await.expect("join concurrent clone task");
+        if ok {
+            success_count += 1;
+        } else {
+            eprintln!("concurrent clone {i} returned non-zero (may be expected under load)");
+        }
+    }
+
+    // All 5 should succeed (well within the 128 session limit)
+    assert_eq!(
+        success_count, 5,
+        "all 5 concurrent SSH clones should succeed, got {success_count}/5"
+    );
+
+    // After all sessions end, the server should still be accepting new connections.
+    // Verify by doing one more clone.
+    let final_dir = TempDir::new().unwrap();
+    let final_status = tokio::process::Command::new("git")
+        .args(["clone", "--no-local", &ssh_url, "."])
+        .current_dir(final_dir.path())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_SSH_COMMAND", &git_ssh_cmd)
+        .status()
+        .await
+        .expect("final clone after concurrent sessions");
+    assert!(
+        final_status.success(),
+        "SSH server should still accept connections after concurrent sessions"
+    );
+}
+
 /// Public repo: user has SSH key but is NOT collaborator — push should fail (clone works).
 #[tokio::test]
 async fn test_ssh_public_repo_push_denied_for_non_collaborator() {

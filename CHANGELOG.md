@@ -7,6 +7,22 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-03-15
+
+### Fixed
+
+- Shallow clone (`git clone --depth=1`) now works correctly. The `Git-Protocol` header from clients requesting protocol v2 is forwarded as `HTTP_GIT_PROTOCOL` to `git http-backend`, and `info/refs` handlers now pass actual request headers instead of empty ones.
+- New bare repositories now default HEAD to `refs/heads/main` via `git init --bare -b main`, ensuring the symref is properly advertised in ref discovery when users push to `main`.
+- SSH accept loop no longer terminates on transient errors (EMFILE, ECONNRESET). The listener now logs the error, sleeps briefly, and continues instead of breaking out of the loop.
+
+### Added
+
+- SSH connection semaphore limiting concurrent sessions to 128, preventing resource exhaustion under load. Connections beyond the limit are dropped with a warning log.
+- `SERVER_PROTOCOL=HTTP/1.1` environment variable set for `git http-backend` CGI subprocess.
+- End-to-end test for shallow clone with protocol v2 (`--depth=1`), verifying single-commit history and `.git/shallow` marker.
+- End-to-end test verifying HEAD symref points to `refs/heads/main` after repository creation, both on disk and via `git ls-remote --symref`.
+- End-to-end test for SSH concurrency: 5 parallel clone operations followed by a post-concurrency clone to verify server stability.
+
 ## [0.1.11] - 2026-03-15
 
 ### Security

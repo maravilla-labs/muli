@@ -4,6 +4,7 @@
 use super::harness::*;
 use base64::Engine as _;
 use serde_json::{Value, json};
+use std::path::Path;
 use tempfile::TempDir;
 
 #[tokio::test]
@@ -245,4 +246,134 @@ async fn test_git_blob_content() {
         .decode(encoded.trim())
         .unwrap();
     assert_eq!(String::from_utf8(decoded).unwrap(), "hello from muli\n");
+}
+
+/// Shallow clone (`--depth=1`) must succeed. This requires Git protocol v2
+/// support, which needs the `Git-Protocol` header forwarded as
+/// `HTTP_GIT_PROTOCOL` to `git http-backend`.
+#[tokio::test]
+async fn test_git_shallow_clone_depth_1() {
+    if !git_available() {
+        eprintln!("SKIP test_git_shallow_clone_depth_1: git binary not found");
+        return;
+    }
+
+    let srv = start_server().await;
+    let repo_name = "shallow-test";
+
+    // Create repo and push multiple commits so we can verify depth=1
+    let (status, _) = api_post(
+        &srv,
+        "/api/v1/repos",
+        json!({"namespace": NAMESPACE, "name": repo_name, "description": "", "is_private": false}),
+    )
+    .await;
+    assert_eq!(status, 201);
+
+    let url = git_url(&srv, NAMESPACE, repo_name);
+    let work_dir = TempDir::new().unwrap();
+    git(work_dir.path(), &["clone", "--no-local", &url, "."]).await;
+    git(work_dir.path(), &["config", "user.email", "ci@muli.test"]).await;
+    git(work_dir.path(), &["config", "user.name", "Muli CI"]).await;
+
+    // Create 3 commits
+    for i in 1..=3 {
+        std::fs::write(
+            work_dir.path().join(format!("file{i}.txt")),
+            format!("content {i}\n"),
+        )
+        .unwrap();
+        git(work_dir.path(), &["add", "."]).await;
+        git(work_dir.path(), &["commit", "-m", &format!("commit {i}")]).await;
+    }
+    git(
+        work_dir.path(),
+        &["push", "--set-upstream", "origin", "main"],
+    )
+    .await;
+
+    // Shallow clone with --depth=1 using protocol v2
+    let shallow_dir = TempDir::new().unwrap();
+    git(
+        shallow_dir.path(),
+        &[
+            "-c",
+            "protocol.version=2",
+            "clone",
+            "--no-local",
+            "--depth=1",
+            &url,
+            ".",
+        ],
+    )
+    .await;
+
+    // Verify: shallow clone should have exactly 1 commit in history
+    let log_output = git_output(shallow_dir.path(), &["rev-list", "--count", "HEAD"]).await;
+    assert_eq!(
+        log_output.trim(),
+        "1",
+        "shallow clone should have exactly 1 commit, got {}",
+        log_output.trim()
+    );
+
+    // Verify the .git/shallow file exists (indicator of a shallow clone)
+    assert!(
+        shallow_dir.path().join(".git/shallow").exists(),
+        ".git/shallow should exist in a shallow clone"
+    );
+}
+
+/// After `init_repo`, HEAD must point to `refs/heads/main` (not master).
+/// This ensures the symref is properly advertised in ref discovery.
+#[tokio::test]
+async fn test_head_symref_points_to_main() {
+    if !git_available() {
+        eprintln!("SKIP test_head_symref_points_to_main: git binary not found");
+        return;
+    }
+
+    let srv = start_server().await;
+    let repo_name = "head-symref-test";
+
+    // Create a new repo (triggers init_repo internally)
+    let (status, _) = api_post(
+        &srv,
+        "/api/v1/repos",
+        json!({"namespace": NAMESPACE, "name": repo_name, "description": "", "is_private": false}),
+    )
+    .await;
+    assert_eq!(status, 201);
+
+    // Read the HEAD file from the bare repo on disk
+    let repo_path = srv.storage.repo_path(TENANT, NAMESPACE, repo_name);
+    let head_content = std::fs::read_to_string(repo_path.join("HEAD")).expect("read HEAD file");
+    assert_eq!(
+        head_content.trim(),
+        "ref: refs/heads/main",
+        "HEAD should point to refs/heads/main, got: {}",
+        head_content.trim()
+    );
+
+    // Push a commit so ls-remote can advertise the symref
+    let url = git_url(&srv, NAMESPACE, repo_name);
+    let work_dir = TempDir::new().unwrap();
+    git(work_dir.path(), &["clone", "--no-local", &url, "."]).await;
+    git(work_dir.path(), &["config", "user.email", "ci@muli.test"]).await;
+    git(work_dir.path(), &["config", "user.name", "Muli CI"]).await;
+    std::fs::write(work_dir.path().join("README.md"), "# symref test\n").unwrap();
+    git(work_dir.path(), &["add", "README.md"]).await;
+    git(work_dir.path(), &["commit", "-m", "initial commit"]).await;
+    git(
+        work_dir.path(),
+        &["push", "--set-upstream", "origin", "main"],
+    )
+    .await;
+
+    // Verify via git ls-remote that symref HEAD -> refs/heads/main is advertised
+    let ls_output = git_output(Path::new("/tmp"), &["ls-remote", "--symref", &url]).await;
+    assert!(
+        ls_output.contains("ref: refs/heads/main"),
+        "ls-remote should advertise symref HEAD -> refs/heads/main, got:\n{ls_output}"
+    );
 }

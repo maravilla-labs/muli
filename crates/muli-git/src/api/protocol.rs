@@ -69,6 +69,7 @@ pub async fn info_refs(
     Extension(tenant): Extension<TenantContext>,
     Path((namespace, raw_repo)): Path<(String, String)>,
     Query(query): Query<InfoRefsQuery>,
+    headers: axum::http::HeaderMap,
 ) -> Response {
     let service = query.service.as_deref().unwrap_or("").to_string();
 
@@ -82,11 +83,11 @@ pub async fn info_refs(
         .repo_path(&tenant.tenant_id, &namespace, repo_name);
 
     if service.contains("git-receive-pack") {
-        crate::protocol::receive_pack::info_refs_receive(path, &tenant.tenant_id)
+        crate::protocol::receive_pack::info_refs_receive(path, &headers, &tenant.tenant_id)
             .await
             .into_response()
     } else {
-        crate::protocol::upload_pack::info_refs_upload(path)
+        crate::protocol::upload_pack::info_refs_upload(path, &headers)
             .await
             .into_response()
     }
