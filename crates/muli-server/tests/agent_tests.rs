@@ -135,8 +135,15 @@ async fn test_report_job_result_wrong_agent() {
 async fn test_stream_job_logs_from_agent() {
     let server = TestGrpcServer::start().await;
     let mut client = agent_client(server.port).await;
+    let mut job_cl = job_client(server.port).await;
 
-    let job_id = "test-job-1".to_string();
+    // Create a real job so the server can find it
+    let job_id = job_cl
+        .submit_job(with_tenant(test_submit_request(), "test-tenant"))
+        .await
+        .unwrap()
+        .into_inner()
+        .job_id;
 
     let entries = vec![
         LogEntry {
@@ -181,8 +188,15 @@ async fn test_agent_logs_readable_via_get_logs() {
     let server = TestGrpcServer::start().await;
     let mut agent_cl = agent_client(server.port).await;
     let mut log_cl = log_client(server.port).await;
+    let mut job_cl = job_client(server.port).await;
 
-    let job_id = "log-readable-job".to_string();
+    // Create a real job so the server can find it
+    let job_id = job_cl
+        .submit_job(with_tenant(test_submit_request(), "test-tenant"))
+        .await
+        .unwrap()
+        .into_inner()
+        .job_id;
 
     let entries: Vec<LogEntry> = (0u64..5)
         .map(|i| LogEntry {
@@ -219,8 +233,15 @@ async fn test_stream_logs_receives_live_agent_logs_and_closes() {
     let server = TestGrpcServer::start().await;
     let mut agent_cl = agent_client(server.port).await;
     let mut log_cl = log_client(server.port).await;
+    let mut job_cl = job_client(server.port).await;
 
-    let job_id = "live-log-job".to_string();
+    // Create a real job so the server can find it
+    let job_id = job_cl
+        .submit_job(with_tenant(test_submit_request(), "test-tenant"))
+        .await
+        .unwrap()
+        .into_inner()
+        .job_id;
 
     let (entry_tx, entry_rx) = tokio::sync::mpsc::channel::<LogEntry>(16);
     let stream = tokio_stream::wrappers::ReceiverStream::new(entry_rx);

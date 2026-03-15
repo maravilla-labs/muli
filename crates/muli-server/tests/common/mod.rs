@@ -93,7 +93,7 @@ impl TestGrpcServer {
             job_log_store: job_log_store.clone(),
         };
 
-        let auth = AuthInterceptor::new(api_key, None);
+        let auth = AuthInterceptor::new(api_key, Some("test-tenant".to_string()));
 
         let cancel_clone = cancel.clone();
         tokio::spawn(async move {
@@ -235,11 +235,16 @@ pub async fn execute_and_report(
 }
 
 /// Run a job end-to-end (used as scheduler callback).
+///
+/// Mirrors the production `execute_job_inner` flow: creates a log collector,
+/// executes the job, drains and persists logs, then removes the collector so
+/// `LogService::get_logs` sees the job as complete.
 pub async fn run_job(
     job_id: String,
     store: Arc<dyn JobStore>,
     executor: Arc<muli_engine::executor::DockerExecutor>,
     log_collectors: Arc<DashMap<String, Arc<LogCollector>>>,
+    job_log_store: Arc<dyn JobLogStore>,
 ) {
     let job = match store.get_job(&job_id).await {
         Ok(Some(j)) => j,
@@ -257,7 +262,7 @@ pub async fn run_job(
         .update_state(&job_id, JobState::Scheduled, JobState::Running)
         .await;
 
-    match executor.execute_job(&job, log_collector).await {
+    match executor.execute_job(&job, log_collector.clone()).await {
         Ok(result) => {
             let final_state = if result.exit_code == Some(0) {
                 JobState::Succeeded
@@ -287,4 +292,25 @@ pub async fn run_job(
             let _ = store.update_job(&updated).await;
         }
     }
+
+    // Persist logs before removing collector (mirrors production flow)
+    let lines = log_collector.drain().await;
+    if !lines.is_empty() {
+        let stored: Vec<_> = lines
+            .into_iter()
+            .map(|l| muli_core::job::model::StoredLogLine {
+                sequence: l.sequence,
+                timestamp: l.timestamp,
+                stream: match l.stream {
+                    muli_engine::docker::logs::LogStream::Stdout => "stdout".to_string(),
+                    muli_engine::docker::logs::LogStream::Stderr => "stderr".to_string(),
+                },
+                message: l.message,
+            })
+            .collect();
+        let _ = job_log_store.append_logs(&job_id, stored).await;
+    }
+
+    // Remove from live map so LogService sees the job as complete
+    log_collectors.remove(&job_id);
 }

@@ -18,8 +18,10 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use muli_core::git::{GitPermission, HasPermissions};
-use muli_core::traits::{OrgMemberStore, OrgStore, RepositoryStore, SshKeyStore};
+use muli_core::git::{GitPermission, HasPermissions, RepoAccessVerdict, check_repo_access};
+use muli_core::traits::{
+    CollaboratorStore, OrgMemberStore, OrgStore, RepositoryStore, SshKeyStore,
+};
 
 use crate::ssh::auth::{parse_git_ssh_command, parse_repo_path};
 use crate::storage::FilesystemStorage;
@@ -41,6 +43,7 @@ pub struct SshServer {
     pub default_tenant_id: Option<String>,
     pub org_store: Arc<dyn OrgStore>,
     pub org_member_store: Arc<dyn OrgMemberStore>,
+    pub collaborator_store: Arc<dyn CollaboratorStore>,
 }
 
 impl SshServer {
@@ -77,6 +80,7 @@ impl SshServer {
                         default_tenant_id: self.default_tenant_id.clone(),
                         org_store: self.org_store.clone(),
                         org_member_store: self.org_member_store.clone(),
+                        collaborator_store: self.collaborator_store.clone(),
                         authenticated_fingerprint: None,
                         authenticated_user_id: None,
                         authenticated_key_tenant_id: None,
@@ -148,6 +152,7 @@ struct SshSessionHandler {
     default_tenant_id: Option<String>,
     org_store: Arc<dyn OrgStore>,
     org_member_store: Arc<dyn OrgMemberStore>,
+    collaborator_store: Arc<dyn CollaboratorStore>,
     authenticated_fingerprint: Option<String>,
     authenticated_user_id: Option<String>,
     /// The tenant_id from the SSH key record — tells us which tenant DB the key lives in.
@@ -337,29 +342,25 @@ impl Handler for SshSessionHandler {
                 .get_org_by_handle(&tenant_id, &namespace)
                 .await
             {
-                Ok(Some(org)) => {
-                    match self
-                        .org_member_store
-                        .get_member(&org.id, &user_id)
-                        .await
-                    {
-                        Ok(Some(_)) => {
-                            tracing::debug!(%user_id, org_id = %org.id, "org membership verified for SSH");
-                        }
-                        Ok(None) => {
-                            tracing::info!(%user_id, org = %namespace, "SSH rejected: not an org member");
-                            session.channel_failure(channel);
-                            return Ok(());
-                        }
-                        Err(e) => {
-                            tracing::error!(error = %e, "org member store error");
-                            session.channel_failure(channel);
-                            return Ok(());
-                        }
+                Ok(Some(org)) => match self.org_member_store.get_member(&org.id, &user_id).await {
+                    Ok(Some(_)) => {
+                        tracing::debug!(%user_id, org_id = %org.id, "org membership verified for SSH");
                     }
-                }
+                    Ok(None) => {
+                        tracing::info!(%user_id, org = %namespace, "SSH rejected: not an org member");
+                        session.channel_failure(channel);
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "org member store error");
+                        session.channel_failure(channel);
+                        return Ok(());
+                    }
+                },
                 Ok(None) => {
-                    tracing::debug!(org = %namespace, %tenant_id, "org not found – skipping membership check");
+                    tracing::info!(org = %namespace, %tenant_id, "SSH rejected: org not found in cross-tenant check");
+                    session.channel_failure(channel);
+                    return Ok(());
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "org store error");
@@ -374,6 +375,50 @@ impl Handler for SshSessionHandler {
             tracing::info!("SSH push rejected: key lacks Push permission");
             session.channel_failure(channel);
             return Ok(());
+        }
+
+        // 8. Per-repo collaborator/owner check.
+        //    - Private repos: owner or collaborator required for any access
+        //    - Public repos: anyone can read, but only owner or collaborator can push
+        let is_push = git_cmd == "git-receive-pack";
+        let required = if is_push {
+            GitPermission::Push
+        } else {
+            GitPermission::Pull
+        };
+        match self
+            .repo_store
+            .get_repository_by_name(&tenant_id, &namespace, &repo_name)
+            .await
+        {
+            Ok(Some(repo)) => {
+                let verdict = check_repo_access(
+                    &repo,
+                    Some(&user_id),
+                    required,
+                    self.collaborator_store.as_ref(),
+                )
+                .await;
+                if let RepoAccessVerdict::Denied { .. } = verdict {
+                    tracing::info!(
+                        %user_id, %namespace, %repo_name, %is_push,
+                        is_private = %repo.is_private,
+                        "SSH rejected: not owner or collaborator"
+                    );
+                    session.channel_failure(channel);
+                    return Ok(());
+                }
+            }
+            Ok(None) => {
+                tracing::debug!(%namespace, %repo_name, "repo not found during ACL check");
+                session.channel_failure(channel);
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "repo store error during SSH ACL check");
+                session.channel_failure(channel);
+                return Ok(());
+            }
         }
 
         let repo_path = self.storage.repo_path(&tenant_id, &namespace, &repo_name);

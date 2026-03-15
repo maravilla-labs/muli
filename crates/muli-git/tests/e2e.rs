@@ -15,6 +15,8 @@
 //! - `pr_error_tests`        — PR error cases (conflict, invalid action, missing fields)
 //! - `ssh_tests`             — SSH clone and push
 
+#[path = "e2e/acl_tests.rs"]
+mod acl_tests;
 #[path = "e2e/api_tests.rs"]
 mod api_tests;
 #[path = "e2e/git_branch_tag_tests.rs"]

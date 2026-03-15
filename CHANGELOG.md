@@ -7,6 +7,30 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-03-15
+
+### Security
+
+- SSH per-repo ACL enforcement: SSH push and pull operations now verify the user is the repository owner or a collaborator with the required permission. Previously, any user with a valid SSH key could push to any repository.
+- Org-not-found during SSH cross-tenant access now correctly rejects the request instead of silently skipping the membership check.
+- HTTP push to public repositories now requires the user to be an owner or collaborator, matching the SSH path behavior.
+
+### Added
+
+- Shared `check_repo_access()` function in `muli-core` used by both HTTP and SSH auth paths, eliminating duplicated ACL logic and preventing future drift.
+- `RepoAccessVerdict` enum for clear, testable access control decisions.
+- `CollaboratorStore` wiring for SSH server, enabling per-repo collaborator checks.
+- `MemoryCollaboratorStore` in-memory implementation for testing.
+- Comprehensive unit tests for `check_repo_access` covering all ACL branches (15 tests).
+- End-to-end SSH security tests: private repo clone/push denied for non-collaborators, push denied for pull-only collaborators, public repo push denied for non-collaborators (5 tests).
+- End-to-end HTTP ACL tests: anonymous public read, push denied for non-collaborators, private repo access control, owner-based access (5 tests).
+
+### Fixed
+
+- gRPC agent log streaming tests now include tenant metadata, fixing "missing x-tenant-id" failures introduced by tenant enforcement.
+- gRPC test harness `run_job` helper now persists logs and removes the log collector after job completion, matching production behavior and fixing `is_complete` flag assertions.
+- Docker log streaming test assertions relaxed to not require non-empty log output from containers that produce no stdout.
+
 ## [0.1.10] - 2026-03-15
 
 ### Fixed

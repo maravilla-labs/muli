@@ -4,6 +4,7 @@
 //! In-memory storage backend for testing and development.
 
 pub mod agent_store;
+pub mod git_collaborator_store;
 pub mod git_repo_store;
 pub mod git_ssh_store;
 pub mod git_token_store;
@@ -18,6 +19,7 @@ pub mod tenant_quota_store;
 pub mod user_store;
 
 pub use agent_store::MemoryAgentStore;
+pub use git_collaborator_store::MemoryCollaboratorStore;
 pub use git_repo_store::MemoryRepositoryStore;
 pub use git_ssh_store::MemorySshKeyStore;
 pub use git_token_store::MemoryGitTokenStore;

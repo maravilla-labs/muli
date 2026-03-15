@@ -46,6 +46,7 @@ async fn test_embedded_execution_roundtrip() {
     let sched = server.scheduler.clone();
     let store = server.job_store.clone();
     let log_collectors = server.log_collectors.clone();
+    let job_log_store = server.job_log_store.clone();
     let cancel_clone = cancel.clone();
     let executor = dummy_executor().await;
 
@@ -55,8 +56,9 @@ async fn test_embedded_execution_roundtrip() {
                 let store = store.clone();
                 let executor = executor.clone();
                 let log_collectors = log_collectors.clone();
+                let job_log_store = job_log_store.clone();
                 async move {
-                    run_job(jid, store, executor, log_collectors).await;
+                    run_job(jid, store, executor, log_collectors, job_log_store).await;
                 }
             })
             .await;
@@ -94,6 +96,7 @@ async fn test_failed_job_bad_image() {
     let sched = server.scheduler.clone();
     let store = server.job_store.clone();
     let log_collectors = server.log_collectors.clone();
+    let job_log_store = server.job_log_store.clone();
     let cancel_clone = cancel.clone();
     let executor = dummy_executor().await;
 
@@ -103,8 +106,9 @@ async fn test_failed_job_bad_image() {
                 let store = store.clone();
                 let executor = executor.clone();
                 let log_collectors = log_collectors.clone();
+                let job_log_store = job_log_store.clone();
                 async move {
-                    run_job(jid, store, executor, log_collectors).await;
+                    run_job(jid, store, executor, log_collectors, job_log_store).await;
                 }
             })
             .await;

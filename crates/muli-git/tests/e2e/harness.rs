@@ -11,13 +11,13 @@ use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
 use muli_core::git::{GitPermission, GitToken};
-use muli_core::traits::{GitTokenStore, OrgMemberStore, OrgStore, SshKeyStore};
+use muli_core::traits::{CollaboratorStore, GitTokenStore, OrgMemberStore, OrgStore, SshKeyStore};
 use muli_git::auth::{hash_token, token_prefix};
 
 use muli_git::storage::FilesystemStorage;
 use muli_git::tenant::TenantConfig;
 use muli_git::{GitAuth, GitRouterConfig, SshServer, git_router};
-use muli_store::memory::{MemoryOrgMemberStore, MemoryOrgStore};
+use muli_store::memory::{MemoryCollaboratorStore, MemoryOrgMemberStore, MemoryOrgStore};
 use muli_store::sqlite::{
     SqliteGitTokenStore, SqlitePrCommentStore, SqlitePullRequestStore, SqliteRepositoryStore,
     SqliteSshKeyStore, SqliteStoreFactory, SqliteWebhookStore,
@@ -43,6 +43,9 @@ pub struct TestServer {
     pub repo_store: Arc<dyn muli_core::traits::RepositoryStore>,
     /// Filesystem storage reference for the SSH server to share.
     pub storage: Arc<FilesystemStorage>,
+    /// Token store for creating additional tokens in tests.
+    #[allow(dead_code)]
+    pub token_store: Arc<dyn GitTokenStore>,
     pub cancel: CancellationToken,
 }
 
@@ -101,7 +104,7 @@ pub async fn start_server() -> TestServer {
     let app = git_router(GitRouterConfig {
         storage: storage.clone(),
         repo_store: repo_store.clone(),
-        token_store,
+        token_store: token_store.clone(),
         webhook_store: webhook_store as Arc<dyn muli_core::traits::WebhookStore>,
         ssh_key_store: ssh_key_store.clone(),
         pr_store,
@@ -134,6 +137,7 @@ pub async fn start_server() -> TestServer {
         ssh_key_store,
         repo_store,
         storage,
+        token_store,
         cancel,
     }
 }
@@ -286,6 +290,7 @@ pub fn git_url(srv: &TestServer, namespace: &str, repo: &str) -> String {
 pub struct TestServerWithSsh {
     pub http: TestServer,
     pub ssh_addr: SocketAddr,
+    pub collaborator_store: Arc<dyn CollaboratorStore>,
 }
 
 pub async fn start_server_with_ssh() -> TestServerWithSsh {
@@ -296,6 +301,7 @@ pub async fn start_server_with_ssh() -> TestServerWithSsh {
 
     let org_store: Arc<dyn OrgStore> = Arc::new(MemoryOrgStore::new());
     let org_member_store: Arc<dyn OrgMemberStore> = Arc::new(MemoryOrgMemberStore::new());
+    let collaborator_store: Arc<dyn CollaboratorStore> = Arc::new(MemoryCollaboratorStore::new());
 
     let ssh_server = SshServer {
         ssh_key_store: srv.ssh_key_store.clone(),
@@ -306,6 +312,7 @@ pub async fn start_server_with_ssh() -> TestServerWithSsh {
         default_tenant_id: Some(TENANT.to_string()),
         org_store,
         org_member_store,
+        collaborator_store: collaborator_store.clone(),
     };
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -320,7 +327,179 @@ pub async fn start_server_with_ssh() -> TestServerWithSsh {
     TestServerWithSsh {
         http: srv,
         ssh_addr,
+        collaborator_store,
     }
+}
+
+// ---------------------------------------------------------------------------
+// HTTP server with ACL harness
+// ---------------------------------------------------------------------------
+
+/// A test server with per-repo ACL (repo_store + collaborator_store wired into
+/// GitAuth). Use this for HTTP-level ACL tests.
+pub struct TestServerWithAcl {
+    pub http: TestServer,
+    pub collaborator_store: Arc<dyn CollaboratorStore>,
+}
+
+/// Start an HTTP server with per-repo ACL enforcement in GitAuth.
+///
+/// Unlike `start_server()`, this wires `repo_store` and `collaborator_store`
+/// into `GitAuth` so that `check_repo_access` is actually invoked for HTTP
+/// requests. It also creates a second token for "user-2" (non-collaborator).
+///
+/// `anonymous_pull` controls whether unauthenticated reads are attempted
+/// before returning a 401 challenge.  For `git clone` tests on private repos
+/// this MUST be `false`, otherwise git never sends credentials.
+pub async fn start_server_with_acl() -> TestServerWithAcl {
+    start_server_with_acl_inner(false).await
+}
+
+/// Same as `start_server_with_acl` but with `anonymous_pull` enabled.
+/// Use this only for tests that verify anonymous (no-auth) HTTP reads.
+pub async fn start_server_with_acl_anonymous() -> TestServerWithAcl {
+    start_server_with_acl_inner(true).await
+}
+
+async fn start_server_with_acl_inner(anonymous_pull: bool) -> TestServerWithAcl {
+    let git_root = TempDir::new().expect("tempdir");
+    let storage = Arc::new(
+        FilesystemStorage::new(git_root.path().to_str().unwrap())
+            .await
+            .expect("storage"),
+    );
+
+    let store_dir = TempDir::new().expect("store tempdir");
+    let factory = SqliteStoreFactory::new(store_dir.path())
+        .await
+        .expect("sqlite factory");
+
+    // Seed a token for user-1 (all permissions)
+    let token_store: Arc<dyn GitTokenStore> = Arc::new(SqliteGitTokenStore::new(factory.clone()));
+    let mut git_token = GitToken::new(
+        TENANT.into(),
+        hash_token(TEST_TOKEN),
+        token_prefix(TEST_TOKEN),
+        vec![
+            GitPermission::Pull,
+            GitPermission::Push,
+            GitPermission::Admin,
+        ],
+        "e2e test token".into(),
+        None,
+    );
+    git_token.user_id = Some("user-1".to_string());
+    token_store
+        .create_token(&git_token)
+        .await
+        .expect("seed token user-1");
+
+    // Seed a second token for user-2 (all permissions at token level, but ACL
+    // will restrict per-repo access)
+    let user2_token_plain = "test-token-e2e-user2-xyz";
+    let mut git_token2 = GitToken::new(
+        TENANT.into(),
+        hash_token(user2_token_plain),
+        token_prefix(user2_token_plain),
+        vec![
+            GitPermission::Pull,
+            GitPermission::Push,
+            GitPermission::Admin,
+        ],
+        "e2e test token user-2".into(),
+        None,
+    );
+    git_token2.user_id = Some("user-2".to_string());
+    token_store
+        .create_token(&git_token2)
+        .await
+        .expect("seed token user-2");
+
+    let repo_store: Arc<dyn muli_core::traits::RepositoryStore> =
+        Arc::new(SqliteRepositoryStore::new(factory.clone()));
+    let webhook_store = Arc::new(SqliteWebhookStore::new(factory.clone()));
+    let ssh_key_store: Arc<dyn SshKeyStore> = Arc::new(SqliteSshKeyStore::new(factory.clone()));
+    let collaborator_store: Arc<dyn CollaboratorStore> = Arc::new(MemoryCollaboratorStore::new());
+
+    let git_auth = GitAuth::new(token_store.clone())
+        .with_repo_store(repo_store.clone())
+        .with_collaborator_store(collaborator_store.clone())
+        .with_anonymous_pull(anonymous_pull);
+
+    let tenant_config = TenantConfig::new("localhost").with_default_tenant(TENANT);
+
+    let pr_store = Arc::new(SqlitePullRequestStore::new(factory.clone()));
+    let pr_comment_store = Arc::new(SqlitePrCommentStore::new(factory.clone()));
+
+    let app = git_router(GitRouterConfig {
+        storage: storage.clone(),
+        repo_store: repo_store.clone(),
+        token_store: token_store.clone(),
+        webhook_store: webhook_store as Arc<dyn muli_core::traits::WebhookStore>,
+        ssh_key_store: ssh_key_store.clone(),
+        pr_store,
+        pr_comment_store,
+        auth: Some(git_auth),
+        tenant_config,
+        cache_store: None,
+        allow_localhost_webhooks: true,
+    });
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+
+    let cancel = CancellationToken::new();
+    let cancel_srv = cancel.clone();
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(cancel_srv.cancelled_owned())
+            .await
+            .ok();
+    });
+
+    let http = TestServer {
+        addr,
+        token: TEST_TOKEN.to_string(),
+        _git_root: git_root,
+        _store_dir: store_dir,
+        ssh_key_store,
+        repo_store,
+        storage,
+        token_store,
+        cancel,
+    };
+
+    TestServerWithAcl {
+        http,
+        collaborator_store,
+    }
+}
+
+/// The plaintext token for user-2 (seeded in `start_server_with_acl`).
+pub const USER2_TOKEN: &str = "test-token-e2e-user2-xyz";
+
+/// Build a git remote URL with a custom token for Basic auth.
+pub fn git_url_with_token(srv: &TestServer, namespace: &str, repo: &str, token: &str) -> String {
+    format!(
+        "http://x-token:{}@127.0.0.1:{}/{}/{}.git",
+        token,
+        srv.addr.port(),
+        namespace,
+        repo
+    )
+}
+
+/// Run a git command, returning the exit status (does NOT assert success).
+pub async fn git_status(dir: &std::path::Path, args: &[&str]) -> std::process::ExitStatus {
+    tokio::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .status()
+        .await
+        .unwrap_or_else(|e| panic!("failed to run git {args:?}: {e}"))
 }
 
 // ---------------------------------------------------------------------------

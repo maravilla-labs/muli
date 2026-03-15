@@ -16,7 +16,7 @@ use muli_core::token_hash;
 use serde_json::json;
 use tracing::warn;
 
-use muli_core::git::{GitPermission, HasPermissions};
+use muli_core::git::{GitPermission, HasPermissions, RepoAccessVerdict, check_repo_access};
 use muli_core::traits::{CollaboratorStore, GitTokenStore, RepositoryStore};
 
 use crate::tenant::TenantContext;
@@ -275,8 +275,9 @@ pub async fn auth_middleware(mut request: Request, next: Next) -> Response {
         Some(token)
     };
 
-    // Per-repo ACL for private repositories
-    // Parse namespace and repo from path: /{namespace}/{repo}.git/... or /api/v1/repos/{ns}/{repo}/...
+    // Per-repo ACL check:
+    //   - Private repos: owner or collaborator required for any access
+    //   - Public repos: anyone can read, but only owner or collaborator can push
     if let (Some(repo_store), Some(collab_store)) = (&auth.repo_store, &auth.collaborator_store)
         && let Some((namespace, repo_name)) = extract_repo_from_path(&path)
     {
@@ -288,42 +289,12 @@ pub async fn auth_middleware(mut request: Request, next: Next) -> Response {
             && let Ok(Some(repo)) = repo_store
                 .get_repository_by_name(tenant_id_str, namespace, repo_name)
                 .await
-            && repo.is_private
         {
             let required = required_permission(&method, &path, query.as_deref());
-
-            // Anonymous users cannot access private repos
-            let token = match &token {
-                Some(t) => t,
-                None => return forbidden_response("access denied to private repository"),
-            };
-
-            // Service tokens without user_id cannot access private repos
-            let user_id = match token.user_id.as_deref() {
-                Some(uid) if !uid.is_empty() => uid,
-                _ => {
-                    return forbidden_response("service tokens cannot access private repositories");
-                }
-            };
-
-            // Check owner
-            let is_owner = !repo.owner_id.is_empty() && repo.owner_id == user_id;
-
-            // Check collaborator
-            let is_collaborator = if !is_owner {
-                collab_store
-                    .get_collaborator(&repo.id, user_id)
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|c| c.has_permission(required))
-                    .unwrap_or(false)
-            } else {
-                false
-            };
-
-            if !is_owner && !is_collaborator {
-                return forbidden_response("access denied to private repository");
+            let user_id = token.as_ref().and_then(|t| t.user_id.as_deref());
+            let verdict = check_repo_access(&repo, user_id, required, collab_store.as_ref()).await;
+            if let RepoAccessVerdict::Denied { reason } = verdict {
+                return forbidden_response(reason);
             }
         }
     }

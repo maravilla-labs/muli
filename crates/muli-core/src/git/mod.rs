@@ -3,9 +3,11 @@
 
 //! Git hosting domain models.
 
+mod access;
 mod model;
 mod webhook;
 
+pub use access::{RepoAccessVerdict, check_repo_access};
 pub use model::{
     GitPermission, GitToken, HasPermissions, OwnerType, Repository, RepositoryCollaborator, SshKey,
 };

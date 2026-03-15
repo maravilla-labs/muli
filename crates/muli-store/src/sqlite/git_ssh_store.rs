@@ -70,9 +70,8 @@ impl SshKeyStore for SqliteSshKeyStore {
         let kid = key_id.clone();
         let tenant_id: Option<String> = global
             .call(move |c| {
-                let mut stmt = c.prepare(
-                    "SELECT tenant_id FROM ssh_key_fingerprints WHERE ssh_key_id = ?1",
-                )?;
+                let mut stmt =
+                    c.prepare("SELECT tenant_id FROM ssh_key_fingerprints WHERE ssh_key_id = ?1")?;
                 let mut rows = stmt.query(rusqlite::params![kid])?;
                 if let Some(row) = rows.next()? {
                     Ok(Some(row.get::<_, String>(0)?))
@@ -119,9 +118,8 @@ impl SshKeyStore for SqliteSshKeyStore {
         let fp = fingerprint.to_string();
         let entries: Vec<String> = global
             .call(move |c| {
-                let mut stmt = c.prepare(
-                    "SELECT tenant_id FROM ssh_key_fingerprints WHERE fingerprint = ?1",
-                )?;
+                let mut stmt =
+                    c.prepare("SELECT tenant_id FROM ssh_key_fingerprints WHERE fingerprint = ?1")?;
                 let rows = stmt.query_map(rusqlite::params![fp], |row| row.get(0))?;
                 Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)
             })
@@ -161,8 +159,7 @@ impl SshKeyStore for SqliteSshKeyStore {
         let conn = self.factory.tenant_conn(tenant_id).await?;
         let fp = fingerprint.to_string();
         conn.call(move |c| {
-            let mut stmt =
-                c.prepare("SELECT full_json FROM ssh_keys WHERE fingerprint = ?1")?;
+            let mut stmt = c.prepare("SELECT full_json FROM ssh_keys WHERE fingerprint = ?1")?;
             let mut rows = stmt.query(rusqlite::params![fp])?;
             if let Some(row) = rows.next()? {
                 let json: String = row.get(0)?;
