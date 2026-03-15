@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+lfs-s3 = ["dep:aws-sdk-s3", "dep:aws-config"]
+
 [dependencies]
 muli-core = { workspace = true }
 async-trait = { workspace = true }
@@ -29,6 +33,11 @@ tokio-util = { workspace = true }
 russh = { workspace = true }
 russh-keys = { workspace = true }
 url = { workspace = true }
+http-body-util = { workspace = true }
+
+# Optional S3 backend for LFS
+aws-sdk-s3 = { workspace = true, optional = true }
+aws-config = { workspace = true, optional = true }
 
 [dev-dependencies]
 muli-store = { workspace = true }

@@ -10,7 +10,7 @@ use anyhow::Context;
 use dashmap::DashMap;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use muli_engine::docker::cleanup::CleanupService;
 use muli_engine::docker::client::DockerClient;
@@ -494,6 +494,23 @@ async fn start_git_http(
         git_tenant_config = git_tenant_config.with_default_tenant(dt.as_str());
     }
     let git_auth = muli_git::GitAuth::new(git.token_store.clone());
+    // Initialize LFS storage (filesystem backend, shares the git root).
+    let lfs_storage: Option<Arc<dyn muli_git::lfs::storage::LfsStorage>> = {
+        let git_root = config.effective_git_root();
+        match muli_git::lfs::storage::filesystem::FilesystemLfsStorage::new(
+            &git_root,
+            config.lfs_max_object_size_mb * 1024 * 1024,
+        )
+        .await
+        {
+            Ok(s) => Some(Arc::new(s)),
+            Err(e) => {
+                warn!(error = %e, "Failed to initialize LFS storage, LFS disabled");
+                None
+            }
+        }
+    };
+
     let git_app = muli_git::git_router(muli_git::GitRouterConfig {
         storage: git.storage.clone(),
         repo_store: git.repo_store.clone(),
@@ -506,6 +523,7 @@ async fn start_git_http(
         tenant_config: git_tenant_config,
         cache_store: Some(git.cache_store.clone()),
         allow_localhost_webhooks: config.git_allow_localhost_webhooks,
+        lfs_storage,
     });
 
     let git_addr = format!("0.0.0.0:{}", config.git_port);
@@ -556,6 +574,8 @@ async fn start_git_ssh(
         org_store: org_store.clone(),
         org_member_store: org_member_store.clone(),
         collaborator_store: collaborator_store.clone(),
+        token_store: None, // LFS SSH auth token generation (future enhancement)
+        git_domain: Some(config.git_domain.clone()),
     };
 
     let ssh_addr = format!("0.0.0.0:{}", config.git_ssh_port);

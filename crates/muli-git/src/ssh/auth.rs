@@ -18,11 +18,19 @@ pub fn parse_git_ssh_command(command: &str) -> Option<(String, String)> {
         ("git-upload-pack", r)
     } else if let Some(r) = command.strip_prefix("git receive-pack ") {
         ("git-receive-pack", r)
+    } else if let Some(r) = command.strip_prefix("git-lfs-authenticate ") {
+        ("git-lfs-authenticate", r)
     } else {
         return None;
     };
 
-    let path = rest.trim().trim_matches('\'').trim_matches('"').to_string();
+    // For git-lfs-authenticate, preserve the full argument string (path + operation).
+    // For regular git commands, trim quotes from the path.
+    let path = if cmd == "git-lfs-authenticate" {
+        rest.trim().to_string()
+    } else {
+        rest.trim().trim_matches('\'').trim_matches('"').to_string()
+    };
     Some((cmd.to_string(), path))
 }
 
@@ -52,6 +60,23 @@ pub fn parse_repo_path(path: &str) -> Option<(String, String)> {
     }
 
     Some((namespace, repo))
+}
+
+/// Parse the LFS authenticate path: `<repo_path> upload|download`
+/// Returns `(repo_path, operation)`.
+pub fn parse_lfs_authenticate_args(args: &str) -> Option<(String, String)> {
+    let args = args.trim();
+    // The last token is the operation, everything before is the repo path.
+    let last_space = args.rfind(' ')?;
+    let repo_path = args[..last_space].trim().trim_matches('\'').trim_matches('"');
+    let operation = args[last_space + 1..].trim();
+    if operation != "upload" && operation != "download" {
+        return None;
+    }
+    if repo_path.is_empty() {
+        return None;
+    }
+    Some((repo_path.to_string(), operation.to_string()))
 }
 
 #[cfg(test)]
@@ -140,5 +165,45 @@ mod tests {
     #[test]
     fn test_parse_repo_path_rejects_leading_hyphen() {
         assert!(parse_repo_path("-acme/repo").is_none());
+    }
+
+    // -- git-lfs-authenticate --
+
+    #[test]
+    fn test_parse_git_ssh_command_lfs_authenticate() {
+        let (cmd, args) =
+            parse_git_ssh_command("git-lfs-authenticate '/acme/my-repo.git' upload").unwrap();
+        assert_eq!(cmd, "git-lfs-authenticate");
+        assert_eq!(args, "'/acme/my-repo.git' upload");
+        // Full parsing via parse_lfs_authenticate_args
+        let (repo, op) = parse_lfs_authenticate_args(&args).unwrap();
+        assert_eq!(repo, "/acme/my-repo.git");
+        assert_eq!(op, "upload");
+    }
+
+    #[test]
+    fn test_parse_lfs_authenticate_args_upload() {
+        let (repo, op) =
+            parse_lfs_authenticate_args("'/acme/my-repo.git' upload").unwrap();
+        assert_eq!(repo, "/acme/my-repo.git");
+        assert_eq!(op, "upload");
+    }
+
+    #[test]
+    fn test_parse_lfs_authenticate_args_download() {
+        let (repo, op) =
+            parse_lfs_authenticate_args("/acme/my-repo.git download").unwrap();
+        assert_eq!(repo, "/acme/my-repo.git");
+        assert_eq!(op, "download");
+    }
+
+    #[test]
+    fn test_parse_lfs_authenticate_args_invalid_op() {
+        assert!(parse_lfs_authenticate_args("/acme/repo.git fetch").is_none());
+    }
+
+    #[test]
+    fn test_parse_lfs_authenticate_args_empty() {
+        assert!(parse_lfs_authenticate_args("").is_none());
     }
 }

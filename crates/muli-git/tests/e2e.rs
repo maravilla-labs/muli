@@ -27,6 +27,8 @@ mod git_fork_webhook_tests;
 mod git_protocol_tests;
 #[path = "e2e/harness.rs"]
 mod harness;
+#[path = "e2e/lfs_tests.rs"]
+mod lfs_tests;
 #[path = "e2e/pr_crud_tests.rs"]
 mod pr_crud_tests;
 #[path = "e2e/pr_diff_comment_tests.rs"]

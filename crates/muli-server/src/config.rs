@@ -71,6 +71,8 @@ pub struct ServerConfig {
     /// Allow localhost and private-IP webhook URLs (development only).
     /// Set via `MULI_GIT_ALLOW_LOCALHOST_WEBHOOKS` or `--allow-localhost-webhooks`.
     pub git_allow_localhost_webhooks: bool,
+    /// Maximum LFS object size in megabytes (default: 5120 = 5 GB).
+    pub lfs_max_object_size_mb: u64,
 }
 
 impl std::fmt::Debug for ServerConfig {
@@ -126,6 +128,7 @@ impl std::fmt::Debug for ServerConfig {
                 "git_allow_localhost_webhooks",
                 &self.git_allow_localhost_webhooks,
             )
+            .field("lfs_max_object_size_mb", &self.lfs_max_object_size_mb)
             .finish()
     }
 }
@@ -173,6 +176,7 @@ impl Default for ServerConfig {
             embedded_agent: false,
             default_tenant_id: None,
             git_allow_localhost_webhooks: false,
+            lfs_max_object_size_mb: 5120,
         }
     }
 }

@@ -7,6 +7,19 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-03-15
+
+### Added
+
+- **Git LFS 2.0 Batch API** with full HTTP protocol support: batch negotiate, object upload (PUT), download (GET), and verify endpoints.
+- LFS storage abstraction trait (`LfsStorage`) with pluggable backends for runtime dispatch.
+- **Filesystem LFS backend**: content-addressable per-tenant storage with two-level prefix directories, streaming uploads with incremental SHA-256 verification, atomic temp-file rename, and concurrent upload deduplication.
+- **S3 LFS backend** (behind `lfs-s3` Cargo feature flag): supports any S3-compatible service (AWS S3, MinIO, Cloudflare R2) with presigned URL generation for direct client-to-S3 transfers.
+- SSH `git-lfs-authenticate` command handling: returns LFS endpoint URL over SSH so `git lfs` clients can discover the HTTP transfer endpoint when using SSH remotes.
+- `MULI_LFS_MAX_OBJECT_SIZE_MB` configuration (default 5 GB) for controlling maximum LFS object size.
+- 9 LFS unit tests (types serde, filesystem storage CRUD, digest verification, dedup, size limits).
+- 11 LFS end-to-end tests covering batch upload/download flows, auth enforcement (unauthenticated, wrong token), invalid oid rejection, missing object handling, verify size mismatch, digest mismatch, dedup skip, multi-object batch, and tenant isolation.
+
 ## [0.1.12] - 2026-03-15
 
 ### Fixed

@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 
 use muli_core::git::{GitPermission, HasPermissions, RepoAccessVerdict, check_repo_access};
 use muli_core::traits::{
-    CollaboratorStore, OrgMemberStore, OrgStore, RepositoryStore, SshKeyStore,
+    CollaboratorStore, GitTokenStore, OrgMemberStore, OrgStore, RepositoryStore, SshKeyStore,
 };
 
 use crate::ssh::auth::{parse_git_ssh_command, parse_repo_path};
@@ -47,6 +47,10 @@ pub struct SshServer {
     pub org_store: Arc<dyn OrgStore>,
     pub org_member_store: Arc<dyn OrgMemberStore>,
     pub collaborator_store: Arc<dyn CollaboratorStore>,
+    /// Token store for generating short-lived LFS auth tokens (None = LFS SSH disabled).
+    pub token_store: Option<Arc<dyn GitTokenStore>>,
+    /// Git domain for building LFS endpoint URLs in SSH authenticate responses.
+    pub git_domain: Option<String>,
 }
 
 impl SshServer {
@@ -96,6 +100,8 @@ impl SshServer {
                         org_store: self.org_store.clone(),
                         org_member_store: self.org_member_store.clone(),
                         collaborator_store: self.collaborator_store.clone(),
+                        token_store: self.token_store.clone(),
+                        git_domain: self.git_domain.clone(),
                         authenticated_fingerprint: None,
                         authenticated_user_id: None,
                         authenticated_key_tenant_id: None,
@@ -169,6 +175,9 @@ struct SshSessionHandler {
     org_store: Arc<dyn OrgStore>,
     org_member_store: Arc<dyn OrgMemberStore>,
     collaborator_store: Arc<dyn CollaboratorStore>,
+    #[allow(dead_code)] // reserved for LFS token generation
+    token_store: Option<Arc<dyn GitTokenStore>>,
+    git_domain: Option<String>,
     authenticated_fingerprint: Option<String>,
     authenticated_user_id: Option<String>,
     /// The tenant_id from the SSH key record — tells us which tenant DB the key lives in.
@@ -279,6 +288,21 @@ impl Handler for SshSessionHandler {
                 return Ok(());
             }
         };
+
+        // 2b. Handle git-lfs-authenticate (returns JSON, no subprocess)
+        if git_cmd == "git-lfs-authenticate" {
+            return crate::ssh::lfs_auth::handle_lfs_authenticate(
+                channel,
+                session,
+                &path,
+                &user_id,
+                &self.repo_store,
+                &self.org_store,
+                self.default_tenant_id.as_deref(),
+                self.git_domain.as_deref(),
+            )
+            .await;
+        }
 
         // 3. Parse repo path → (namespace, repo_name)
         let (namespace, repo_name) = match parse_repo_path(&path) {

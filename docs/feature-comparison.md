@@ -57,7 +57,7 @@ Comprehensive comparison of the Maravilla stack (**staticlab** + **muli** + **ma
 | Repository topics | ✓ | ✓ | ✓ | ✓ | ✘ | ✘ | ✘ | **✘** |
 | Repository code search | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | **✘** |
 | Global code search | ✓ | ✓ | ✘ | ✓ | ✓ | ✓ | ✓ | **✘** |
-| Git LFS 2.0 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | **✘** |
+| Git LFS 2.0 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | **✓** (Batch API, filesystem + S3 backends) |
 | Group Milestones | ✘ | ✘ | ✓ | ✓ | ✘ | ✘ | ✘ | **✘** |
 | Granular user roles | ✓ | ✘ | ✓ | ✓ | ✘ | ✘ | ✘ | **⁄** (Pull/Push/Admin per-repo, Org roles, no per-feature granularity) |
 | Verified Committer | ⁄ | ? | ✓ | ✓ | ✓ | ✘ | ✘ | **✘** |

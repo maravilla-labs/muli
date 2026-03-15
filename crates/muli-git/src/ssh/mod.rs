@@ -4,6 +4,7 @@
 //! SSH server for git clone/push via Ed25519 keys.
 
 pub(crate) mod auth;
+pub(crate) mod lfs_auth;
 mod server;
 
 pub use server::{SshConfig, SshServer, load_or_generate_host_key};

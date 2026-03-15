@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.13"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/maravilla-labs/muli"
@@ -112,6 +112,10 @@ russh-keys = "0.46"
 
 # URL parsing
 url = "2.5"
+
+# S3 (for LFS) — requires rustc 1.91+; enable via `lfs-s3` feature on muli-git
+aws-sdk-s3 = "1"
+aws-config = { version = "1", features = ["behavior-version-latest"] }
 
 # XML
 quick-xml = "0.37"

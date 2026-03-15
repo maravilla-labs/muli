@@ -6,6 +6,7 @@
 pub mod api;
 pub mod auth;
 pub mod hooks;
+pub mod lfs;
 pub mod protocol;
 pub mod ssh;
 pub mod storage;

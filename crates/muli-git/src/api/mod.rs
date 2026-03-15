@@ -34,6 +34,7 @@ use muli_core::traits::{
 };
 
 use crate::auth::GitAuth;
+use crate::lfs;
 use crate::storage::FilesystemStorage;
 use crate::tenant::TenantConfig;
 
@@ -55,6 +56,8 @@ pub struct GitState {
     pub webhook_semaphore: Arc<tokio::sync::Semaphore>,
     /// When true, skip SSRF checks on webhook URLs (for testing only).
     pub allow_localhost_webhooks: bool,
+    /// LFS object storage backend (None = LFS disabled).
+    pub lfs_storage: Option<Arc<dyn lfs::storage::LfsStorage>>,
 }
 
 /// Configuration for building the git router.
@@ -71,6 +74,8 @@ pub struct GitRouterConfig {
     pub cache_store: Option<Arc<dyn TreeCommitCacheStore>>,
     /// When true, skip SSRF checks on webhook URLs (for testing only).
     pub allow_localhost_webhooks: bool,
+    /// LFS object storage backend (None = LFS disabled).
+    pub lfs_storage: Option<Arc<dyn lfs::storage::LfsStorage>>,
 }
 
 /// Build the complete git service router.
@@ -87,6 +92,7 @@ pub fn git_router(cfg: GitRouterConfig) -> Router {
         tenant_config,
         cache_store,
         allow_localhost_webhooks,
+        lfs_storage,
     } = cfg;
 
     let http_client = reqwest::Client::builder()
@@ -107,6 +113,7 @@ pub fn git_router(cfg: GitRouterConfig) -> Router {
         cache_store,
         webhook_semaphore: Arc::new(tokio::sync::Semaphore::new(10)),
         allow_localhost_webhooks,
+        lfs_storage,
     });
 
     // Git Smart HTTP protocol routes.
@@ -206,9 +213,25 @@ pub fn git_router(cfg: GitRouterConfig) -> Router {
         .route("/api/v1/tokens", post(tokens::create_token))
         .route("/api/v1/tokens/{token_id}", delete(tokens::revoke_token));
 
+    // LFS Batch API routes (active when lfs_storage is Some).
+    let lfs_api = Router::new()
+        .route(
+            "/{namespace}/{repo}/info/lfs/objects/batch",
+            post(lfs::api::batch),
+        )
+        .route(
+            "/{namespace}/{repo}/info/lfs/objects/verify",
+            post(lfs::api::verify),
+        )
+        .route(
+            "/{namespace}/{repo}/info/lfs/objects/{oid}",
+            get(lfs::api::download).put(lfs::api::upload),
+        );
+
     let mut app = Router::new()
         .merge(git_protocol)
         .merge(rest_api)
+        .merge(lfs_api)
         .with_state(state);
 
     if let Some(git_auth) = auth {

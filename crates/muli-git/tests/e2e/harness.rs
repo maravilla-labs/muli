@@ -101,6 +101,13 @@ pub async fn start_server() -> TestServer {
     let pr_store = Arc::new(SqlitePullRequestStore::new(factory.clone()));
     let pr_comment_store = Arc::new(SqlitePrCommentStore::new(factory.clone()));
 
+    // Initialize LFS storage backed by the same git root
+    let lfs_storage: Option<Arc<dyn muli_git::lfs::storage::LfsStorage>> = Some(Arc::new(
+        muli_git::lfs::storage::filesystem::FilesystemLfsStorage::new(git_root.path(), 0)
+            .await
+            .expect("lfs storage"),
+    ));
+
     let app = git_router(GitRouterConfig {
         storage: storage.clone(),
         repo_store: repo_store.clone(),
@@ -113,6 +120,7 @@ pub async fn start_server() -> TestServer {
         tenant_config,
         cache_store: None,
         allow_localhost_webhooks: true,
+        lfs_storage,
     });
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -313,6 +321,8 @@ pub async fn start_server_with_ssh() -> TestServerWithSsh {
         org_store,
         org_member_store,
         collaborator_store: collaborator_store.clone(),
+        token_store: Some(srv.token_store.clone()),
+        git_domain: Some("localhost".to_string()),
     };
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -431,6 +441,13 @@ async fn start_server_with_acl_inner(anonymous_pull: bool) -> TestServerWithAcl 
     let pr_store = Arc::new(SqlitePullRequestStore::new(factory.clone()));
     let pr_comment_store = Arc::new(SqlitePrCommentStore::new(factory.clone()));
 
+    // Initialize LFS storage backed by the same git root
+    let lfs_storage: Option<Arc<dyn muli_git::lfs::storage::LfsStorage>> = Some(Arc::new(
+        muli_git::lfs::storage::filesystem::FilesystemLfsStorage::new(git_root.path(), 0)
+            .await
+            .expect("lfs storage"),
+    ));
+
     let app = git_router(GitRouterConfig {
         storage: storage.clone(),
         repo_store: repo_store.clone(),
@@ -443,6 +460,7 @@ async fn start_server_with_acl_inner(anonymous_pull: bool) -> TestServerWithAcl 
         tenant_config,
         cache_store: None,
         allow_localhost_webhooks: true,
+        lfs_storage,
     });
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
