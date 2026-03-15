@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-03-15
+
+### Fixed
+
+- `init_repo` now tolerates an existing git directory on disk, allowing re-link after unlink without errors. Previously, unlinking a project removed only the DB record while the bare repo directory remained, causing subsequent link attempts to fail with "repository already exists".
+
 ## [0.1.9] - 2026-03-14
 
 ### Added
