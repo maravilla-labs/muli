@@ -39,7 +39,10 @@ impl FilesystemStorage {
     ) -> Result<PathBuf, GitStorageError> {
         let path = self.repo_path(tenant_id, namespace, name);
         if path.exists() {
-            return Err(GitStorageError::AlreadyExists(path.display().to_string()));
+            // Directory already exists (e.g. re-link after unlink which only
+            // removes the DB record). Skip git init — the bare repo on disk is
+            // still valid and we just need a fresh DB entry.
+            return Ok(path);
         }
         tokio::fs::create_dir_all(&path)
             .await
