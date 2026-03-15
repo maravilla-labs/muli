@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-03-15
+
+### Added
+
+- **Git blame endpoint**: `GET /api/v1/repos/{namespace}/{repo}/blame/{*path}?ref=<branch>` returns per-hunk blame information including commit SHA, author name/email, timestamp, and commit message summary. Uses `git2::Repository::blame_file()` with `newest_commit` option for ref-scoped blame.
+
 ## [0.1.13] - 2026-03-15
 
 ### Added

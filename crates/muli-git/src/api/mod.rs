@@ -3,6 +3,7 @@
 
 //! REST API router for git repository management.
 
+pub mod blame;
 pub mod blobs;
 pub mod commits;
 pub mod forks;
@@ -169,6 +170,10 @@ pub fn git_router(cfg: GitRouterConfig) -> Router {
         .route(
             "/api/v1/repos/{namespace}/{repo}/tree-commits",
             get(tree::list_tree_commits),
+        )
+        .route(
+            "/api/v1/repos/{namespace}/{repo}/blame/{*path}",
+            get(blame::get_blame),
         )
         .route(
             "/api/v1/repos/{namespace}/{repo}/contents",
