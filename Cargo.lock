@@ -1949,6 +1949,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "glob"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
+
+[[package]]
 name = "group"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2951,7 +2957,7 @@ dependencies = [
 
 [[package]]
 name = "muli-agent"
-version = "0.1.14"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2971,7 +2977,7 @@ dependencies = [
 
 [[package]]
 name = "muli-core"
-version = "0.1.14"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "async-trait",
@@ -2986,7 +2992,7 @@ dependencies = [
 
 [[package]]
 name = "muli-engine"
-version = "0.1.14"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "backoff",
@@ -3005,7 +3011,7 @@ dependencies = [
 
 [[package]]
 name = "muli-git"
-version = "0.1.14"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3038,8 +3044,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "muli-pipeline"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "chrono",
+ "futures",
+ "git2",
+ "glob",
+ "hex",
+ "muli-core",
+ "muli-store",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+ "zstd",
+]
+
+[[package]]
 name = "muli-proto"
-version = "0.1.14"
+version = "0.2.0"
 dependencies = [
  "prost",
  "prost-types",
@@ -3051,7 +3082,7 @@ dependencies = [
 
 [[package]]
 name = "muli-queue"
-version = "0.1.14"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "dashmap",
@@ -3063,7 +3094,7 @@ dependencies = [
 
 [[package]]
 name = "muli-registry"
-version = "0.1.14"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -3094,7 +3125,7 @@ dependencies = [
 
 [[package]]
 name = "muli-server"
-version = "0.1.14"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3108,12 +3139,14 @@ dependencies = [
  "dotenvy",
  "figment",
  "futures",
+ "git2",
  "hex",
  "mongodb",
  "muli-agent",
  "muli-core",
  "muli-engine",
  "muli-git",
+ "muli-pipeline",
  "muli-proto",
  "muli-queue",
  "muli-registry",
@@ -3138,7 +3171,7 @@ dependencies = [
 
 [[package]]
 name = "muli-store"
-version = "0.1.14"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3158,7 +3191,7 @@ dependencies = [
 
 [[package]]
 name = "muli-test"
-version = "0.1.14"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bollard",
@@ -4623,6 +4656,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_yaml"
+version = "0.9.34+deprecated"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
+dependencies = [
+ "indexmap 2.13.0",
+ "itoa",
+ "ryu",
+ "serde",
+ "unsafe-libyaml",
+]
+
+[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5431,6 +5477,12 @@ dependencies = [
  "crypto-common",
  "subtle",
 ]
+
+[[package]]
+name = "unsafe-libyaml"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "untrusted"
@@ -6287,3 +6339,31 @@ name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
+
+[[package]]
+name = "zstd"
+version = "0.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
+dependencies = [
+ "zstd-safe",
+]
+
+[[package]]
+name = "zstd-safe"
+version = "7.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f49c4d5f0abb602a93fb8736af2a4f4dd9512e36f7f570d66e65ff867ed3b9d"
+dependencies = [
+ "zstd-sys",
+]
+
+[[package]]
+name = "zstd-sys"
+version = "2.0.16+zstd.1.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91e19ebc2adc8f83e43039e79776e3fda8ca919132d68a1fed6a5faca2683748"
+dependencies = [
+ "cc",
+ "pkg-config",
+]

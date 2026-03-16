@@ -121,6 +121,7 @@ pub async fn start_server() -> TestServer {
         cache_store: None,
         allow_localhost_webhooks: true,
         lfs_storage,
+        pipeline_trigger: None,
     });
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -461,6 +462,7 @@ async fn start_server_with_acl_inner(anonymous_pull: bool) -> TestServerWithAcl 
         cache_store: None,
         allow_localhost_webhooks: true,
         lfs_storage,
+        pipeline_trigger: None,
     });
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

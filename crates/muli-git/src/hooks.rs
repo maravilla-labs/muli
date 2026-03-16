@@ -105,5 +105,6 @@ fn event_name(event: &WebhookEvent) -> &'static str {
         WebhookEvent::PrOpened => "pr.opened",
         WebhookEvent::PrMerged => "pr.merged",
         WebhookEvent::PrClosed => "pr.closed",
+        WebhookEvent::PipelineCompleted => "pipeline.completed",
     }
 }

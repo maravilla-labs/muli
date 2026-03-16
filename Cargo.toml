@@ -9,12 +9,13 @@ members = [
     "crates/muli-server",
     "crates/muli-registry",
     "crates/muli-git",
+    "crates/muli-pipeline",
     "crates/muli-agent",
     "crates/muli-test",
 ]
 
 [workspace.package]
-version = "0.1.14"
+version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/maravilla-labs/muli"
@@ -29,6 +30,7 @@ muli-queue = { path = "crates/muli-queue" }
 muli-server = { path = "crates/muli-server" }
 muli-registry = { path = "crates/muli-registry" }
 muli-git = { path = "crates/muli-git" }
+muli-pipeline = { path = "crates/muli-pipeline" }
 muli-agent = { path = "crates/muli-agent" }
 muli-test = { path = "crates/muli-test" }
 
@@ -119,6 +121,10 @@ aws-config = { version = "1", features = ["behavior-version-latest"] }
 
 # XML
 quick-xml = "0.37"
+
+serde_yaml = "0.9"
+zstd = "0.13"
+glob = "0.3"
 
 # Hashing
 md-5 = "0.10"

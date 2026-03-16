@@ -73,6 +73,16 @@ pub struct ServerConfig {
     pub git_allow_localhost_webhooks: bool,
     /// Maximum LFS object size in megabytes (default: 5120 = 5 GB).
     pub lfs_max_object_size_mb: u64,
+    /// Enable CI/CD pipeline orchestration (requires git_enabled).
+    pub pipeline_enabled: bool,
+    /// Artifact retention in days before automatic cleanup (default: 30).
+    pub pipeline_artifact_retention_days: u64,
+    /// Maximum cache storage per tenant in GB (default: 5.0).
+    pub pipeline_cache_max_gb: f64,
+    /// Maximum matrix combinations per step (default: 25).
+    pub pipeline_max_matrix_size: usize,
+    /// AES-256-GCM encryption key for pipeline secrets (base64).
+    pub pipeline_secret_encryption_key: Option<String>,
 }
 
 impl std::fmt::Debug for ServerConfig {
@@ -129,6 +139,17 @@ impl std::fmt::Debug for ServerConfig {
                 &self.git_allow_localhost_webhooks,
             )
             .field("lfs_max_object_size_mb", &self.lfs_max_object_size_mb)
+            .field("pipeline_enabled", &self.pipeline_enabled)
+            .field(
+                "pipeline_artifact_retention_days",
+                &self.pipeline_artifact_retention_days,
+            )
+            .field("pipeline_cache_max_gb", &self.pipeline_cache_max_gb)
+            .field("pipeline_max_matrix_size", &self.pipeline_max_matrix_size)
+            .field(
+                "pipeline_secret_encryption_key",
+                &self.pipeline_secret_encryption_key.as_ref().map(|_| "[REDACTED]"),
+            )
             .finish()
     }
 }
@@ -177,6 +198,11 @@ impl Default for ServerConfig {
             default_tenant_id: None,
             git_allow_localhost_webhooks: false,
             lfs_max_object_size_mb: 5120,
+            pipeline_enabled: false,
+            pipeline_artifact_retention_days: 30,
+            pipeline_cache_max_gb: 5.0,
+            pipeline_max_matrix_size: 25,
+            pipeline_secret_encryption_key: None,
         }
     }
 }

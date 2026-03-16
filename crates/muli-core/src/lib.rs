@@ -9,6 +9,7 @@ pub mod error;
 pub mod git;
 pub mod job;
 pub mod org;
+pub mod pipeline;
 pub mod pr;
 pub mod registry;
 pub mod resource;

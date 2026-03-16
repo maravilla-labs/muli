@@ -73,6 +73,7 @@ fn assignment_to_job(assignment: &JobAssignment) -> Job {
         framework: String::new(),
         idempotency_key: None,
         registry_credentials,
+        commands: vec![],
     };
 
     Job {

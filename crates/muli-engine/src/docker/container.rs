@@ -68,8 +68,27 @@ pub async fn create_container(
         ..Default::default()
     };
 
+    // If commands are specified (pipeline steps), override the container's CMD
+    // to run them as a shell script with `set -e` (stop on first error).
+    // Each command is on its own line, preserving heredocs and multiline strings.
+    let cmd = if spec.commands.is_empty() {
+        None
+    } else {
+        let mut script = String::from("set -e\n");
+        for c in &spec.commands {
+            script.push_str(c);
+            script.push('\n');
+        }
+        Some(vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            script,
+        ])
+    };
+
     let config = Config {
         image: Some(spec.runner_image.clone()),
+        cmd,
         env: Some(env),
         labels: Some(labels),
         host_config: Some(host_config),

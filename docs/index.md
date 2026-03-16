@@ -21,6 +21,10 @@ Use this page as the entrypoint to Muli documentation.
 - [Contributing Guide](../CONTRIBUTING.md): local workflow and PR expectations
 - [Support](../SUPPORT.md): support channels and scope
 
+## CI/CD Pipelines
+
+- [Pipelines](pipelines.md): YAML DSL reference, DAG execution, caching, artifacts, matrix builds, real-world examples
+
 ## Product Context
 
 - [Feature Comparison](feature-comparison.md)

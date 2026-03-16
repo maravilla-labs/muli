@@ -95,6 +95,7 @@ pub fn proto_webhook_event_to_core(e: i32) -> Result<WebhookEvent, Status> {
         4 => Ok(WebhookEvent::PrOpened),
         5 => Ok(WebhookEvent::PrMerged),
         6 => Ok(WebhookEvent::PrClosed),
+        7 => Ok(WebhookEvent::PipelineCompleted),
         _ => Err(Status::invalid_argument(format!(
             "unknown webhook event: {e}"
         ))),
@@ -109,6 +110,7 @@ pub fn core_webhook_event_to_proto(e: &WebhookEvent) -> i32 {
         WebhookEvent::PrOpened => ProtoWebhookEvent::PrOpened as i32,
         WebhookEvent::PrMerged => ProtoWebhookEvent::PrMerged as i32,
         WebhookEvent::PrClosed => ProtoWebhookEvent::PrClosed as i32,
+        WebhookEvent::PipelineCompleted => ProtoWebhookEvent::PipelineCompleted as i32,
     }
 }
 

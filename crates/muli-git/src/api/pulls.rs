@@ -105,6 +105,7 @@ pub async fn create_pr(
                 WebhookEvent::PrOpened,
                 pr.number,
             );
+            fire_pipeline_pr_event(&state, &tenant.tenant_id, &repo_id, pr.number, "opened");
             (StatusCode::CREATED, Json(PrResponse::from(pr))).into_response()
         }
         Err(e) => {
@@ -272,6 +273,24 @@ async fn handle_merge(
                 "internal error during merge",
             )
         }
+    }
+}
+
+fn fire_pipeline_pr_event(
+    state: &GitState,
+    tenant_id: &str,
+    repo_id: &str,
+    pr_number: u64,
+    event: &str,
+) {
+    if let Some(trigger) = state.pipeline_trigger.as_ref() {
+        let trigger = trigger.clone();
+        let tid = tenant_id.to_string();
+        let rid = repo_id.to_string();
+        let ev = event.to_string();
+        tokio::spawn(async move {
+            trigger.on_pr_event(&tid, &rid, pr_number, &ev).await;
+        });
     }
 }
 

@@ -7,6 +7,42 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-03-16
+
+### Added
+
+- **CI/CD Pipeline Orchestrator** — new `muli-pipeline` crate providing a GitHub Actions-style workflow engine triggered by `.maravilla/pipeline.yml` files in git repositories.
+- **YAML DSL**: declarative pipeline configuration with triggers (`push`, `pull_request`, `manual`, `schedule`), multi-step DAG dependencies (`needs`), matrix expansion, conditional execution (`if`), failure strategies (`stop`/`continue`/`ignore`), caching with `{{ hash('file') }}` templates, artifact upload/download, resource limits, service sidecars, and configurable timeouts.
+- **DAG executor**: processes pipeline steps level-by-level using topological sort, submits each step as a Job to the existing scheduler, polls for completion, and computes final run state (Succeeded/Failed/Degraded/Cancelled).
+- **Docker execution**: pipeline steps run as isolated Docker containers via `/bin/sh -c` with `set -e`. Built-in env vars (`PIPELINE_RUN_ID`, `PIPELINE_SHA`, `PIPELINE_BRANCH`, `PIPELINE_EVENT`, `PIPELINE_STEP_NAME`) injected into every step. Auto-checkout prepends `git clone` when a clone URL is configured.
+- **`commands` field on `JobSpec`**: when set, the container's CMD is overridden with the provided shell commands instead of using the image default entrypoint. Enables pipeline steps to run arbitrary commands in any Docker image.
+- **Pipeline domain models**: `Pipeline`, `PipelineRun` (with `env_vars` map for vault/secret injection), `StepRun` (with `tenant_id` for isolation), `Artifact`, `CacheEntry`, `PipelineSecret` in `muli-core`.
+- **6 store traits + SQLite implementations**: `PipelineStore`, `PipelineRunStore`, `StepRunStore`, `ArtifactStore`, `CacheStore`, `PipelineSecretStore` with 6 DDL tables and indexes.
+- **Pipeline trigger hook**: fires on `receive_pack` (push) and PR events in `muli-git`. Reads `.maravilla/pipeline.yml` from the commit via `git2`, parses and validates the YAML, matches triggers against the event, creates run/step records, and spawns DAG execution.
+- **`PipelineService` gRPC** with 13 RPCs: `TriggerPipeline` (with generic `env_vars` for caller-provided secrets), `GetPipelineRun`, `ListPipelineRuns`, `CancelPipeline` (cascades to all non-terminal steps), `RetryPipeline` (re-creates from original YAML), `GetStepLogs` (fetches from `JobLogStore` via step's `job_id`), `ListArtifacts`, `ListCaches`, `DeleteCache`, plus streaming RPCs for logs, artifacts, and run events.
+- **`WebhookEvent::PipelineCompleted`** for deploy integration callbacks.
+- **Artifact filesystem storage** with SHA-256 integrity and path traversal protection.
+- **Cache filesystem storage** with zstd compression, LRU eviction, and per-tenant size limits.
+- **Pipeline REST API**: 10 endpoints under `/api/v1/repos/{ns}/{repo}/pipelines/` for runs, secrets, artifacts, and manual triggers.
+- **Server configuration**: `MULI_PIPELINE_ENABLED`, `MULI_PIPELINE_ARTIFACT_RETENTION_DAYS`, `MULI_PIPELINE_CACHE_MAX_GB`, `MULI_PIPELINE_MAX_MATRIX_SIZE`, `MULI_PIPELINE_SECRET_ENCRYPTION_KEY`.
+- **Pipeline documentation**: full YAML reference, DAG execution model, security considerations, configuration, API reference, and real-world examples (Rust, Node.js, multi-platform matrix) in `docs/pipelines.md`.
+- **300+ tests** including 21 YAML parser/validation tests, 25 store CRUD tests, 7 store integration tests, 8 pipeline integration tests, 7 DAG executor tests with mock submitters, 3 Docker pipeline tests (real containers), and 1 realistic npm CI pipeline test running `npm install → lint → test → build` across 4 steps in `node:22-alpine` containers with real log capture.
+
+### Changed
+
+- **`startup.rs` refactored**: extracted gRPC service construction into `start_grpc.rs` (208 lines) reducing `startup.rs` from 630 to 448 lines.
+- **`GitState` and `GitRouterConfig`** now include `pipeline_trigger: Option<Arc<dyn PipelineTriggerHook>>` for pipeline event delivery.
+
+### Security
+
+- Pipeline secrets encrypted at rest with AES-256-GCM; encrypted values are never injected into step environments (skipped with warning until decryption is wired).
+- YAML bomb protection: 1 MB size limit, max 100 steps, max 25 matrix combinations, max 512-char conditions with max 10 AND parts.
+- `tenant_id` added to `StepRun` model to prevent cross-tenant data access in step store operations.
+- Pagination capped at 100 results for `ListPipelineRuns`.
+- Per-repo rate limiting (5-second cooldown) on pipeline triggers to prevent push-spam DoS.
+- N+1 query eliminated: `ListPipelineRuns` no longer fetches per-run steps.
+- Container hardening: `cap_drop: ALL`, `no-new-privileges`, `readonly_rootfs`, `pids_limit: 256`, isolated Docker network per step.
+
 ## [0.1.14] - 2026-03-15
 
 ### Added

@@ -9,9 +9,12 @@ pub mod embedded_agent;
 pub mod execution;
 pub mod grpc;
 pub mod metrics;
+pub(crate) mod pipeline_job_submitter;
+mod pipeline_trigger;
 pub mod recovery;
 pub mod shutdown;
+mod start_grpc;
 pub mod startup;
-mod stores;
+pub(crate) mod stores;
 
 pub use startup::run;

@@ -39,6 +39,13 @@ use crate::lfs;
 use crate::storage::FilesystemStorage;
 use crate::tenant::TenantConfig;
 
+/// Hook for triggering pipeline runs from git events (push, PR).
+#[async_trait::async_trait]
+pub trait PipelineTriggerHook: Send + Sync {
+    async fn on_push(&self, tenant_id: &str, repo_id: &str, commit_sha: &str, ref_name: &str);
+    async fn on_pr_event(&self, tenant_id: &str, repo_id: &str, pr_number: u64, event: &str);
+}
+
 // Re-export for backward compatibility
 pub use helpers::strip_git_suffix;
 
@@ -59,6 +66,8 @@ pub struct GitState {
     pub allow_localhost_webhooks: bool,
     /// LFS object storage backend (None = LFS disabled).
     pub lfs_storage: Option<Arc<dyn lfs::storage::LfsStorage>>,
+    /// Pipeline trigger hook (None = pipelines disabled).
+    pub pipeline_trigger: Option<Arc<dyn PipelineTriggerHook>>,
 }
 
 /// Configuration for building the git router.
@@ -77,6 +86,8 @@ pub struct GitRouterConfig {
     pub allow_localhost_webhooks: bool,
     /// LFS object storage backend (None = LFS disabled).
     pub lfs_storage: Option<Arc<dyn lfs::storage::LfsStorage>>,
+    /// Pipeline trigger hook (None = pipelines disabled).
+    pub pipeline_trigger: Option<Arc<dyn PipelineTriggerHook>>,
 }
 
 /// Build the complete git service router.
@@ -94,6 +105,7 @@ pub fn git_router(cfg: GitRouterConfig) -> Router {
         cache_store,
         allow_localhost_webhooks,
         lfs_storage,
+        pipeline_trigger,
     } = cfg;
 
     let http_client = reqwest::Client::builder()
@@ -115,6 +127,7 @@ pub fn git_router(cfg: GitRouterConfig) -> Router {
         webhook_semaphore: Arc::new(tokio::sync::Semaphore::new(10)),
         allow_localhost_webhooks,
         lfs_storage,
+        pipeline_trigger,
     });
 
     // Git Smart HTTP protocol routes.

@@ -1,0 +1,241 @@
+// Copyright 2026 Maravilla Labs
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+syntax = "proto3";
+
+package muli.v1;
+
+import "muli/v1/common.proto";
+
+// Pipeline CI/CD orchestration service.
+service PipelineService {
+  rpc TriggerPipeline(TriggerPipelineRequest) returns (PipelineRunResponse);
+  rpc GetPipelineRun(GetPipelineRunRequest) returns (PipelineRunResponse);
+  rpc ListPipelineRuns(ListPipelineRunsRequest) returns (ListPipelineRunsResponse);
+  rpc CancelPipeline(CancelPipelineRequest) returns (CancelPipelineResponse);
+  rpc RetryPipeline(RetryPipelineRequest) returns (PipelineRunResponse);
+  rpc GetStepLogs(GetStepLogsRequest) returns (GetStepLogsResponse);
+  rpc StreamStepLogs(StreamStepLogsRequest) returns (stream LogLine);
+  rpc ListArtifacts(ListArtifactsRequest) returns (ListArtifactsResponse);
+  rpc DownloadArtifact(DownloadArtifactRequest) returns (stream ArtifactChunk);
+  rpc ListCaches(ListCachesRequest) returns (ListCachesResponse);
+  rpc DeleteCache(DeleteCacheRequest) returns (DeleteCacheResponse);
+  rpc WatchPipelineRun(WatchPipelineRunRequest) returns (stream PipelineRunEvent);
+  rpc GetPipelineConfig(GetPipelineConfigRequest) returns (GetPipelineConfigResponse);
+}
+
+enum PipelineRunState {
+  PIPELINE_RUN_STATE_UNSPECIFIED = 0;
+  PIPELINE_RUN_STATE_PENDING = 1;
+  PIPELINE_RUN_STATE_RUNNING = 2;
+  PIPELINE_RUN_STATE_SUCCEEDED = 3;
+  PIPELINE_RUN_STATE_FAILED = 4;
+  PIPELINE_RUN_STATE_CANCELLED = 5;
+  PIPELINE_RUN_STATE_DEGRADED = 6;
+}
+
+enum PipelineStepState {
+  PIPELINE_STEP_STATE_UNSPECIFIED = 0;
+  PIPELINE_STEP_STATE_PENDING = 1;
+  PIPELINE_STEP_STATE_READY = 2;
+  PIPELINE_STEP_STATE_RUNNING = 3;
+  PIPELINE_STEP_STATE_SUCCEEDED = 4;
+  PIPELINE_STEP_STATE_FAILED = 5;
+  PIPELINE_STEP_STATE_SKIPPED = 6;
+  PIPELINE_STEP_STATE_CANCELLED = 7;
+}
+
+enum PipelineTriggerType {
+  PIPELINE_TRIGGER_TYPE_UNSPECIFIED = 0;
+  PIPELINE_TRIGGER_TYPE_PUSH = 1;
+  PIPELINE_TRIGGER_TYPE_PULL_REQUEST = 2;
+  PIPELINE_TRIGGER_TYPE_MANUAL = 3;
+  PIPELINE_TRIGGER_TYPE_SCHEDULE = 4;
+  PIPELINE_TRIGGER_TYPE_RETRY = 5;
+}
+
+enum FailureStrategy {
+  FAILURE_STRATEGY_UNSPECIFIED = 0;
+  FAILURE_STRATEGY_STOP = 1;
+  FAILURE_STRATEGY_CONTINUE = 2;
+  FAILURE_STRATEGY_IGNORE = 3;
+}
+
+// Domain messages
+
+message PipelineRun {
+  string id = 1;
+  string pipeline_id = 2;
+  string tenant_id = 3;
+  string repo_id = 4;
+  uint64 run_number = 5;
+  string commit_sha = 6;
+  string ref_name = 7;
+  PipelineTriggerType trigger_type = 8;
+  PipelineRunState state = 9;
+  repeated StepRun steps = 10;
+  Timestamp created_at = 11;
+  Timestamp started_at = 12;
+  Timestamp finished_at = 13;
+}
+
+message StepRun {
+  string id = 1;
+  string run_id = 2;
+  string step_name = 3;
+  string job_id = 4;
+  PipelineStepState state = 5;
+  string matrix_values = 6; // JSON string
+  FailureStrategy failure_strategy = 7;
+  Timestamp started_at = 8;
+  Timestamp finished_at = 9;
+}
+
+message PipelineArtifact {
+  string id = 1;
+  string run_id = 2;
+  string step_name = 3;
+  string name = 4;
+  uint64 size_bytes = 5;
+  string sha256 = 6;
+  Timestamp expires_at = 7;
+  Timestamp created_at = 8;
+}
+
+message PipelineCache {
+  string id = 1;
+  string repo_id = 2;
+  string cache_key = 3;
+  uint64 size_bytes = 4;
+  Timestamp last_used_at = 5;
+  Timestamp created_at = 6;
+}
+
+message LogLine {
+  string line = 1;
+  string stream = 2;
+  int64 timestamp_ms = 3;
+}
+
+message ArtifactChunk {
+  bytes data = 1;
+}
+
+message PipelineRunEvent {
+  string run_id = 1;
+  PipelineRunState run_state = 2;
+  string step_name = 3;
+  PipelineStepState step_state = 4;
+  Timestamp timestamp = 5;
+}
+
+// Request/Response messages
+
+message TriggerPipelineRequest {
+  string tenant_id = 1;
+  string repo_id = 2;
+  string branch = 3;
+  string commit_sha = 4;
+  // Additional environment variables to inject into step Jobs.
+  // Callers (e.g. flightdeck) can pass secrets here; muli also resolves
+  // its own PipelineSecretStore secrets at execution time.
+  map<string, string> env_vars = 5;
+}
+
+message PipelineRunResponse {
+  PipelineRun run = 1;
+}
+
+message GetPipelineRunRequest {
+  string tenant_id = 1;
+  string repo_id = 2;
+  uint64 run_number = 3;
+}
+
+message ListPipelineRunsRequest {
+  string tenant_id = 1;
+  string repo_id = 2;
+  PipelineRunState state_filter = 3;
+  uint32 limit = 4;
+  uint32 offset = 5;
+}
+
+message ListPipelineRunsResponse {
+  repeated PipelineRun runs = 1;
+  uint32 total = 2;
+}
+
+message CancelPipelineRequest {
+  string tenant_id = 1;
+  string run_id = 2;
+}
+
+message CancelPipelineResponse {}
+
+message RetryPipelineRequest {
+  string tenant_id = 1;
+  string run_id = 2;
+}
+
+message GetStepLogsRequest {
+  string tenant_id = 1;
+  string run_id = 2;
+  string step_name = 3;
+  uint32 tail = 4;
+}
+
+message GetStepLogsResponse {
+  repeated LogLine lines = 1;
+}
+
+message StreamStepLogsRequest {
+  string tenant_id = 1;
+  string run_id = 2;
+  string step_name = 3;
+}
+
+message ListArtifactsRequest {
+  string tenant_id = 1;
+  string run_id = 2;
+}
+
+message ListArtifactsResponse {
+  repeated PipelineArtifact artifacts = 1;
+}
+
+message DownloadArtifactRequest {
+  string tenant_id = 1;
+  string artifact_id = 2;
+}
+
+message ListCachesRequest {
+  string tenant_id = 1;
+  string repo_id = 2;
+}
+
+message ListCachesResponse {
+  repeated PipelineCache caches = 1;
+}
+
+message DeleteCacheRequest {
+  string tenant_id = 1;
+  string repo_id = 2;
+  string cache_key = 3;
+}
+
+message DeleteCacheResponse {}
+
+message WatchPipelineRunRequest {
+  string tenant_id = 1;
+  string run_id = 2;
+}
+
+message GetPipelineConfigRequest {
+  string tenant_id = 1;
+  string repo_id = 2;
+}
+
+message GetPipelineConfigResponse {
+  string yaml_content = 1;
+  bool pipeline_detected = 2;
+}

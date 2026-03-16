@@ -178,6 +178,7 @@ impl JobServiceImpl {
                 Some(req.idempotency_key)
             },
             registry_credentials,
+            commands: vec![],
         };
 
         let job = Job::new(spec);

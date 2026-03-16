@@ -155,6 +155,24 @@ pub async fn receive_pack(
 
     // After a successful push, fire webhooks (with backpressure) and invalidate cache.
     if response.status().is_success() {
+        let zero_sha = "0".repeat(40);
+
+        // Trigger pipeline runs for each ref update (before webhook spawn consumes ref_updates)
+        if let Some(trigger) = state.pipeline_trigger.as_ref() {
+            for (_old_sha, new_sha, ref_name) in &ref_updates {
+                if *new_sha != zero_sha {
+                    let trigger = trigger.clone();
+                    let tid = tenant.tenant_id.clone();
+                    let rid = repo.id.clone();
+                    let sha = new_sha.clone();
+                    let rn = ref_name.clone();
+                    tokio::spawn(async move {
+                        trigger.on_push(&tid, &rid, &sha, &rn).await;
+                    });
+                }
+            }
+        }
+
         let webhook_store = state.webhook_store.clone();
         let http_client = state.http_client.clone();
         let semaphore = state.webhook_semaphore.clone();
@@ -162,7 +180,6 @@ pub async fn receive_pack(
         let tenant_id = tenant.tenant_id.clone();
         let repo_id = repo.id.clone();
         let repo_name_clone = repo_name.clone();
-        let zero_sha = "0".repeat(40);
         tokio::spawn(async move {
             let _permit = semaphore.acquire().await;
             if ref_updates.is_empty() {

@@ -50,6 +50,15 @@ pub enum MuliError {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error("Pipeline error: {0}")]
+    Pipeline(String),
+
+    #[error("Pipeline YAML error: {0}")]
+    PipelineYamlError(String),
+
+    #[error("Pipeline DAG cycle: {0}")]
+    PipelineDagCycle(String),
 }
 
 impl MuliError {

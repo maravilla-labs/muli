@@ -24,6 +24,7 @@ pub fn test_job_spec() -> JobSpec {
         framework: "static".to_string(),
         idempotency_key: None,
         registry_credentials: None,
+        commands: vec![],
     }
 }
 

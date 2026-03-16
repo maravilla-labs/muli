@@ -6,6 +6,7 @@
 mod git;
 mod job;
 mod org;
+mod pipeline;
 mod registry;
 mod user;
 
@@ -15,5 +16,8 @@ pub use git::{
 };
 pub use job::{AgentRegistry, JobLogStore, JobStore};
 pub use org::{OrgMemberStore, OrgStore, PrCommentStore, PullRequestStore};
+pub use pipeline::{
+    ArtifactStore, CacheStore, PipelineRunStore, PipelineSecretStore, PipelineStore, StepRunStore,
+};
 pub use registry::{RegistryTokenStore, TenantQuotaStore, TenantStore};
 pub use user::UserStore;

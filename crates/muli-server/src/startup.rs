@@ -19,23 +19,9 @@ use muli_engine::executor::DockerExecutor;
 use muli_engine::resource_manager::ResourceManager;
 use muli_queue::{ConcurrencyLimiter, PriorityQueue, Scheduler};
 
-use muli_proto::agent_service_server::AgentServiceServer;
-use muli_proto::git_service_server::GitServiceServer;
-use muli_proto::health_service_server::HealthServiceServer;
-use muli_proto::job_service_server::JobServiceServer;
-use muli_proto::log_service_server::LogServiceServer;
-use muli_proto::org_service_server::OrgServiceServer;
-use muli_proto::registry_service_server::RegistryServiceServer;
-use muli_proto::tenant_service_server::TenantServiceServer;
-use muli_proto::user_service_server::UserServiceServer;
-
 use crate::config::ServerConfig;
-use crate::grpc::{
-    AgentServiceImpl, AuthInterceptor, GitServiceImpl, HealthServiceImpl, JobServiceImpl,
-    LogServiceImpl, OrgServiceImpl, RegistryServiceImpl, TenantServiceImpl, UserServiceImpl,
-};
 use crate::metrics::metrics_router;
-use crate::shutdown::shutdown_signal;
+use crate::start_grpc::start_grpc;
 use crate::stores::init_stores;
 use crate::{cleanup, embedded_agent, execution, recovery};
 
@@ -45,10 +31,8 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
 
     let shutdown_timeout = Duration::from_secs(config.shutdown_timeout_seconds);
 
-    // Initialize all stores
     let stores = init_stores(&config).await?;
 
-    // Connect to Docker
     let docker = DockerClient::new().context("Failed to connect to Docker")?;
     docker
         .check_connection()
@@ -56,26 +40,21 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
         .context("Docker daemon is not reachable")?;
     info!("Docker daemon reachable");
 
-    // Create resource manager
     let resource_manager = Arc::new(ResourceManager::new(
         config.total_cpu_millicores,
         config.total_memory_bytes,
         config.max_concurrent_jobs,
     ));
 
-    // Create executor
     let executor = Arc::new(DockerExecutor::new(
         docker.clone(),
         resource_manager.clone(),
     ));
 
-    // Create log collectors map
     let log_collectors: Arc<DashMap<String, Arc<LogCollector>>> = Arc::new(DashMap::new());
-
-    // Create cancellation token for coordinated shutdown
     let cancel = CancellationToken::new();
 
-    // Create scheduler
+    // Scheduler
     let notify = Arc::new(Notify::new());
     let queue = Arc::new(PriorityQueue::new(notify.clone()));
     let limiter = Arc::new(ConcurrencyLimiter::new(
@@ -84,10 +63,8 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
     ));
     let scheduler = Arc::new(Scheduler::new(queue, limiter, notify));
 
-    // Recover interrupted jobs from previous run
     recovery::recover_jobs(&stores.job_store, &scheduler).await;
 
-    // Start scheduler loop
     let scheduler_handle = {
         let scheduler = scheduler.clone();
         let store = stores.job_store.clone();
@@ -103,7 +80,6 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
                     let executor = executor.clone();
                     let log_collectors = log_collectors.clone();
                     let ls = ls.clone();
-
                     async move {
                         execution::execute_job(job_id, store, executor, log_collectors, ls).await;
                     }
@@ -112,7 +88,7 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
         })
     };
 
-    // Start cleanup service
+    // Docker cleanup
     let cleanup_service = CleanupService::new(
         docker.clone(),
         Duration::from_secs(config.cleanup_interval_seconds),
@@ -120,26 +96,10 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
     );
     let _cleanup_handle = cleanup_service.run();
 
-    // Start HTTP metrics server (always on its own port)
-    {
-        let http_addr = format!("0.0.0.0:{}", config.metrics_port);
-        let http_listener = tokio::net::TcpListener::bind(&http_addr)
-            .await
-            .with_context(|| format!("Failed to bind HTTP metrics listener on {http_addr}"))?;
-        info!(addr = %http_addr, "HTTP metrics server listening");
+    // HTTP metrics
+    start_metrics(&config, &cancel).await?;
 
-        let cancel_http = cancel.clone();
-        tokio::spawn(async move {
-            if let Err(e) = axum::serve(http_listener, metrics_router())
-                .with_graceful_shutdown(cancel_http.cancelled_owned())
-                .await
-            {
-                error!(error = %e, "HTTP metrics server error");
-            }
-        });
-    }
-
-    // Optionally start embedded registry on its own port
+    // Registry
     if config.registry_enabled {
         start_registry(
             &config,
@@ -150,7 +110,7 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
         .await?;
     }
 
-    // Verify the git binary is available before starting the git service
+    // Git
     if config.git_enabled {
         match muli_git::storage::check_git_available().await {
             Ok(version) => info!("git binary found: {}", version),
@@ -163,13 +123,37 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
         }
     }
 
-    // Create git filesystem storage
     let git_root = config.effective_git_root();
     let git_storage = Arc::new(
         muli_git::storage::FilesystemStorage::new(git_root.to_str().unwrap_or_default())
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create git storage: {e}"))?,
     );
+
+    // Job submitter for pipeline steps
+    let pipeline_job_submitter: Arc<dyn muli_pipeline::JobSubmitter> =
+        Arc::new(crate::pipeline_job_submitter::SchedulerJobSubmitter {
+            job_store: stores.job_store.clone(),
+            scheduler: scheduler.clone(),
+        });
+
+    // Pipeline trigger
+    let pipeline_trigger: Option<Arc<dyn muli_git::api::PipelineTriggerHook>> =
+        if config.pipeline_enabled && config.git_enabled {
+            info!("Pipeline triggering enabled");
+            Some(Arc::new(crate::pipeline_trigger::PipelineTriggerImpl::new(
+                git_storage.clone(),
+                stores.repo_store.clone(),
+                stores.pr_store.clone(),
+                stores.pipeline_store.clone(),
+                stores.pipeline_run_store.clone(),
+                stores.step_run_store.clone(),
+                stores.job_store.clone(),
+                pipeline_job_submitter.clone(),
+            )))
+        } else {
+            None
+        };
 
     let git_stores = GitStores {
         storage: git_storage.clone(),
@@ -180,11 +164,11 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
         pr_store: stores.pr_store.clone(),
         pr_comment_store: stores.pr_comment_store.clone(),
         cache_store: stores.tree_commit_cache.clone(),
+        pipeline_trigger,
     };
     if config.git_enabled {
         start_git_http(&config, &git_stores, &cancel).await?;
     }
-
     if config.git_ssh_enabled {
         start_git_ssh(
             &config,
@@ -199,12 +183,11 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
         .await?;
     }
 
-    // Optionally spawn an in-process agent
     if config.embedded_agent {
         embedded_agent::spawn(&config, cancel.clone()).await?;
     }
 
-    // Spawn background cleanup tasks
+    // Background cleanup tasks
     cleanup::spawn_registry_token_cleanup(stores.registry_token_store.clone(), cancel.clone());
     cleanup::spawn_git_token_cleanup(stores.git_token_store.clone(), cancel.clone());
     cleanup::spawn_job_cleanup(
@@ -214,151 +197,21 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
         Duration::from_secs(config.cleanup_max_age_seconds),
     );
 
-    // Build gRPC services
-    let job_service = JobServiceImpl {
-        store: stores.job_store.clone(),
-        scheduler: scheduler.clone(),
-        executor: executor.clone(),
-        log_collectors: log_collectors.clone(),
-    };
-
-    let log_service = LogServiceImpl {
-        log_collectors: log_collectors.clone(),
-        max_log_lines: config.max_log_lines,
-        job_log_store: stores.job_log_store.clone(),
-        job_store: stores.job_store.clone(),
-    };
-
-    let agent_service = AgentServiceImpl {
-        agent_registry: stores.agent_registry,
-        job_store: stores.job_store.clone(),
-        queue: scheduler.queue().clone(),
-        log_collectors: log_collectors.clone(),
-        job_log_store: stores.job_log_store,
-    };
-
-    let health_service = HealthServiceImpl::new(docker.clone());
-
-    let registry_service = RegistryServiceImpl {
-        token_store: stores.registry_token_store,
-        quota_store: stores.tenant_quota_store,
-    };
-
-    let git_service = GitServiceImpl {
-        repo_store: stores.repo_store,
-        token_store: stores.git_token_store,
-        ssh_key_store: stores.ssh_key_store,
-        webhook_store: stores.webhook_store,
-        collaborator_store: stores.collaborator_store,
+    // gRPC server (blocks until shutdown)
+    start_grpc(
+        &config,
+        stores,
+        docker.clone(),
+        scheduler.clone(),
+        executor.clone(),
+        log_collectors,
         git_storage,
-        allow_localhost_webhooks: config.git_allow_localhost_webhooks,
-    };
+        pipeline_job_submitter,
+        cancel,
+    )
+    .await?;
 
-    let user_service = UserServiceImpl {
-        user_store: stores.user_store,
-    };
-
-    let org_service = OrgServiceImpl {
-        org_store: stores.org_store,
-        member_store: stores.org_member_store,
-    };
-
-    let tenant_service = TenantServiceImpl {
-        tenant_store: stores.tenant_store,
-    };
-
-    // Create auth interceptor (no-op when MULI_API_KEY is unset)
-    let auth = AuthInterceptor::new(config.api_key.clone(), config.default_tenant_id.clone());
-    if config.api_key.is_some() {
-        info!("gRPC authentication enabled (MULI_API_KEY is set)");
-    } else {
-        info!("gRPC authentication disabled (MULI_API_KEY not set)");
-    }
-
-    if config.require_auth && config.api_key.is_none() {
-        anyhow::bail!(
-            "MULI_REQUIRE_AUTH=true but MULI_API_KEY is not set. \
-             Set MULI_API_KEY to a strong random value or disable MULI_REQUIRE_AUTH."
-        );
-    }
-
-    // Start gRPC server
-    let grpc_addr = format!("0.0.0.0:{}", config.grpc_port)
-        .parse()
-        .context("Invalid gRPC address")?;
-
-    info!(addr = %grpc_addr, "gRPC server listening");
-
-    let cancel_grpc = cancel.clone();
-    let mut server_builder = tonic::transport::Server::builder();
-
-    // Configure TLS if cert and key paths are provided
-    if let (Some(cert_path), Some(key_path)) = (&config.tls_cert_path, &config.tls_key_path) {
-        let cert =
-            std::fs::read_to_string(cert_path).context("Failed to read TLS certificate file")?;
-        let key = std::fs::read_to_string(key_path).context("Failed to read TLS key file")?;
-        let identity = tonic::transport::Identity::from_pem(cert, key);
-        let tls_config = tonic::transport::ServerTlsConfig::new().identity(identity);
-        server_builder = server_builder
-            .tls_config(tls_config)
-            .context("Invalid TLS configuration")?;
-        info!("gRPC TLS enabled");
-    } else {
-        info!("gRPC TLS disabled (MULI_TLS_CERT_PATH/MULI_TLS_KEY_PATH not set)");
-    }
-
-    server_builder
-        .http2_keepalive_interval(Some(Duration::from_secs(30)))
-        .http2_keepalive_timeout(Some(Duration::from_secs(10)))
-        .http2_adaptive_window(Some(true))
-        .initial_connection_window_size(Some(1024 * 1024))
-        .initial_stream_window_size(Some(1024 * 1024))
-        .max_frame_size(Some(32768))
-        .concurrency_limit_per_connection(100)
-        .timeout(Duration::from_secs(300))
-        .add_service(JobServiceServer::with_interceptor(
-            job_service,
-            auth.clone(),
-        ))
-        .add_service(LogServiceServer::with_interceptor(
-            log_service,
-            auth.clone(),
-        ))
-        .add_service(AgentServiceServer::with_interceptor(
-            agent_service,
-            auth.clone(),
-        ))
-        .add_service(HealthServiceServer::with_interceptor(
-            health_service,
-            auth.clone(),
-        ))
-        .add_service(RegistryServiceServer::with_interceptor(
-            registry_service,
-            auth.clone(),
-        ))
-        .add_service(GitServiceServer::with_interceptor(
-            git_service,
-            auth.clone(),
-        ))
-        .add_service(UserServiceServer::with_interceptor(
-            user_service,
-            auth.clone(),
-        ))
-        .add_service(OrgServiceServer::with_interceptor(
-            org_service,
-            auth.clone(),
-        ))
-        .add_service(TenantServiceServer::with_interceptor(tenant_service, auth))
-        .serve_with_shutdown(grpc_addr, async move {
-            if let Err(e) = shutdown_signal().await {
-                error!(error = %e, "Failed to install signal handler, cancelling immediately");
-            }
-            cancel_grpc.cancel();
-        })
-        .await
-        .context("gRPC server error")?;
-
-    // Graceful shutdown: wait for scheduler to finish draining with a timeout
+    // Graceful shutdown
     info!(
         timeout_secs = shutdown_timeout.as_secs(),
         "Waiting for scheduler to drain"
@@ -373,7 +226,30 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Start the OCI/npm/cargo registry HTTP server.
+// ── Helper startup functions ────────────────────────────────────────────
+
+async fn start_metrics(
+    config: &ServerConfig,
+    cancel: &CancellationToken,
+) -> anyhow::Result<()> {
+    let http_addr = format!("0.0.0.0:{}", config.metrics_port);
+    let http_listener = tokio::net::TcpListener::bind(&http_addr)
+        .await
+        .with_context(|| format!("Failed to bind HTTP metrics listener on {http_addr}"))?;
+    info!(addr = %http_addr, "HTTP metrics server listening");
+
+    let cancel_http = cancel.clone();
+    tokio::spawn(async move {
+        if let Err(e) = axum::serve(http_listener, metrics_router())
+            .with_graceful_shutdown(cancel_http.cancelled_owned())
+            .await
+        {
+            error!(error = %e, "HTTP metrics server error");
+        }
+    });
+    Ok(())
+}
+
 async fn start_registry(
     config: &ServerConfig,
     registry_token_store: &Arc<dyn muli_core::traits::RegistryTokenStore>,
@@ -409,7 +285,6 @@ async fn start_registry(
 
     let registry_addr = format!("0.0.0.0:{}", config.registry_port);
 
-    // Start registry with optional TLS
     if let (Some(cert_path), Some(key_path)) = (
         &config.registry_tls_cert_path,
         &config.registry_tls_key_path,
@@ -418,23 +293,16 @@ async fn start_registry(
             axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_path, key_path)
                 .await
                 .context("Failed to load registry TLS certificate/key")?;
-
-        info!(
-            addr = %registry_addr,
-            "Registry listening with TLS on port {}",
-            config.registry_port
-        );
+        info!(addr = %registry_addr, "Registry listening with TLS");
 
         let cancel_registry = cancel.clone();
         tokio::spawn(async move {
             let handle = axum_server::Handle::new();
             let shutdown_handle = handle.clone();
-
             tokio::spawn(async move {
                 cancel_registry.cancelled().await;
                 shutdown_handle.graceful_shutdown(None);
             });
-
             if let Err(e) = axum_server::bind_rustls(
                 registry_addr.parse().expect("Invalid registry address"),
                 rustls_config,
@@ -450,12 +318,7 @@ async fn start_registry(
         let registry_listener = tokio::net::TcpListener::bind(&registry_addr)
             .await
             .with_context(|| format!("Failed to bind registry listener on {registry_addr}"))?;
-
-        info!(
-            addr = %registry_addr,
-            "Registry listening on port {}",
-            config.registry_port
-        );
+        info!(addr = %registry_addr, "Registry listening on port {}", config.registry_port);
 
         let cancel_registry = cancel.clone();
         tokio::spawn(async move {
@@ -481,9 +344,9 @@ pub(crate) struct GitStores {
     pub pr_store: Arc<dyn muli_core::traits::PullRequestStore>,
     pub pr_comment_store: Arc<dyn muli_core::traits::PrCommentStore>,
     pub cache_store: Arc<dyn muli_core::traits::TreeCommitCacheStore>,
+    pub pipeline_trigger: Option<Arc<dyn muli_git::api::PipelineTriggerHook>>,
 }
 
-/// Start the git HTTP smart protocol server.
 async fn start_git_http(
     config: &ServerConfig,
     git: &GitStores,
@@ -494,7 +357,6 @@ async fn start_git_http(
         git_tenant_config = git_tenant_config.with_default_tenant(dt.as_str());
     }
     let git_auth = muli_git::GitAuth::new(git.token_store.clone());
-    // Initialize LFS storage (filesystem backend, shares the git root).
     let lfs_storage: Option<Arc<dyn muli_git::lfs::storage::LfsStorage>> = {
         let git_root = config.effective_git_root();
         match muli_git::lfs::storage::filesystem::FilesystemLfsStorage::new(
@@ -524,6 +386,7 @@ async fn start_git_http(
         cache_store: Some(git.cache_store.clone()),
         allow_localhost_webhooks: config.git_allow_localhost_webhooks,
         lfs_storage,
+        pipeline_trigger: git.pipeline_trigger.clone(),
     });
 
     let git_addr = format!("0.0.0.0:{}", config.git_port);
@@ -545,7 +408,6 @@ async fn start_git_http(
     Ok(())
 }
 
-/// Start the git SSH server.
 async fn start_git_ssh(
     config: &ServerConfig,
     ssh_key_store: &Arc<dyn muli_core::traits::SshKeyStore>,
@@ -574,7 +436,7 @@ async fn start_git_ssh(
         org_store: org_store.clone(),
         org_member_store: org_member_store.clone(),
         collaborator_store: collaborator_store.clone(),
-        token_store: None, // LFS SSH auth token generation (future enhancement)
+        token_store: None,
         git_domain: Some(config.git_domain.clone()),
     };
 

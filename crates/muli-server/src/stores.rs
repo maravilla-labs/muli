@@ -10,16 +10,18 @@ use tracing::{info, warn};
 
 use muli_core::tenant::Tenant;
 use muli_core::traits::{
-    CollaboratorStore, GitTokenStore, JobLogStore, JobStore, OrgMemberStore, OrgStore,
+    ArtifactStore, CacheStore, CollaboratorStore, GitTokenStore, JobLogStore, JobStore,
+    OrgMemberStore, OrgStore, PipelineRunStore, PipelineSecretStore, PipelineStore,
     PrCommentStore, PullRequestStore, RegistryTokenStore, RepositoryStore, SshKeyStore,
-    TenantQuotaStore, TenantStore, TreeCommitCacheStore, UserStore, WebhookStore,
+    StepRunStore, TenantQuotaStore, TenantStore, TreeCommitCacheStore, UserStore, WebhookStore,
 };
 use muli_store::sqlite::{
-    SqliteCollaboratorStore, SqliteGitTokenStore, SqliteJobLogStore, SqliteJobStore,
-    SqliteOrgMemberStore, SqliteOrgStore, SqlitePrCommentStore, SqlitePullRequestStore,
-    SqliteRegistryTokenStore, SqliteRepositoryStore, SqliteSshKeyStore, SqliteStoreFactory,
-    SqliteTenantQuotaStore, SqliteTenantStore, SqliteTreeCommitCacheStore, SqliteUserStore,
-    SqliteWebhookStore,
+    SqliteArtifactStore, SqliteCacheStore, SqliteCollaboratorStore, SqliteGitTokenStore,
+    SqliteJobLogStore, SqliteJobStore, SqliteOrgMemberStore, SqliteOrgStore,
+    SqlitePipelineRunStore, SqlitePipelineSecretStore, SqlitePipelineStore, SqlitePrCommentStore,
+    SqlitePullRequestStore, SqliteRegistryTokenStore, SqliteRepositoryStore, SqliteSshKeyStore,
+    SqliteStepRunStore, SqliteStoreFactory, SqliteTenantQuotaStore, SqliteTenantStore,
+    SqliteTreeCommitCacheStore, SqliteUserStore, SqliteWebhookStore,
 };
 
 use crate::config::ServerConfig;
@@ -43,6 +45,13 @@ pub(crate) struct Stores {
     pub pr_store: Arc<dyn PullRequestStore>,
     pub pr_comment_store: Arc<dyn PrCommentStore>,
     pub tree_commit_cache: Arc<dyn TreeCommitCacheStore>,
+    // Pipeline stores
+    pub pipeline_store: Arc<dyn PipelineStore>,
+    pub pipeline_run_store: Arc<dyn PipelineRunStore>,
+    pub step_run_store: Arc<dyn StepRunStore>,
+    pub artifact_store: Arc<dyn ArtifactStore>,
+    pub pipeline_cache_store: Arc<dyn CacheStore>,
+    pub pipeline_secret_store: Arc<dyn PipelineSecretStore>,
 }
 
 /// Initialize all SQLite-backed stores from config.
@@ -91,6 +100,13 @@ pub(crate) async fn init_stores(config: &ServerConfig) -> anyhow::Result<Stores>
         org_member_store: Arc::new(SqliteOrgMemberStore::new(factory.clone())),
         pr_store: Arc::new(SqlitePullRequestStore::new(factory.clone())),
         pr_comment_store: Arc::new(SqlitePrCommentStore::new(factory.clone())),
-        tree_commit_cache: Arc::new(SqliteTreeCommitCacheStore::new(factory)),
+        tree_commit_cache: Arc::new(SqliteTreeCommitCacheStore::new(factory.clone())),
+        // Pipeline stores
+        pipeline_store: Arc::new(SqlitePipelineStore::new(factory.clone())),
+        pipeline_run_store: Arc::new(SqlitePipelineRunStore::new(factory.clone())),
+        step_run_store: Arc::new(SqliteStepRunStore::new(factory.clone())),
+        artifact_store: Arc::new(SqliteArtifactStore::new(factory.clone())),
+        pipeline_cache_store: Arc::new(SqliteCacheStore::new(factory.clone())),
+        pipeline_secret_store: Arc::new(SqlitePipelineSecretStore::new(factory)),
     })
 }

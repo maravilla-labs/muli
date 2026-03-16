@@ -42,6 +42,10 @@ pub struct JobSpec {
     pub framework: String,
     pub idempotency_key: Option<String>,
     pub registry_credentials: Option<RegistryCredentials>,
+    /// Shell commands to execute (pipeline steps). When set, the container
+    /// runs `/bin/sh -c "<commands joined with &&>"` instead of the image default.
+    #[serde(default)]
+    pub commands: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

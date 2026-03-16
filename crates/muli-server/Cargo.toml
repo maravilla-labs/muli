@@ -18,6 +18,8 @@ mongodb = { workspace = true }
 muli-queue = { workspace = true }
 muli-registry = { workspace = true }
 muli-git = { workspace = true }
+muli-pipeline = { workspace = true }
+git2 = { workspace = true }
 tonic = { workspace = true }
 rustls = { workspace = true }
 tokio = { workspace = true }

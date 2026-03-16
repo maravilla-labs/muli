@@ -194,6 +194,73 @@ CREATE TABLE IF NOT EXISTS tree_commit_cache (
   PRIMARY KEY (repo_id, commit_sha, dir_path)
 );
 CREATE INDEX IF NOT EXISTS idx_tcc_repo ON tree_commit_cache(repo_id);
+
+CREATE TABLE IF NOT EXISTS pipelines (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  repo_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  full_json TEXT NOT NULL,
+  UNIQUE(repo_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS pipeline_runs (
+  id TEXT PRIMARY KEY,
+  pipeline_id TEXT NOT NULL,
+  tenant_id TEXT NOT NULL,
+  repo_id TEXT NOT NULL,
+  run_number INTEGER NOT NULL,
+  state TEXT NOT NULL DEFAULT 'Pending',
+  full_json TEXT NOT NULL,
+  UNIQUE(pipeline_id, run_number)
+);
+CREATE INDEX IF NOT EXISTS pipeline_runs_repo ON pipeline_runs(repo_id, state);
+CREATE INDEX IF NOT EXISTS pipeline_runs_pipeline ON pipeline_runs(pipeline_id);
+
+CREATE TABLE IF NOT EXISTS step_runs (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  step_name TEXT NOT NULL,
+  job_id TEXT,
+  state TEXT NOT NULL DEFAULT 'Pending',
+  full_json TEXT NOT NULL,
+  UNIQUE(run_id, step_name)
+);
+CREATE INDEX IF NOT EXISTS step_runs_run ON step_runs(run_id);
+
+CREATE TABLE IF NOT EXISTS pipeline_artifacts (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  step_name TEXT NOT NULL,
+  name TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  expires_at INTEGER,
+  full_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS artifacts_run ON pipeline_artifacts(run_id);
+
+CREATE TABLE IF NOT EXISTS pipeline_cache (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  repo_id TEXT NOT NULL,
+  cache_key TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  last_used_at INTEGER NOT NULL,
+  full_json TEXT NOT NULL,
+  UNIQUE(repo_id, cache_key)
+);
+CREATE INDEX IF NOT EXISTS cache_repo ON pipeline_cache(repo_id);
+
+CREATE TABLE IF NOT EXISTS pipeline_secrets (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  repo_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  full_json TEXT NOT NULL,
+  UNIQUE(repo_id, name)
+);
+CREATE INDEX IF NOT EXISTS secrets_repo ON pipeline_secrets(repo_id);
 ";
 
 /// Central SQLite connection factory. Holds one connection per tenant DB

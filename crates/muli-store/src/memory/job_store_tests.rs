@@ -20,6 +20,7 @@ fn make_job_spec(tenant_id: &str) -> JobSpec {
         framework: "next".to_string(),
         idempotency_key: None,
         registry_credentials: None,
+        commands: vec![],
     }
 }
 
