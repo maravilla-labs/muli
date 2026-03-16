@@ -6,23 +6,19 @@
 
 mod common;
 
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
-use chrono::Utc;
 use dashmap::DashMap;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-use muli_core::job::model::{Job, StoredLogLine};
+use muli_core::job::model::Job;
 use muli_core::job::state_machine::JobState;
 use muli_core::pipeline::*;
 use muli_core::traits::{JobLogStore, JobStore, PipelineRunStore, PipelineStore, StepRunStore};
 use muli_engine::docker::logs::LogCollector;
 use muli_pipeline::dag::executor::{DagExecutor, JobSubmitter};
-use muli_pipeline::dag::matrix::expand_matrix;
 use muli_pipeline::yaml::parser::parse_pipeline;
 use muli_pipeline::yaml::validation::validate_pipeline;
 use muli_queue::{ConcurrencyLimiter, PriorityQueue, Scheduler};
@@ -174,7 +170,7 @@ steps:
 
     cancel.cancel();
 
-    eprintln!("Pipeline result: {:?}", result);
+    eprintln!("Pipeline result: {result:?}");
     assert_eq!(result, PipelineRunState::Succeeded);
 
     // Verify the run is persisted as Succeeded
@@ -261,7 +257,7 @@ steps:
     let result = executor.execute(&mut run, &pipeline_def, &[sr], None).await.unwrap();
     cancel.cancel();
 
-    eprintln!("Pipeline result: {:?}", result);
+    eprintln!("Pipeline result: {result:?}");
     assert_eq!(result, PipelineRunState::Failed);
 
     // Verify Job has non-zero exit code
@@ -330,7 +326,7 @@ steps:
     let result = executor.execute(&mut run, &pipeline_def, &step_runs, None).await.unwrap();
     cancel.cancel();
 
-    eprintln!("Pipeline result: {:?}", result);
+    eprintln!("Pipeline result: {result:?}");
     assert_eq!(result, PipelineRunState::Succeeded);
 
     // Verify both steps succeeded

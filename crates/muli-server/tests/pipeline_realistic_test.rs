@@ -17,7 +17,6 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use muli_core::job::model::Job;
-use muli_core::job::state_machine::JobState;
 use muli_core::pipeline::*;
 use muli_core::traits::{JobLogStore, JobStore, PipelineRunStore, PipelineStore, StepRunStore};
 use muli_engine::docker::logs::LogCollector;
@@ -285,7 +284,7 @@ steps:
             eprintln!("  {}", line.message.trim_end());
         }
     }
-    eprintln!("\n========== PIPELINE RESULT: {:?} ==========\n", result);
+    eprintln!("\n========== PIPELINE RESULT: {result:?} ==========\n");
 
     assert_eq!(result, PipelineRunState::Succeeded);
 

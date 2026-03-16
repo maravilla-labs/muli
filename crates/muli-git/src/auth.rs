@@ -16,8 +16,12 @@ use muli_core::token_hash;
 use serde_json::json;
 use tracing::warn;
 
-use muli_core::git::{GitPermission, HasPermissions, RepoAccessVerdict, check_repo_access};
-use muli_core::traits::{CollaboratorStore, GitTokenStore, RepositoryStore};
+use muli_core::git::{
+    GitPermission, HasPermissions, RepoAccessVerdict, check_repo_access_with_org_lookup,
+};
+use muli_core::traits::{
+    CollaboratorStore, GitTokenStore, OrgMemberStore, OrgStore, RepositoryStore,
+};
 
 use crate::tenant::TenantContext;
 
@@ -33,6 +37,8 @@ pub struct GitAuth {
     pub token_store: Arc<dyn GitTokenStore>,
     pub repo_store: Option<Arc<dyn RepositoryStore>>,
     pub collaborator_store: Option<Arc<dyn CollaboratorStore>>,
+    pub org_store: Option<Arc<dyn OrgStore>>,
+    pub org_member_store: Option<Arc<dyn OrgMemberStore>>,
     pub anonymous_pull: bool,
 }
 
@@ -42,6 +48,8 @@ impl GitAuth {
             token_store,
             repo_store: None,
             collaborator_store: None,
+            org_store: None,
+            org_member_store: None,
             anonymous_pull: false,
         }
     }
@@ -53,6 +61,16 @@ impl GitAuth {
 
     pub fn with_collaborator_store(mut self, store: Arc<dyn CollaboratorStore>) -> Self {
         self.collaborator_store = Some(store);
+        self
+    }
+
+    pub fn with_org_stores(
+        mut self,
+        org_store: Arc<dyn OrgStore>,
+        org_member_store: Arc<dyn OrgMemberStore>,
+    ) -> Self {
+        self.org_store = Some(org_store);
+        self.org_member_store = Some(org_member_store);
         self
     }
 
@@ -292,7 +310,17 @@ pub async fn auth_middleware(mut request: Request, next: Next) -> Response {
         {
             let required = required_permission(&method, &path, query.as_deref());
             let user_id = token.as_ref().and_then(|t| t.user_id.as_deref());
-            let verdict = check_repo_access(&repo, user_id, required, collab_store.as_ref()).await;
+
+            let verdict = check_repo_access_with_org_lookup(
+                &repo,
+                user_id,
+                required,
+                collab_store.as_ref(),
+                auth.org_store.as_deref(),
+                auth.org_member_store.as_deref(),
+                tenant_id_str,
+            )
+            .await;
             if let RepoAccessVerdict::Denied { reason } = verdict {
                 return forbidden_response(reason);
             }

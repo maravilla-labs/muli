@@ -44,6 +44,7 @@ enum OrgRole {
   ORG_ROLE_OWNER = 1;
   ORG_ROLE_ADMIN = 2;
   ORG_ROLE_MEMBER = 3;
+  ORG_ROLE_VIEWER = 4;
 }
 
 message CreateOrgRequest {

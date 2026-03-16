@@ -37,6 +37,7 @@ use crate::shutdown::shutdown_signal;
 use crate::stores::Stores;
 
 /// Build and start the gRPC server with all services.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn start_grpc(
     config: &ServerConfig,
     stores: Stores,

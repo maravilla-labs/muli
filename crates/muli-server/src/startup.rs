@@ -165,6 +165,8 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
         pr_comment_store: stores.pr_comment_store.clone(),
         cache_store: stores.tree_commit_cache.clone(),
         pipeline_trigger,
+        org_store: stores.org_store.clone(),
+        org_member_store: stores.org_member_store.clone(),
     };
     if config.git_enabled {
         start_git_http(&config, &git_stores, &cancel).await?;
@@ -345,6 +347,8 @@ pub(crate) struct GitStores {
     pub pr_comment_store: Arc<dyn muli_core::traits::PrCommentStore>,
     pub cache_store: Arc<dyn muli_core::traits::TreeCommitCacheStore>,
     pub pipeline_trigger: Option<Arc<dyn muli_git::api::PipelineTriggerHook>>,
+    pub org_store: Arc<dyn muli_core::traits::OrgStore>,
+    pub org_member_store: Arc<dyn muli_core::traits::OrgMemberStore>,
 }
 
 async fn start_git_http(
@@ -356,7 +360,8 @@ async fn start_git_http(
     if let Some(ref dt) = config.default_tenant_id {
         git_tenant_config = git_tenant_config.with_default_tenant(dt.as_str());
     }
-    let git_auth = muli_git::GitAuth::new(git.token_store.clone());
+    let git_auth = muli_git::GitAuth::new(git.token_store.clone())
+        .with_org_stores(git.org_store.clone(), git.org_member_store.clone());
     let lfs_storage: Option<Arc<dyn muli_git::lfs::storage::LfsStorage>> = {
         let git_root = config.effective_git_root();
         match muli_git::lfs::storage::filesystem::FilesystemLfsStorage::new(

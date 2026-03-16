@@ -14,6 +14,7 @@ pub enum OrgRole {
     Owner,
     Admin,
     Member,
+    Viewer,
 }
 
 /// An organization within a tenant.

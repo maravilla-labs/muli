@@ -18,7 +18,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use muli_core::git::{GitPermission, HasPermissions, RepoAccessVerdict, check_repo_access};
+use muli_core::git::{GitPermission, HasPermissions, RepoAccessVerdict, check_repo_access_with_org_lookup};
 use muli_core::traits::{
     CollaboratorStore, GitTokenStore, OrgMemberStore, OrgStore, RepositoryStore, SshKeyStore,
 };
@@ -420,6 +420,7 @@ impl Handler for SshSessionHandler {
         // 8. Per-repo collaborator/owner check.
         //    - Private repos: owner or collaborator required for any access
         //    - Public repos: anyone can read, but only owner or collaborator can push
+        //    - Org-owned repos: org members get access based on their role
         let is_push = git_cmd == "git-receive-pack";
         let required = if is_push {
             GitPermission::Push
@@ -432,11 +433,14 @@ impl Handler for SshSessionHandler {
             .await
         {
             Ok(Some(repo)) => {
-                let verdict = check_repo_access(
+                let verdict = check_repo_access_with_org_lookup(
                     &repo,
                     Some(&user_id),
                     required,
                     self.collaborator_store.as_ref(),
+                    Some(self.org_store.as_ref()),
+                    Some(self.org_member_store.as_ref()),
+                    &tenant_id,
                 )
                 .await;
                 if let RepoAccessVerdict::Denied { .. } = verdict {

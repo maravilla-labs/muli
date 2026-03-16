@@ -125,6 +125,8 @@ message CreateRepositoryRequest {
   string name = 3;
   string description = 4;
   bool is_private = 5;
+  string owner_id = 6;
+  string owner_type = 7;
 }
 
 message GetRepositoryRequest {

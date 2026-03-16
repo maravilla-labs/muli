@@ -142,6 +142,7 @@ pub fn proto_role_from_domain(role: OrgRole) -> ProtoOrgRole {
         OrgRole::Owner => ProtoOrgRole::Owner,
         OrgRole::Admin => ProtoOrgRole::Admin,
         OrgRole::Member => ProtoOrgRole::Member,
+        OrgRole::Viewer => ProtoOrgRole::Viewer,
     }
 }
 
@@ -150,6 +151,7 @@ pub fn domain_role_from_proto(role: i32) -> Result<OrgRole, Status> {
         ProtoOrgRole::Owner => Ok(OrgRole::Owner),
         ProtoOrgRole::Admin => Ok(OrgRole::Admin),
         ProtoOrgRole::Member => Ok(OrgRole::Member),
+        ProtoOrgRole::Viewer => Ok(OrgRole::Viewer),
         ProtoOrgRole::Unspecified => Err(Status::invalid_argument("role must be specified")),
     }
 }

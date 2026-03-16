@@ -81,10 +81,10 @@ impl<'a> DagGraph<'a> {
         let mut visited = HashSet::new();
         let mut in_stack = HashSet::new();
         for &name in &self.names {
-            if !visited.contains(name) {
-                if self.cycle_dfs(name, &mut visited, &mut in_stack) {
-                    return true;
-                }
+            if !visited.contains(name)
+                && self.cycle_dfs(name, &mut visited, &mut in_stack)
+            {
+                return true;
             }
         }
         false

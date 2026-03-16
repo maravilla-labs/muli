@@ -78,7 +78,7 @@ impl PipelineTriggerImpl {
         trigger: PipelineTrigger,
     ) {
         // 0. Rate limit: skip if triggered too recently for this repo
-        let repo_key = format!("{}/{}", tenant_id, repo_id);
+        let repo_key = format!("{tenant_id}/{repo_id}");
         if let Some(last) = self.last_trigger.get(&repo_key) {
             if last.elapsed().as_secs() < MIN_TRIGGER_INTERVAL_SECS {
                 warn!(

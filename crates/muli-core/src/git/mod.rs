@@ -7,7 +7,7 @@ mod access;
 mod model;
 mod webhook;
 
-pub use access::{RepoAccessVerdict, check_repo_access};
+pub use access::{RepoAccessVerdict, check_repo_access, check_repo_access_with_org_lookup};
 pub use model::{
     GitPermission, GitToken, HasPermissions, OwnerType, Repository, RepositoryCollaborator, SshKey,
 };

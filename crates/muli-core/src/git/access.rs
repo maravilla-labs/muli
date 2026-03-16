@@ -3,8 +3,9 @@
 
 //! Shared repo-level access control logic used by both HTTP and SSH paths.
 
-use crate::git::{GitPermission, HasPermissions, Repository};
-use crate::traits::CollaboratorStore;
+use crate::git::{GitPermission, HasPermissions, OwnerType, Repository};
+use crate::org::{OrgMember, OrgRole};
+use crate::traits::{CollaboratorStore, OrgMemberStore, OrgStore};
 
 /// Result of a repo-level access check.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,11 +14,21 @@ pub enum RepoAccessVerdict {
     Denied { reason: &'static str },
 }
 
+/// Map an `OrgRole` to the highest `GitPermission` it grants.
+fn org_role_allows(role: OrgRole, required: GitPermission) -> bool {
+    match role {
+        OrgRole::Owner | OrgRole::Admin => true, // pull, push, admin
+        OrgRole::Member => matches!(required, GitPermission::Pull | GitPermission::Push),
+        OrgRole::Viewer => matches!(required, GitPermission::Pull),
+    }
+}
+
 /// Check whether `user_id` may perform `required` on `repo`.
 ///
 /// Rules:
 /// - Public repo + read-only → allowed (no auth needed)
 /// - Owner → allowed
+/// - Org member with sufficient role (for org-owned repos) → allowed
 /// - Collaborator with the required permission → allowed
 /// - Otherwise → denied
 pub async fn check_repo_access(
@@ -25,6 +36,7 @@ pub async fn check_repo_access(
     user_id: Option<&str>,
     required: GitPermission,
     collaborator_store: &dyn CollaboratorStore,
+    org_membership: Option<&OrgMember>,
 ) -> RepoAccessVerdict {
     let is_write = matches!(required, GitPermission::Push | GitPermission::Admin);
 
@@ -48,6 +60,15 @@ pub async fn check_repo_access(
         return RepoAccessVerdict::Allowed;
     }
 
+    // Org membership check: if this is an org-owned repo and the user is a member
+    if repo.owner_type == OwnerType::Organization {
+        if let Some(member) = org_membership {
+            if org_role_allows(member.role, required) {
+                return RepoAccessVerdict::Allowed;
+            }
+        }
+    }
+
     // Collaborator check
     let is_collaborator = collaborator_store
         .get_collaborator(&repo.id, user_id)
@@ -64,6 +85,35 @@ pub async fn check_repo_access(
             reason: "access denied",
         }
     }
+}
+
+/// Convenience wrapper that resolves org membership from stores before calling
+/// [`check_repo_access`]. Use this from SSH and HTTP paths to avoid duplicating
+/// the org-lookup logic.
+pub async fn check_repo_access_with_org_lookup(
+    repo: &Repository,
+    user_id: Option<&str>,
+    required: GitPermission,
+    collaborator_store: &dyn CollaboratorStore,
+    org_store: Option<&dyn OrgStore>,
+    org_member_store: Option<&dyn OrgMemberStore>,
+    tenant_id: &str,
+) -> RepoAccessVerdict {
+    let org_membership = if repo.owner_type == OwnerType::Organization
+        && let Some(uid) = user_id
+        && !uid.is_empty()
+        && let (Some(os), Some(oms)) = (org_store, org_member_store)
+    {
+        if let Ok(Some(org)) = os.get_org_by_handle(tenant_id, &repo.namespace).await {
+            oms.get_member(&org.id, uid).await.ok().flatten()
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    check_repo_access(repo, user_id, required, collaborator_store, org_membership.as_ref()).await
 }
 
 #[cfg(test)]
@@ -167,7 +217,7 @@ mod tests {
         let repo = make_repo(false, "owner-1");
         let store = MockCollaboratorStore::new();
 
-        let verdict = check_repo_access(&repo, None, GitPermission::Pull, &store).await;
+        let verdict = check_repo_access(&repo, None, GitPermission::Pull, &store, None).await;
         assert_eq!(verdict, RepoAccessVerdict::Allowed);
     }
 
@@ -177,7 +227,7 @@ mod tests {
         let store = MockCollaboratorStore::new();
 
         let verdict =
-            check_repo_access(&repo, Some("random-user"), GitPermission::Pull, &store).await;
+            check_repo_access(&repo, Some("random-user"), GitPermission::Pull, &store, None).await;
         assert_eq!(verdict, RepoAccessVerdict::Allowed);
     }
 
@@ -190,7 +240,7 @@ mod tests {
         let repo = make_repo(true, "owner-1");
         let store = MockCollaboratorStore::new();
 
-        let verdict = check_repo_access(&repo, None, GitPermission::Pull, &store).await;
+        let verdict = check_repo_access(&repo, None, GitPermission::Pull, &store, None).await;
         assert_eq!(
             verdict,
             RepoAccessVerdict::Denied {
@@ -208,7 +258,7 @@ mod tests {
         let repo = make_repo(true, "owner-1");
         let store = MockCollaboratorStore::new();
 
-        let verdict = check_repo_access(&repo, Some("owner-1"), GitPermission::Pull, &store).await;
+        let verdict = check_repo_access(&repo, Some("owner-1"), GitPermission::Pull, &store, None).await;
         assert_eq!(verdict, RepoAccessVerdict::Allowed);
     }
 
@@ -217,7 +267,7 @@ mod tests {
         let repo = make_repo(true, "owner-1");
         let store = MockCollaboratorStore::new();
 
-        let verdict = check_repo_access(&repo, Some("owner-1"), GitPermission::Push, &store).await;
+        let verdict = check_repo_access(&repo, Some("owner-1"), GitPermission::Push, &store, None).await;
         assert_eq!(verdict, RepoAccessVerdict::Allowed);
     }
 
@@ -226,7 +276,7 @@ mod tests {
         let repo = make_repo(true, "owner-1");
         let store = MockCollaboratorStore::new();
 
-        let verdict = check_repo_access(&repo, Some("owner-1"), GitPermission::Admin, &store).await;
+        let verdict = check_repo_access(&repo, Some("owner-1"), GitPermission::Admin, &store, None).await;
         assert_eq!(verdict, RepoAccessVerdict::Allowed);
     }
 
@@ -245,7 +295,7 @@ mod tests {
             vec![GitPermission::Pull],
         ));
 
-        let verdict = check_repo_access(&repo, Some("collab-1"), GitPermission::Pull, &store).await;
+        let verdict = check_repo_access(&repo, Some("collab-1"), GitPermission::Pull, &store, None).await;
         assert_eq!(verdict, RepoAccessVerdict::Allowed);
     }
 
@@ -260,7 +310,7 @@ mod tests {
             vec![GitPermission::Pull, GitPermission::Push],
         ));
 
-        let verdict = check_repo_access(&repo, Some("collab-1"), GitPermission::Push, &store).await;
+        let verdict = check_repo_access(&repo, Some("collab-1"), GitPermission::Push, &store, None).await;
         assert_eq!(verdict, RepoAccessVerdict::Allowed);
     }
 
@@ -279,7 +329,7 @@ mod tests {
             vec![GitPermission::Pull], // only Pull
         ));
 
-        let verdict = check_repo_access(&repo, Some("collab-1"), GitPermission::Push, &store).await;
+        let verdict = check_repo_access(&repo, Some("collab-1"), GitPermission::Push, &store, None).await;
         assert_eq!(
             verdict,
             RepoAccessVerdict::Denied {
@@ -300,7 +350,7 @@ mod tests {
         ));
 
         let verdict =
-            check_repo_access(&repo, Some("collab-1"), GitPermission::Admin, &store).await;
+            check_repo_access(&repo, Some("collab-1"), GitPermission::Admin, &store, None).await;
         assert_eq!(
             verdict,
             RepoAccessVerdict::Denied {
@@ -318,7 +368,7 @@ mod tests {
         let repo = make_repo(true, "owner-1");
         let store = MockCollaboratorStore::new();
 
-        let verdict = check_repo_access(&repo, Some("stranger"), GitPermission::Pull, &store).await;
+        let verdict = check_repo_access(&repo, Some("stranger"), GitPermission::Pull, &store, None).await;
         assert_eq!(
             verdict,
             RepoAccessVerdict::Denied {
@@ -336,7 +386,7 @@ mod tests {
         let repo = make_repo(true, "owner-1");
         let store = MockCollaboratorStore::new();
 
-        let verdict = check_repo_access(&repo, Some(""), GitPermission::Pull, &store).await;
+        let verdict = check_repo_access(&repo, Some(""), GitPermission::Pull, &store, None).await;
         assert_eq!(
             verdict,
             RepoAccessVerdict::Denied {
@@ -354,7 +404,7 @@ mod tests {
         let repo = make_repo(false, "owner-1");
         let store = MockCollaboratorStore::new();
 
-        let verdict = check_repo_access(&repo, None, GitPermission::Push, &store).await;
+        let verdict = check_repo_access(&repo, None, GitPermission::Push, &store, None).await;
         assert_eq!(
             verdict,
             RepoAccessVerdict::Denied {
@@ -372,7 +422,7 @@ mod tests {
         let repo = make_repo(false, "owner-1");
         let store = MockCollaboratorStore::new();
 
-        let verdict = check_repo_access(&repo, Some("owner-1"), GitPermission::Push, &store).await;
+        let verdict = check_repo_access(&repo, Some("owner-1"), GitPermission::Push, &store, None).await;
         assert_eq!(verdict, RepoAccessVerdict::Allowed);
     }
 
@@ -391,7 +441,100 @@ mod tests {
             vec![GitPermission::Pull, GitPermission::Push],
         ));
 
-        let verdict = check_repo_access(&repo, Some("collab-1"), GitPermission::Push, &store).await;
+        let verdict = check_repo_access(&repo, Some("collab-1"), GitPermission::Push, &store, None).await;
         assert_eq!(verdict, RepoAccessVerdict::Allowed);
+    }
+
+    // ---------------------------------------------------------------
+    // Org membership ACL tests
+    // ---------------------------------------------------------------
+
+    /// Helper: build an org-owned Repository.
+    fn make_org_repo(is_private: bool, owner_id: &str) -> Repository {
+        Repository {
+            id: "repo-org-1".to_string(),
+            tenant_id: "tenant-1".to_string(),
+            namespace: "acme".to_string(),
+            name: "org-repo".to_string(),
+            description: String::new(),
+            is_private,
+            default_branch: "main".to_string(),
+            fork_of: None,
+            owner_id: owner_id.to_string(),
+            owner_type: crate::git::OwnerType::Organization,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    fn make_member(role: crate::org::OrgRole) -> crate::org::OrgMember {
+        crate::org::OrgMember::new("org-1".into(), "member-1".into(), role)
+    }
+
+    #[tokio::test]
+    async fn test_org_owner_can_pull_push_admin() {
+        let repo = make_org_repo(true, "org-owner-id");
+        let store = MockCollaboratorStore::new();
+        let member = make_member(crate::org::OrgRole::Owner);
+
+        for perm in [GitPermission::Pull, GitPermission::Push, GitPermission::Admin] {
+            let verdict = check_repo_access(&repo, Some("member-1"), perm, &store, Some(&member)).await;
+            assert_eq!(verdict, RepoAccessVerdict::Allowed, "OrgRole::Owner should allow {perm:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_org_admin_can_pull_push_admin() {
+        let repo = make_org_repo(true, "org-owner-id");
+        let store = MockCollaboratorStore::new();
+        let member = make_member(crate::org::OrgRole::Admin);
+
+        for perm in [GitPermission::Pull, GitPermission::Push, GitPermission::Admin] {
+            let verdict = check_repo_access(&repo, Some("member-1"), perm, &store, Some(&member)).await;
+            assert_eq!(verdict, RepoAccessVerdict::Allowed, "OrgRole::Admin should allow {perm:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_org_member_can_pull_push_not_admin() {
+        let repo = make_org_repo(true, "org-owner-id");
+        let store = MockCollaboratorStore::new();
+        let member = make_member(crate::org::OrgRole::Member);
+
+        let v = check_repo_access(&repo, Some("member-1"), GitPermission::Pull, &store, Some(&member)).await;
+        assert_eq!(v, RepoAccessVerdict::Allowed);
+
+        let v = check_repo_access(&repo, Some("member-1"), GitPermission::Push, &store, Some(&member)).await;
+        assert_eq!(v, RepoAccessVerdict::Allowed);
+
+        let v = check_repo_access(&repo, Some("member-1"), GitPermission::Admin, &store, Some(&member)).await;
+        assert_eq!(v, RepoAccessVerdict::Denied { reason: "access denied" });
+    }
+
+    #[tokio::test]
+    async fn test_org_viewer_can_pull_only() {
+        let repo = make_org_repo(true, "org-owner-id");
+        let store = MockCollaboratorStore::new();
+        let member = make_member(crate::org::OrgRole::Viewer);
+
+        let v = check_repo_access(&repo, Some("member-1"), GitPermission::Pull, &store, Some(&member)).await;
+        assert_eq!(v, RepoAccessVerdict::Allowed);
+
+        let v = check_repo_access(&repo, Some("member-1"), GitPermission::Push, &store, Some(&member)).await;
+        assert_eq!(v, RepoAccessVerdict::Denied { reason: "access denied" });
+
+        let v = check_repo_access(&repo, Some("member-1"), GitPermission::Admin, &store, Some(&member)).await;
+        assert_eq!(v, RepoAccessVerdict::Denied { reason: "access denied" });
+    }
+
+    #[tokio::test]
+    async fn test_org_membership_ignored_for_user_owned_repo() {
+        // Even with org membership, user-owned repos should not grant org-based access
+        let repo = make_repo(true, "owner-1");
+        let store = MockCollaboratorStore::new();
+        let member = make_member(crate::org::OrgRole::Admin);
+
+        let v = check_repo_access(&repo, Some("member-1"), GitPermission::Push, &store, Some(&member)).await;
+        assert_eq!(v, RepoAccessVerdict::Denied { reason: "access denied" });
     }
 }

@@ -59,13 +59,13 @@ fn validate_dag(def: &PipelineDef) -> Result<()> {
     let mut visited = HashSet::new();
     let mut in_stack = HashSet::new();
     for step in &def.steps {
-        if !visited.contains(step.name.as_str()) {
-            if has_cycle(&adj, step.name.as_str(), &mut visited, &mut in_stack) {
-                return Err(MuliError::PipelineDagCycle(format!(
-                    "cycle detected involving step '{}'",
-                    step.name
-                )));
-            }
+        if !visited.contains(step.name.as_str())
+            && has_cycle(&adj, step.name.as_str(), &mut visited, &mut in_stack)
+        {
+            return Err(MuliError::PipelineDagCycle(format!(
+                "cycle detected involving step '{}'",
+                step.name
+            )));
         }
     }
     Ok(())

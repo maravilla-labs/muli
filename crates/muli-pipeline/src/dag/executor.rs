@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use tracing::{error, info, warn};
 
-use muli_core::error::{MuliError, Result};
+use muli_core::error::Result;
 use muli_core::job::model::{EnvVar, Job, JobSpec, PriorityTier};
 use muli_core::job::state_machine::JobState;
 use muli_core::pipeline::{
@@ -364,9 +364,9 @@ impl DagExecutor {
         // Build commands with auto-checkout prepended
         let mut commands = Vec::new();
         if clone_url.is_some() {
-            commands.push(format!(
-                "git clone \"$PIPELINE_CLONE_URL\" /workspace && cd /workspace && git checkout \"$PIPELINE_SHA\""
-            ));
+            commands.push(
+                "git clone \"$PIPELINE_CLONE_URL\" /workspace && cd /workspace && git checkout \"$PIPELINE_SHA\"".to_string()
+            );
         }
         commands.extend(step_def.commands.clone());
 

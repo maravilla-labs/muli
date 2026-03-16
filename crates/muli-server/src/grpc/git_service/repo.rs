@@ -46,7 +46,7 @@ impl GitServiceImpl {
             return Err(Status::invalid_argument("invalid namespace or name"));
         }
 
-        let repo = Repository::new(
+        let mut repo = Repository::new(
             req.tenant_id.clone(),
             req.namespace.clone(),
             req.name.clone(),
@@ -54,6 +54,17 @@ impl GitServiceImpl {
             req.is_private,
         )
         .map_err(|e| Status::invalid_argument(e.to_string()))?;
+
+        // Set owner_id and owner_type from request if provided
+        if !req.owner_id.is_empty() {
+            repo.owner_id = req.owner_id.clone();
+        }
+        if !req.owner_type.is_empty() {
+            repo.owner_type = match req.owner_type.as_str() {
+                "organization" => muli_core::git::OwnerType::Organization,
+                _ => muli_core::git::OwnerType::User,
+            };
+        }
 
         self.git_storage
             .init_repo(&req.tenant_id, &req.namespace, &req.name)

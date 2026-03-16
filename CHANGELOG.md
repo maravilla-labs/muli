@@ -7,6 +7,27 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-03-16
+
+### Added
+
+- **`OrgRole::Viewer`** — new organization role granting read-only (pull) access to org-owned repositories. Added to proto, domain model, and gRPC conversions.
+- **Org-aware repository ACL** — `check_repo_access()` now accepts an optional `OrgMember` and grants access based on org role: Owner/Admin → pull, push, admin; Member → pull, push; Viewer → pull only. Org membership is ignored for user-owned repos.
+- **`check_repo_access_with_org_lookup()`** convenience wrapper that resolves org membership from stores before checking access, shared by both SSH and HTTP auth paths to avoid code duplication.
+- **`owner_id` and `owner_type` on `CreateRepositoryRequest`** proto — repositories can now be created with an explicit owner identity and type (user or organization).
+- **Org stores wired into HTTP `GitAuth`** — `with_org_stores()` builder method passes `OrgStore` and `OrgMemberStore` into the HTTP auth middleware for org-aware ACL checks.
+- 5 new unit tests for org role ACL permissions covering Owner, Admin, Member, Viewer, and user-owned repo isolation.
+
+### Fixed
+
+- **Org members denied SSH/HTTP push to org-owned repos** — the ACL check now resolves org membership for org-owned repositories, granting access based on the member's org role instead of requiring an explicit collaborator record.
+- **Repositories created via gRPC had empty `owner_id`** — `create_repository_impl` now populates `owner_id` and `owner_type` from the request fields.
+- Pre-existing clippy warnings across `muli-pipeline`, `muli-server` tests, and `start_grpc.rs` (unused imports, collapsible `if` statements, `format!` lint, too-many-arguments).
+
+### Security
+
+- Org membership check is additive: direct collaborator records still work independently of org membership, so users added as collaborators without being org members retain access.
+
 ## [0.2.0] - 2026-03-16
 
 ### Added
