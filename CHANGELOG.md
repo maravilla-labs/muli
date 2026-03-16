@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-03-16
+
+### Fixed
+
+- **SSH clone/push broken after auth changes** — removed `UserStore` workaround from SSH server that resolved `external_id` for ACL checks. The proper fix is on the flightdeck side: all API calls now use muli-internal UUIDs instead of mixing StaticLab ObjectIds with muli UUIDs, so the per-repo ACL comparisons match correctly.
+
+### Removed
+
+- `user_store` field from `SshServer` and `SshSessionHandler` — no longer needed since flightdeck now sends muli UUIDs for all collaborator and owner operations.
+
 ## [0.2.2] - 2026-03-16
 
 ### Added

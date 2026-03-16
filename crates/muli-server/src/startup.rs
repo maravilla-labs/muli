@@ -167,6 +167,7 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
         pipeline_trigger,
         org_store: stores.org_store.clone(),
         org_member_store: stores.org_member_store.clone(),
+        collaborator_store: stores.collaborator_store.clone(),
     };
     if config.git_enabled {
         start_git_http(&config, &git_stores, &cancel).await?;
@@ -349,6 +350,7 @@ pub(crate) struct GitStores {
     pub pipeline_trigger: Option<Arc<dyn muli_git::api::PipelineTriggerHook>>,
     pub org_store: Arc<dyn muli_core::traits::OrgStore>,
     pub org_member_store: Arc<dyn muli_core::traits::OrgMemberStore>,
+    pub collaborator_store: Arc<dyn muli_core::traits::CollaboratorStore>,
 }
 
 async fn start_git_http(
@@ -361,6 +363,8 @@ async fn start_git_http(
         git_tenant_config = git_tenant_config.with_default_tenant(dt.as_str());
     }
     let git_auth = muli_git::GitAuth::new(git.token_store.clone())
+        .with_repo_store(git.repo_store.clone())
+        .with_collaborator_store(git.collaborator_store.clone())
         .with_org_stores(git.org_store.clone(), git.org_member_store.clone());
     let lfs_storage: Option<Arc<dyn muli_git::lfs::storage::LfsStorage>> = {
         let git_root = config.effective_git_root();
