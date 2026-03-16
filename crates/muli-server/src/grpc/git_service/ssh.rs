@@ -60,7 +60,10 @@ impl GitServiceImpl {
         self.ssh_key_store
             .add_key(&key)
             .await
-            .map_err(|e| Status::internal(format!("Failed to add SSH key: {e}")))?;
+            .map_err(|e| match &e {
+                muli_core::error::MuliError::Conflict(msg) => Status::already_exists(msg.clone()),
+                _ => Status::internal(format!("Failed to add SSH key: {e}")),
+            })?;
 
         info!(
             operation = "add_ssh_key",

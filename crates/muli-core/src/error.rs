@@ -42,6 +42,9 @@ pub enum MuliError {
     #[error("Storage error: {0}")]
     Storage(String),
 
+    #[error("Conflict: {0}")]
+    Conflict(String),
+
     #[error("gRPC error: {0}")]
     Grpc(String),
 

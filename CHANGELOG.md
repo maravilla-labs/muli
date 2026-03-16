@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-03-16
+
+### Added
+
+- **`MuliError::Conflict` variant** — new permanent error type for business-rule conflicts (e.g. duplicate unique keys), distinct from retryable `Storage` errors.
+
+### Fixed
+
+- **Duplicate SSH key returns 500 instead of conflict error** — adding an SSH key with a fingerprint already registered by another user now returns gRPC `AlreadyExists` status with a descriptive message, instead of leaking a raw SQLite UNIQUE constraint error as an opaque `Internal` status.
+
 ## [0.2.1] - 2026-03-16
 
 ### Added

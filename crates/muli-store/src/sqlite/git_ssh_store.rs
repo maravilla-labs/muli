@@ -42,7 +42,16 @@ impl SshKeyStore for SqliteSshKeyStore {
             Ok(())
         })
         .await
-        .map_err(store_err)?;
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("UNIQUE constraint failed") {
+                MuliError::Conflict(format!(
+                    "SSH key with fingerprint {fp} is already registered"
+                ))
+            } else {
+                store_err(e)
+            }
+        })?;
 
         // Insert into global fingerprint index.
         let global = self.factory.global_conn();
