@@ -174,13 +174,13 @@ steps:
     assert_eq!(result, PipelineRunState::Succeeded);
 
     // Verify the run is persisted as Succeeded
-    let final_run = rs.get_run(&run.id).await.unwrap().unwrap();
+    let final_run = rs.get_run("t1", &run.id).await.unwrap().unwrap();
     assert_eq!(final_run.state, PipelineRunState::Succeeded);
     assert!(final_run.started_at.is_some());
     assert!(final_run.finished_at.is_some());
 
     // Verify the step has a job_id and succeeded
-    let steps = ss.list_by_run(&run.id).await.unwrap();
+    let steps = ss.list_by_run("t1", &run.id).await.unwrap();
     assert_eq!(steps.len(), 1);
     assert_eq!(steps[0].state, StepRunState::Succeeded);
     let job_id = steps[0].job_id.as_ref().expect("step should have job_id");
@@ -261,7 +261,7 @@ steps:
     assert_eq!(result, PipelineRunState::Failed);
 
     // Verify Job has non-zero exit code
-    let steps = ss.list_by_run(&run.id).await.unwrap();
+    let steps = ss.list_by_run("t1", &run.id).await.unwrap();
     let job_id = steps[0].job_id.as_ref().unwrap();
     let job = js.get_job(job_id).await.unwrap().unwrap();
     assert_eq!(job.state, JobState::Failed);
@@ -330,7 +330,7 @@ steps:
     assert_eq!(result, PipelineRunState::Succeeded);
 
     // Verify both steps succeeded
-    let steps = ss.list_by_run(&run.id).await.unwrap();
+    let steps = ss.list_by_run("t1", &run.id).await.unwrap();
     assert_eq!(steps.len(), 2);
     for step in &steps {
         assert_eq!(step.state, StepRunState::Succeeded, "step {} failed", step.step_name);

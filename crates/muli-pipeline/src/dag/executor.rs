@@ -70,6 +70,8 @@ impl DagExecutor {
         step_runs: &[StepRun],
         clone_url: Option<&str>,
     ) -> Result<PipelineRunState> {
+        let tenant_id = &run.tenant_id;
+
         // Mark run as Running
         run.state = PipelineRunState::Running;
         run.started_at = Some(Utc::now());
@@ -113,7 +115,7 @@ impl DagExecutor {
                 if let Some(ref condition) = def.condition {
                     if !evaluate_condition(condition, &expr_ctx) {
                         self.step_store
-                            .update_step_state(&sr.id, StepRunState::Skipped)
+                            .update_step_state(tenant_id, &sr.id, StepRunState::Skipped)
                             .await?;
                         info!(step = %sr.step_name, "step skipped (condition not met)");
                     }
@@ -149,11 +151,11 @@ impl DagExecutor {
                     let run_names = original_to_runs.get(orig_name).cloned().unwrap_or_default();
                     for rn in run_names {
                         if let Some(sr) = step_run_map.get(rn) {
-                            let current = self.step_store.get_step(&sr.id).await?;
+                            let current = self.step_store.get_step(tenant_id, &sr.id).await?;
                             if let Some(s) = current {
                                 if !s.state.is_terminal() {
                                     self.step_store
-                                        .update_step_state(&sr.id, StepRunState::Cancelled)
+                                        .update_step_state(tenant_id, &sr.id, StepRunState::Cancelled)
                                         .await?;
                                 }
                             }
@@ -183,7 +185,7 @@ impl DagExecutor {
                 };
 
                 // Re-fetch current state (may have been skipped by conditions)
-                let current = self.step_store.get_step(&sr.id).await?;
+                let current = self.step_store.get_step(tenant_id, &sr.id).await?;
                 let current_state = current.as_ref().map(|s| s.state);
                 if current_state == Some(StepRunState::Skipped)
                     || current_state == Some(StepRunState::Cancelled)
@@ -202,14 +204,14 @@ impl DagExecutor {
 
                 // Mark step as Running
                 self.step_store
-                    .update_step_state(&sr.id, StepRunState::Running)
+                    .update_step_state(tenant_id, &sr.id, StepRunState::Running)
                     .await?;
 
                 // Submit to scheduler
                 match self.job_submitter.submit(job).await {
                     Ok(job_id) => {
                         // Record job_id on step
-                        if let Some(mut step) = self.step_store.get_step(&sr.id).await? {
+                        if let Some(mut step) = self.step_store.get_step(tenant_id, &sr.id).await? {
                             step.job_id = Some(job_id.clone());
                             step.started_at = Some(Utc::now());
                             step.updated_at = Utc::now();
@@ -221,7 +223,7 @@ impl DagExecutor {
                     Err(e) => {
                         error!(step = %sr_name, error = %e, "failed to submit step job");
                         self.step_store
-                            .update_step_state(&sr.id, StepRunState::Failed)
+                            .update_step_state(tenant_id, &sr.id, StepRunState::Failed)
                             .await?;
                         had_failure = true;
                         if sr.failure_strategy == FailureStrategy::Stop {
@@ -248,7 +250,7 @@ impl DagExecutor {
                 };
 
                 // Update step with final state
-                if let Some(mut step) = self.step_store.get_step(&sr.id).await? {
+                if let Some(mut step) = self.step_store.get_step(tenant_id, &sr.id).await? {
                     step.state = step_state;
                     step.finished_at = Some(Utc::now());
                     step.updated_at = Utc::now();

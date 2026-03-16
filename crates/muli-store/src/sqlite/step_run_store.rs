@@ -29,7 +29,6 @@ impl StepRunStore for SqliteStepRunStore {
     async fn create_step(&self, step: &StepRun) -> Result<String> {
         let s = step.clone();
         let id = s.id.clone();
-        // Use tenant_id directly instead of scanning all tenants.
         let conn = self.factory.tenant_conn(&s.tenant_id).await?;
         let idc = id.clone();
         conn.call(move |c| {
@@ -53,128 +52,78 @@ impl StepRunStore for SqliteStepRunStore {
         Ok(id)
     }
 
-    async fn get_step(&self, step_id: &str) -> Result<Option<StepRun>> {
+    async fn get_step(&self, tenant_id: &str, step_id: &str) -> Result<Option<StepRun>> {
+        let conn = self.factory.tenant_conn(tenant_id).await?;
         let sid = step_id.to_string();
-        for tenant_id in self.factory.all_tenant_ids().await? {
-            let conn = self.factory.tenant_conn(&tenant_id).await?;
-            let s = sid.clone();
-            let result = conn
-                .call(move |c| {
-                    let mut stmt =
-                        c.prepare("SELECT full_json FROM step_runs WHERE id = ?1")?;
-                    let mut rows = stmt.query(rusqlite::params![s])?;
-                    if let Some(row) = rows.next()? {
-                        let json: String = row.get(0)?;
-                        Ok(Some(from_json::<StepRun>(&json)?))
-                    } else {
-                        Ok(None)
-                    }
-                })
-                .await
-                .map_err(store_err)?;
-            if result.is_some() {
-                return Ok(result);
+        conn.call(move |c| {
+            let mut stmt =
+                c.prepare("SELECT full_json FROM step_runs WHERE id = ?1")?;
+            let mut rows = stmt.query(rusqlite::params![sid])?;
+            if let Some(row) = rows.next()? {
+                let json: String = row.get(0)?;
+                Ok(Some(from_json::<StepRun>(&json)?))
+            } else {
+                Ok(None)
             }
-        }
-        Ok(None)
+        })
+        .await
+        .map_err(store_err)
     }
 
-    async fn list_by_run(&self, run_id: &str) -> Result<Vec<StepRun>> {
+    async fn list_by_run(&self, tenant_id: &str, run_id: &str) -> Result<Vec<StepRun>> {
+        let conn = self.factory.tenant_conn(tenant_id).await?;
         let rid = run_id.to_string();
-        for tenant_id in self.factory.all_tenant_ids().await? {
-            let conn = self.factory.tenant_conn(&tenant_id).await?;
-            let r = rid.clone();
-            let results: Vec<StepRun> = conn
-                .call(move |c| {
-                    let mut stmt =
-                        c.prepare("SELECT full_json FROM step_runs WHERE run_id = ?1")?;
-                    let mut rows = stmt.query(rusqlite::params![r])?;
-                    let mut result = Vec::new();
-                    while let Some(row) = rows.next()? {
-                        let json: String = row.get(0)?;
-                        result.push(from_json::<StepRun>(&json)?);
-                    }
-                    Ok(result)
-                })
-                .await
-                .map_err(store_err)?;
-            if !results.is_empty() {
-                return Ok(results);
+        conn.call(move |c| {
+            let mut stmt =
+                c.prepare("SELECT full_json FROM step_runs WHERE run_id = ?1")?;
+            let mut rows = stmt.query(rusqlite::params![rid])?;
+            let mut result = Vec::new();
+            while let Some(row) = rows.next()? {
+                let json: String = row.get(0)?;
+                result.push(from_json::<StepRun>(&json)?);
             }
-        }
-        Ok(Vec::new())
+            Ok(result)
+        })
+        .await
+        .map_err(store_err)
     }
 
     async fn update_step(&self, step: &StepRun) -> Result<()> {
+        let conn = self.factory.tenant_conn(&step.tenant_id).await?;
         let s = step.clone();
-        // Use tenant_id directly if available, otherwise fall back to scanning.
-        if !s.tenant_id.is_empty() {
-            let conn = self.factory.tenant_conn(&s.tenant_id).await?;
-            let sc = s.clone();
-            conn.call(move |c| {
-                let json = to_json(&sc)?;
-                c.execute(
-                    "UPDATE step_runs SET state = ?1, job_id = ?2, full_json = ?3 WHERE id = ?4",
-                    rusqlite::params![sc.state.as_str(), sc.job_id, json, sc.id],
-                )?;
-                Ok(())
-            })
-            .await
-            .map_err(store_err)?;
-            return Ok(());
-        }
-        // Fallback: scan tenants for legacy steps without tenant_id.
-        for tenant_id in self.factory.all_tenant_ids().await? {
-            let conn = self.factory.tenant_conn(&tenant_id).await?;
-            let sc = s.clone();
-            let rows = conn
-                .call(move |c| {
-                    let json = to_json(&sc)?;
-                    Ok(c.execute(
-                        "UPDATE step_runs SET state = ?1, job_id = ?2, full_json = ?3 WHERE id = ?4",
-                        rusqlite::params![sc.state.as_str(), sc.job_id, json, sc.id],
-                    )?)
-                })
-                .await
-                .map_err(store_err)?;
-            if rows > 0 {
-                return Ok(());
-            }
-        }
-        Ok(())
+        conn.call(move |c| {
+            let json = to_json(&s)?;
+            c.execute(
+                "UPDATE step_runs SET state = ?1, job_id = ?2, full_json = ?3 WHERE id = ?4",
+                rusqlite::params![s.state.as_str(), s.job_id, json, s.id],
+            )?;
+            Ok(())
+        })
+        .await
+        .map_err(store_err)
     }
 
-    async fn update_step_state(&self, step_id: &str, state: StepRunState) -> Result<()> {
+    async fn update_step_state(&self, tenant_id: &str, step_id: &str, state: StepRunState) -> Result<()> {
+        let conn = self.factory.tenant_conn(tenant_id).await?;
         let sid = step_id.to_string();
-        for tenant_id in self.factory.all_tenant_ids().await? {
-            let conn = self.factory.tenant_conn(&tenant_id).await?;
-            let s = sid.clone();
-            let result = conn
-                .call(move |c| {
-                    let mut stmt =
-                        c.prepare("SELECT full_json FROM step_runs WHERE id = ?1")?;
-                    let mut rows = stmt.query(rusqlite::params![s])?;
-                    if let Some(row) = rows.next()? {
-                        let json: String = row.get(0)?;
-                        let mut step = from_json::<StepRun>(&json)?;
-                        step.state = state;
-                        let updated_json = to_json(&step)?;
-                        c.execute(
-                            "UPDATE step_runs SET state = ?1, full_json = ?2 WHERE id = ?3",
-                            rusqlite::params![state.as_str(), updated_json, step.id],
-                        )?;
-                        Ok(true)
-                    } else {
-                        Ok(false)
-                    }
-                })
-                .await
-                .map_err(store_err)?;
-            if result {
-                return Ok(());
+        conn.call(move |c| {
+            let mut stmt =
+                c.prepare("SELECT full_json FROM step_runs WHERE id = ?1")?;
+            let mut rows = stmt.query(rusqlite::params![sid])?;
+            if let Some(row) = rows.next()? {
+                let json: String = row.get(0)?;
+                let mut step = from_json::<StepRun>(&json)?;
+                step.state = state;
+                let updated_json = to_json(&step)?;
+                c.execute(
+                    "UPDATE step_runs SET state = ?1, full_json = ?2 WHERE id = ?3",
+                    rusqlite::params![state.as_str(), updated_json, step.id],
+                )?;
             }
-        }
-        Ok(())
+            Ok(())
+        })
+        .await
+        .map_err(store_err)
     }
 }
 
@@ -206,7 +155,7 @@ mod tests {
         let store = SqliteStepRunStore::new(factory);
         let step = make_step("t1", "run-1", "build");
         let id = store.create_step(&step).await.unwrap();
-        let fetched = store.get_step(&id).await.unwrap().unwrap();
+        let fetched = store.get_step("t1", &id).await.unwrap().unwrap();
         assert_eq!(fetched.step_name, "build");
         assert_eq!(fetched.state, StepRunState::Pending);
     }
@@ -221,7 +170,7 @@ mod tests {
         store.create_step(&s1).await.unwrap();
         store.create_step(&s2).await.unwrap();
         store.create_step(&s3).await.unwrap();
-        let list = store.list_by_run("run-1").await.unwrap();
+        let list = store.list_by_run("t1", "run-1").await.unwrap();
         assert_eq!(list.len(), 2);
         let names: Vec<&str> = list.iter().map(|s| s.step_name.as_str()).collect();
         assert!(names.contains(&"build"));
@@ -235,10 +184,10 @@ mod tests {
         let step = make_step("t1", "run-1", "build");
         let id = store.create_step(&step).await.unwrap();
         store
-            .update_step_state(&id, StepRunState::Running)
+            .update_step_state("t1", &id, StepRunState::Running)
             .await
             .unwrap();
-        let fetched = store.get_step(&id).await.unwrap().unwrap();
+        let fetched = store.get_step("t1", &id).await.unwrap().unwrap();
         assert_eq!(fetched.state, StepRunState::Running);
     }
 
@@ -251,7 +200,7 @@ mod tests {
         step.state = StepRunState::Succeeded;
         step.job_id = Some("job-123".into());
         store.update_step(&step).await.unwrap();
-        let fetched = store.get_step(&step.id).await.unwrap().unwrap();
+        let fetched = store.get_step("t1", &step.id).await.unwrap().unwrap();
         assert_eq!(fetched.state, StepRunState::Succeeded);
         assert_eq!(fetched.job_id, Some("job-123".into()));
     }
@@ -266,16 +215,16 @@ mod tests {
         // Create step in tenant B
         let step_b = make_step("tenant-b", "run-b", "build");
         let id_b = store.create_step(&step_b).await.unwrap();
-        // Each step should be retrievable
-        let fetched_a = store.get_step(&id_a).await.unwrap().unwrap();
+        // Each step should be retrievable from its own tenant
+        let fetched_a = store.get_step("tenant-a", &id_a).await.unwrap().unwrap();
         assert_eq!(fetched_a.tenant_id, "tenant-a");
-        let fetched_b = store.get_step(&id_b).await.unwrap().unwrap();
+        let fetched_b = store.get_step("tenant-b", &id_b).await.unwrap().unwrap();
         assert_eq!(fetched_b.tenant_id, "tenant-b");
-        // list_by_run should only return steps from the correct run
-        let list_a = store.list_by_run("run-a").await.unwrap();
+        // list_by_run should only return steps from the correct tenant
+        let list_a = store.list_by_run("tenant-a", "run-a").await.unwrap();
         assert_eq!(list_a.len(), 1);
         assert_eq!(list_a[0].tenant_id, "tenant-a");
-        let list_b = store.list_by_run("run-b").await.unwrap();
+        let list_b = store.list_by_run("tenant-b", "run-b").await.unwrap();
         assert_eq!(list_b.len(), 1);
         assert_eq!(list_b[0].tenant_id, "tenant-b");
     }

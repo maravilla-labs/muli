@@ -42,82 +42,58 @@ impl PipelineSecretStore for SqlitePipelineSecretStore {
         .map_err(store_err)
     }
 
-    async fn get_secret(&self, repo_id: &str, name: &str) -> Result<Option<PipelineSecret>> {
+    async fn get_secret(&self, tenant_id: &str, repo_id: &str, name: &str) -> Result<Option<PipelineSecret>> {
+        let conn = self.factory.tenant_conn(tenant_id).await?;
         let rid = repo_id.to_string();
         let n = name.to_string();
-        for tenant_id in self.factory.all_tenant_ids().await? {
-            let conn = self.factory.tenant_conn(&tenant_id).await?;
-            let r = rid.clone();
-            let nm = n.clone();
-            let result = conn
-                .call(move |c| {
-                    let mut stmt = c.prepare(
-                        "SELECT full_json FROM pipeline_secrets WHERE repo_id = ?1 AND name = ?2",
-                    )?;
-                    let mut rows = stmt.query(rusqlite::params![r, nm])?;
-                    if let Some(row) = rows.next()? {
-                        let json: String = row.get(0)?;
-                        Ok(Some(from_json::<PipelineSecret>(&json)?))
-                    } else {
-                        Ok(None)
-                    }
-                })
-                .await
-                .map_err(store_err)?;
-            if result.is_some() {
-                return Ok(result);
+        conn.call(move |c| {
+            let mut stmt = c.prepare(
+                "SELECT full_json FROM pipeline_secrets WHERE repo_id = ?1 AND name = ?2",
+            )?;
+            let mut rows = stmt.query(rusqlite::params![rid, n])?;
+            if let Some(row) = rows.next()? {
+                let json: String = row.get(0)?;
+                Ok(Some(from_json::<PipelineSecret>(&json)?))
+            } else {
+                Ok(None)
             }
-        }
-        Ok(None)
+        })
+        .await
+        .map_err(store_err)
     }
 
-    async fn list_names(&self, repo_id: &str) -> Result<Vec<String>> {
+    async fn list_names(&self, tenant_id: &str, repo_id: &str) -> Result<Vec<String>> {
+        let conn = self.factory.tenant_conn(tenant_id).await?;
         let rid = repo_id.to_string();
-        let mut all = Vec::new();
-        for tenant_id in self.factory.all_tenant_ids().await? {
-            let conn = self.factory.tenant_conn(&tenant_id).await?;
-            let r = rid.clone();
-            let mut results: Vec<String> = conn
-                .call(move |c| {
-                    let mut stmt = c.prepare(
-                        "SELECT name FROM pipeline_secrets WHERE repo_id = ?1 ORDER BY name",
-                    )?;
-                    let mut rows = stmt.query(rusqlite::params![r])?;
-                    let mut result = Vec::new();
-                    while let Some(row) = rows.next()? {
-                        let name: String = row.get(0)?;
-                        result.push(name);
-                    }
-                    Ok(result)
-                })
-                .await
-                .map_err(store_err)?;
-            all.append(&mut results);
-        }
-        Ok(all)
+        conn.call(move |c| {
+            let mut stmt = c.prepare(
+                "SELECT name FROM pipeline_secrets WHERE repo_id = ?1 ORDER BY name",
+            )?;
+            let mut rows = stmt.query(rusqlite::params![rid])?;
+            let mut result = Vec::new();
+            while let Some(row) = rows.next()? {
+                let name: String = row.get(0)?;
+                result.push(name);
+            }
+            Ok(result)
+        })
+        .await
+        .map_err(store_err)
     }
 
-    async fn delete_secret(&self, repo_id: &str, name: &str) -> Result<()> {
+    async fn delete_secret(&self, tenant_id: &str, repo_id: &str, name: &str) -> Result<()> {
+        let conn = self.factory.tenant_conn(tenant_id).await?;
         let rid = repo_id.to_string();
         let n = name.to_string();
-        for tenant_id in self.factory.all_tenant_ids().await? {
-            let conn = self.factory.tenant_conn(&tenant_id).await?;
-            let r = rid.clone();
-            let nm = n.clone();
-            let rows = conn
-                .call(move |c| {
-                    Ok(c.execute(
-                        "DELETE FROM pipeline_secrets WHERE repo_id = ?1 AND name = ?2",
-                        rusqlite::params![r, nm],
-                    )?)
-                })
-                .await
-                .map_err(store_err)?;
-            if rows > 0 {
-                return Ok(());
-            }
-        }
-        Ok(())
+        conn.call(move |c| {
+            c.execute(
+                "DELETE FROM pipeline_secrets WHERE repo_id = ?1 AND name = ?2",
+                rusqlite::params![rid, n],
+            )?;
+            Ok(())
+        })
+        .await
+        .map_err(store_err)
     }
 }
 
@@ -144,7 +120,7 @@ mod tests {
             "encrypted_value_here".into(),
         );
         store.set_secret(&secret).await.unwrap();
-        let fetched = store.get_secret("repo-1", "DB_URL").await.unwrap().unwrap();
+        let fetched = store.get_secret("t1", "repo-1", "DB_URL").await.unwrap().unwrap();
         assert_eq!(fetched.name, "DB_URL");
         assert_eq!(fetched.encrypted_value, "encrypted_value_here");
     }
@@ -160,7 +136,7 @@ mod tests {
         store.set_secret(&s2).await.unwrap();
         store.set_secret(&s3).await.unwrap();
 
-        let names = store.list_names("repo-1").await.unwrap();
+        let names = store.list_names("t1", "repo-1").await.unwrap();
         assert_eq!(names, vec!["API_KEY", "DB_URL"]);
     }
 
@@ -170,8 +146,8 @@ mod tests {
         let store = SqlitePipelineSecretStore::new(factory);
         let secret = PipelineSecret::new("t1".into(), "repo-1".into(), "DB_URL".into(), "enc".into());
         store.set_secret(&secret).await.unwrap();
-        store.delete_secret("repo-1", "DB_URL").await.unwrap();
-        let fetched = store.get_secret("repo-1", "DB_URL").await.unwrap();
+        store.delete_secret("t1", "repo-1", "DB_URL").await.unwrap();
+        let fetched = store.get_secret("t1", "repo-1", "DB_URL").await.unwrap();
         assert!(fetched.is_none());
     }
 
@@ -183,10 +159,10 @@ mod tests {
         store.set_secret(&s1).await.unwrap();
         let s2 = PipelineSecret::new("t1".into(), "repo-1".into(), "DB_URL".into(), "new_enc".into());
         store.set_secret(&s2).await.unwrap();
-        let fetched = store.get_secret("repo-1", "DB_URL").await.unwrap().unwrap();
+        let fetched = store.get_secret("t1", "repo-1", "DB_URL").await.unwrap().unwrap();
         assert_eq!(fetched.encrypted_value, "new_enc");
         // Should still be only one secret for that name
-        let names = store.list_names("repo-1").await.unwrap();
+        let names = store.list_names("t1", "repo-1").await.unwrap();
         assert_eq!(names.len(), 1);
     }
 }

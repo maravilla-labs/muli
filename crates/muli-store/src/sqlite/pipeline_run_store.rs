@@ -44,117 +44,95 @@ impl PipelineRunStore for SqlitePipelineRunStore {
         Ok(id)
     }
 
-    async fn get_run(&self, run_id: &str) -> Result<Option<PipelineRun>> {
+    async fn get_run(&self, tenant_id: &str, run_id: &str) -> Result<Option<PipelineRun>> {
+        let conn = self.factory.tenant_conn(tenant_id).await?;
         let rid = run_id.to_string();
-        for tenant_id in self.factory.all_tenant_ids().await? {
-            let conn = self.factory.tenant_conn(&tenant_id).await?;
-            let r = rid.clone();
-            let result = conn
-                .call(move |c| {
-                    let mut stmt =
-                        c.prepare("SELECT full_json FROM pipeline_runs WHERE id = ?1")?;
-                    let mut rows = stmt.query(rusqlite::params![r])?;
-                    if let Some(row) = rows.next()? {
-                        let json: String = row.get(0)?;
-                        Ok(Some(from_json::<PipelineRun>(&json)?))
-                    } else {
-                        Ok(None)
-                    }
-                })
-                .await
-                .map_err(store_err)?;
-            if result.is_some() {
-                return Ok(result);
+        conn.call(move |c| {
+            let mut stmt =
+                c.prepare("SELECT full_json FROM pipeline_runs WHERE id = ?1")?;
+            let mut rows = stmt.query(rusqlite::params![rid])?;
+            if let Some(row) = rows.next()? {
+                let json: String = row.get(0)?;
+                Ok(Some(from_json::<PipelineRun>(&json)?))
+            } else {
+                Ok(None)
             }
-        }
-        Ok(None)
+        })
+        .await
+        .map_err(store_err)
     }
 
     async fn get_run_by_number(
         &self,
+        tenant_id: &str,
         pipeline_id: &str,
         run_number: u64,
     ) -> Result<Option<PipelineRun>> {
+        let conn = self.factory.tenant_conn(tenant_id).await?;
         let pid = pipeline_id.to_string();
-        for tenant_id in self.factory.all_tenant_ids().await? {
-            let conn = self.factory.tenant_conn(&tenant_id).await?;
-            let p = pid.clone();
-            let n = run_number as i64;
-            let result = conn
-                .call(move |c| {
-                    let mut stmt = c.prepare(
-                        "SELECT full_json FROM pipeline_runs WHERE pipeline_id = ?1 AND run_number = ?2",
-                    )?;
-                    let mut rows = stmt.query(rusqlite::params![p, n])?;
-                    if let Some(row) = rows.next()? {
-                        let json: String = row.get(0)?;
-                        Ok(Some(from_json::<PipelineRun>(&json)?))
-                    } else {
-                        Ok(None)
-                    }
-                })
-                .await
-                .map_err(store_err)?;
-            if result.is_some() {
-                return Ok(result);
+        let n = run_number as i64;
+        conn.call(move |c| {
+            let mut stmt = c.prepare(
+                "SELECT full_json FROM pipeline_runs WHERE pipeline_id = ?1 AND run_number = ?2",
+            )?;
+            let mut rows = stmt.query(rusqlite::params![pid, n])?;
+            if let Some(row) = rows.next()? {
+                let json: String = row.get(0)?;
+                Ok(Some(from_json::<PipelineRun>(&json)?))
+            } else {
+                Ok(None)
             }
-        }
-        Ok(None)
+        })
+        .await
+        .map_err(store_err)
     }
 
     async fn list_by_repo(
         &self,
+        tenant_id: &str,
         repo_id: &str,
         state: Option<PipelineRunState>,
         limit: usize,
         offset: usize,
     ) -> Result<Vec<PipelineRun>> {
+        let conn = self.factory.tenant_conn(tenant_id).await?;
         let rid = repo_id.to_string();
         let state_str = state.map(|s| s.as_str());
-        let mut all = Vec::new();
-        for tenant_id in self.factory.all_tenant_ids().await? {
-            let conn = self.factory.tenant_conn(&tenant_id).await?;
-            let r = rid.clone();
-            let s = state_str;
-            let mut results: Vec<PipelineRun> = conn
-                .call(move |c| {
-                    let runs: Vec<PipelineRun> = match s {
-                        Some(state_s) => {
-                            let mut stmt = c.prepare(
-                                "SELECT full_json FROM pipeline_runs WHERE repo_id = ?1 AND state = ?2
-                                 ORDER BY run_number DESC",
-                            )?;
-                            let mut rows = stmt.query(rusqlite::params![r, state_s])?;
-                            let mut result = Vec::new();
-                            while let Some(row) = rows.next()? {
-                                let json: String = row.get(0)?;
-                                result.push(from_json::<PipelineRun>(&json)?);
-                            }
-                            result
-                        }
-                        None => {
-                            let mut stmt = c.prepare(
-                                "SELECT full_json FROM pipeline_runs WHERE repo_id = ?1
-                                 ORDER BY run_number DESC",
-                            )?;
-                            let mut rows = stmt.query(rusqlite::params![r])?;
-                            let mut result = Vec::new();
-                            while let Some(row) = rows.next()? {
-                                let json: String = row.get(0)?;
-                                result.push(from_json::<PipelineRun>(&json)?);
-                            }
-                            result
-                        }
-                    };
-                    Ok(runs)
-                })
-                .await
-                .map_err(store_err)?;
-            all.append(&mut results);
-        }
-        // Sort and apply limit/offset across all tenants
-        all.sort_by(|a, b| b.run_number.cmp(&a.run_number));
-        Ok(all.into_iter().skip(offset).take(limit).collect())
+        let lim = limit as i64;
+        let off = offset as i64;
+        conn.call(move |c| {
+            let runs: Vec<PipelineRun> = match state_str {
+                Some(state_s) => {
+                    let mut stmt = c.prepare(
+                        "SELECT full_json FROM pipeline_runs WHERE repo_id = ?1 AND state = ?2
+                         ORDER BY run_number DESC LIMIT ?3 OFFSET ?4",
+                    )?;
+                    let mut rows = stmt.query(rusqlite::params![rid, state_s, lim, off])?;
+                    let mut result = Vec::new();
+                    while let Some(row) = rows.next()? {
+                        let json: String = row.get(0)?;
+                        result.push(from_json::<PipelineRun>(&json)?);
+                    }
+                    result
+                }
+                None => {
+                    let mut stmt = c.prepare(
+                        "SELECT full_json FROM pipeline_runs WHERE repo_id = ?1
+                         ORDER BY run_number DESC LIMIT ?2 OFFSET ?3",
+                    )?;
+                    let mut rows = stmt.query(rusqlite::params![rid, lim, off])?;
+                    let mut result = Vec::new();
+                    while let Some(row) = rows.next()? {
+                        let json: String = row.get(0)?;
+                        result.push(from_json::<PipelineRun>(&json)?);
+                    }
+                    result
+                }
+            };
+            Ok(runs)
+        })
+        .await
+        .map_err(store_err)
     }
 
     async fn update_run(&self, run: &PipelineRun) -> Result<()> {
@@ -172,27 +150,21 @@ impl PipelineRunStore for SqlitePipelineRunStore {
         .map_err(store_err)
     }
 
-    async fn next_run_number(&self, pipeline_id: &str) -> Result<u64> {
+    async fn next_run_number(&self, tenant_id: &str, pipeline_id: &str) -> Result<u64> {
+        let conn = self.factory.tenant_conn(tenant_id).await?;
         let pid = pipeline_id.to_string();
-        for tenant_id in self.factory.all_tenant_ids().await? {
-            let conn = self.factory.tenant_conn(&tenant_id).await?;
-            let p = pid.clone();
-            let result: Option<i64> = conn
-                .call(move |c| {
-                    let max: Option<i64> = c.query_row(
-                        "SELECT MAX(run_number) FROM pipeline_runs WHERE pipeline_id = ?1",
-                        rusqlite::params![p],
-                        |row| row.get(0),
-                    )?;
-                    Ok(max)
-                })
-                .await
-                .map_err(store_err)?;
-            if let Some(max) = result {
-                return Ok(max as u64 + 1);
-            }
-        }
-        Ok(1)
+        let result: Option<i64> = conn
+            .call(move |c| {
+                let max: Option<i64> = c.query_row(
+                    "SELECT MAX(run_number) FROM pipeline_runs WHERE pipeline_id = ?1",
+                    rusqlite::params![pid],
+                    |row| row.get(0),
+                )?;
+                Ok(max)
+            })
+            .await
+            .map_err(store_err)?;
+        Ok(result.map(|m| m as u64 + 1).unwrap_or(1))
     }
 }
 
@@ -229,7 +201,7 @@ mod tests {
         let store = SqlitePipelineRunStore::new(factory);
         let run = make_run("t1", "pipe-1", "repo-1", 1);
         let id = store.create_run(&run).await.unwrap();
-        let fetched = store.get_run(&id).await.unwrap().unwrap();
+        let fetched = store.get_run("t1", &id).await.unwrap().unwrap();
         assert_eq!(fetched.run_number, 1);
         assert_eq!(fetched.pipeline_id, "pipe-1");
         assert_eq!(fetched.state, PipelineRunState::Pending);
@@ -245,18 +217,18 @@ mod tests {
         store.create_run(&run1).await.unwrap();
         store.create_run(&run2).await.unwrap();
 
-        let all = store.list_by_repo("repo-1", None, 10, 0).await.unwrap();
+        let all = store.list_by_repo("t1", "repo-1", None, 10, 0).await.unwrap();
         assert_eq!(all.len(), 2);
 
         let pending = store
-            .list_by_repo("repo-1", Some(PipelineRunState::Pending), 10, 0)
+            .list_by_repo("t1", "repo-1", Some(PipelineRunState::Pending), 10, 0)
             .await
             .unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].run_number, 1);
 
         let running = store
-            .list_by_repo("repo-1", Some(PipelineRunState::Running), 10, 0)
+            .list_by_repo("t1", "repo-1", Some(PipelineRunState::Running), 10, 0)
             .await
             .unwrap();
         assert_eq!(running.len(), 1);
@@ -272,13 +244,13 @@ mod tests {
             store.create_run(&run).await.unwrap();
         }
         // Limit 2, offset 0 => runs 5, 4 (desc order)
-        let page1 = store.list_by_repo("repo-1", None, 2, 0).await.unwrap();
+        let page1 = store.list_by_repo("t1", "repo-1", None, 2, 0).await.unwrap();
         assert_eq!(page1.len(), 2);
         assert_eq!(page1[0].run_number, 5);
         assert_eq!(page1[1].run_number, 4);
 
         // Limit 2, offset 2 => runs 3, 2
-        let page2 = store.list_by_repo("repo-1", None, 2, 2).await.unwrap();
+        let page2 = store.list_by_repo("t1", "repo-1", None, 2, 2).await.unwrap();
         assert_eq!(page2.len(), 2);
         assert_eq!(page2[0].run_number, 3);
         assert_eq!(page2[1].run_number, 2);
@@ -292,7 +264,7 @@ mod tests {
         store.create_run(&run).await.unwrap();
         run.state = PipelineRunState::Succeeded;
         store.update_run(&run).await.unwrap();
-        let fetched = store.get_run(&run.id).await.unwrap().unwrap();
+        let fetched = store.get_run("t1", &run.id).await.unwrap().unwrap();
         assert_eq!(fetched.state, PipelineRunState::Succeeded);
     }
 
@@ -302,12 +274,12 @@ mod tests {
         let store = SqlitePipelineRunStore::new(factory);
         let run1 = make_run("t1", "pipe-1", "repo-1", 1);
         store.create_run(&run1).await.unwrap();
-        let next = store.next_run_number("pipe-1").await.unwrap();
+        let next = store.next_run_number("t1", "pipe-1").await.unwrap();
         assert_eq!(next, 2);
 
         let run2 = make_run("t1", "pipe-1", "repo-1", 2);
         store.create_run(&run2).await.unwrap();
-        let next = store.next_run_number("pipe-1").await.unwrap();
+        let next = store.next_run_number("t1", "pipe-1").await.unwrap();
         assert_eq!(next, 3);
     }
 
@@ -317,9 +289,9 @@ mod tests {
         let store = SqlitePipelineRunStore::new(factory);
         let run = make_run("t1", "pipe-1", "repo-1", 42);
         store.create_run(&run).await.unwrap();
-        let fetched = store.get_run_by_number("pipe-1", 42).await.unwrap().unwrap();
+        let fetched = store.get_run_by_number("t1", "pipe-1", 42).await.unwrap().unwrap();
         assert_eq!(fetched.id, run.id);
-        let missing = store.get_run_by_number("pipe-1", 99).await.unwrap();
+        let missing = store.get_run_by_number("t1", "pipe-1", 99).await.unwrap();
         assert!(missing.is_none());
     }
 }

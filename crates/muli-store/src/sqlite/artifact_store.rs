@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use tracing::warn;
 
 use muli_core::error::Result;
 use muli_core::pipeline::Artifact;
@@ -46,63 +47,53 @@ impl ArtifactStore for SqliteArtifactStore {
         Ok(id)
     }
 
-    async fn get_artifact(&self, artifact_id: &str) -> Result<Option<Artifact>> {
+    async fn get_artifact(&self, tenant_id: &str, artifact_id: &str) -> Result<Option<Artifact>> {
+        let conn = self.factory.tenant_conn(tenant_id).await?;
         let aid = artifact_id.to_string();
-        for tenant_id in self.factory.all_tenant_ids().await? {
-            let conn = self.factory.tenant_conn(&tenant_id).await?;
-            let a = aid.clone();
-            let result = conn
-                .call(move |c| {
-                    let mut stmt =
-                        c.prepare("SELECT full_json FROM pipeline_artifacts WHERE id = ?1")?;
-                    let mut rows = stmt.query(rusqlite::params![a])?;
-                    if let Some(row) = rows.next()? {
-                        let json: String = row.get(0)?;
-                        Ok(Some(from_json::<Artifact>(&json)?))
-                    } else {
-                        Ok(None)
-                    }
-                })
-                .await
-                .map_err(store_err)?;
-            if result.is_some() {
-                return Ok(result);
+        conn.call(move |c| {
+            let mut stmt =
+                c.prepare("SELECT full_json FROM pipeline_artifacts WHERE id = ?1")?;
+            let mut rows = stmt.query(rusqlite::params![aid])?;
+            if let Some(row) = rows.next()? {
+                let json: String = row.get(0)?;
+                Ok(Some(from_json::<Artifact>(&json)?))
+            } else {
+                Ok(None)
             }
-        }
-        Ok(None)
+        })
+        .await
+        .map_err(store_err)
     }
 
-    async fn list_by_run(&self, run_id: &str) -> Result<Vec<Artifact>> {
+    async fn list_by_run(&self, tenant_id: &str, run_id: &str) -> Result<Vec<Artifact>> {
+        let conn = self.factory.tenant_conn(tenant_id).await?;
         let rid = run_id.to_string();
-        for tenant_id in self.factory.all_tenant_ids().await? {
-            let conn = self.factory.tenant_conn(&tenant_id).await?;
-            let r = rid.clone();
-            let results: Vec<Artifact> = conn
-                .call(move |c| {
-                    let mut stmt =
-                        c.prepare("SELECT full_json FROM pipeline_artifacts WHERE run_id = ?1")?;
-                    let mut rows = stmt.query(rusqlite::params![r])?;
-                    let mut result = Vec::new();
-                    while let Some(row) = rows.next()? {
-                        let json: String = row.get(0)?;
-                        result.push(from_json::<Artifact>(&json)?);
-                    }
-                    Ok(result)
-                })
-                .await
-                .map_err(store_err)?;
-            if !results.is_empty() {
-                return Ok(results);
+        conn.call(move |c| {
+            let mut stmt =
+                c.prepare("SELECT full_json FROM pipeline_artifacts WHERE run_id = ?1")?;
+            let mut rows = stmt.query(rusqlite::params![rid])?;
+            let mut result = Vec::new();
+            while let Some(row) = rows.next()? {
+                let json: String = row.get(0)?;
+                result.push(from_json::<Artifact>(&json)?);
             }
-        }
-        Ok(Vec::new())
+            Ok(result)
+        })
+        .await
+        .map_err(store_err)
     }
 
     async fn delete_expired(&self, before: DateTime<Utc>) -> Result<u64> {
         let before_ms = dt_to_ms(before);
         let mut total = 0u64;
         for tenant_id in self.factory.all_tenant_ids().await? {
-            let conn = self.factory.tenant_conn(&tenant_id).await?;
+            let conn = match self.factory.tenant_conn(&tenant_id).await {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!(tenant_id = %tenant_id, error = %e, "skipping tenant db for expired artifact cleanup");
+                    continue;
+                }
+            };
             let rows = conn
                 .call(move |c| {
                     Ok(c.execute(
@@ -156,11 +147,11 @@ mod tests {
         let id1 = store.create_artifact(&a1).await.unwrap();
         store.create_artifact(&a2).await.unwrap();
 
-        let fetched = store.get_artifact(&id1).await.unwrap().unwrap();
+        let fetched = store.get_artifact("t1", &id1).await.unwrap().unwrap();
         assert_eq!(fetched.name, "binary");
         assert_eq!(fetched.size_bytes, 1024);
 
-        let list = store.list_by_run("run-1").await.unwrap();
+        let list = store.list_by_run("t1", "run-1").await.unwrap();
         assert_eq!(list.len(), 2);
     }
 
@@ -206,7 +197,7 @@ mod tests {
         let deleted = store.delete_expired(now).await.unwrap();
         assert_eq!(deleted, 1);
 
-        let remaining = store.list_by_run("run-1").await.unwrap();
+        let remaining = store.list_by_run("t1", "run-1").await.unwrap();
         assert_eq!(remaining.len(), 2);
     }
 }

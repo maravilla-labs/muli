@@ -265,7 +265,7 @@ steps:
     cancel.cancel();
 
     // Print all step results and logs
-    let steps = ss.list_by_run(&run.id).await.unwrap();
+    let steps = ss.list_by_run("t1", &run.id).await.unwrap();
     for step in &steps {
         let job_id = step.job_id.as_deref().unwrap_or("none");
         let logs = if step.job_id.is_some() {

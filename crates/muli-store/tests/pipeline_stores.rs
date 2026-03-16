@@ -56,13 +56,13 @@ async fn test_full_pipeline_crud_flow() {
     // 1. Create pipeline
     let pipeline = Pipeline::new("t1".into(), "repo-1".into(), "ci".into(), "sha256abc".into());
     pipe_store.upsert_pipeline(&pipeline).await.unwrap();
-    let fetched = pipe_store.get_pipeline(&pipeline.id).await.unwrap().unwrap();
+    let fetched = pipe_store.get_pipeline("t1", &pipeline.id).await.unwrap().unwrap();
     assert_eq!(fetched.name, "ci");
 
     // 2. Create run
     let run = make_run("t1", &pipeline.id, "repo-1", 1);
     let run_id = run_store.create_run(&run).await.unwrap();
-    let fetched_run = run_store.get_run(&run_id).await.unwrap().unwrap();
+    let fetched_run = run_store.get_run("t1", &run_id).await.unwrap().unwrap();
     assert_eq!(fetched_run.state, PipelineRunState::Pending);
 
     // 3. Create steps
@@ -85,24 +85,24 @@ async fn test_full_pipeline_crud_flow() {
 
     // 4. Update step states
     step_store
-        .update_step_state(&step1_id, StepRunState::Running)
+        .update_step_state("t1", &step1_id, StepRunState::Running)
         .await
         .unwrap();
     step_store
-        .update_step_state(&step1_id, StepRunState::Succeeded)
+        .update_step_state("t1", &step1_id, StepRunState::Succeeded)
         .await
         .unwrap();
     step_store
-        .update_step_state(&step2_id, StepRunState::Running)
+        .update_step_state("t1", &step2_id, StepRunState::Running)
         .await
         .unwrap();
     step_store
-        .update_step_state(&step2_id, StepRunState::Succeeded)
+        .update_step_state("t1", &step2_id, StepRunState::Succeeded)
         .await
         .unwrap();
 
     // 5. Verify all steps succeeded
-    let steps = step_store.list_by_run(&run_id).await.unwrap();
+    let steps = step_store.list_by_run("t1", &run_id).await.unwrap();
     assert_eq!(steps.len(), 2);
     assert!(steps.iter().all(|s| s.state == StepRunState::Succeeded));
 
@@ -110,7 +110,7 @@ async fn test_full_pipeline_crud_flow() {
     let mut run = fetched_run;
     run.state = PipelineRunState::Succeeded;
     run_store.update_run(&run).await.unwrap();
-    let final_run = run_store.get_run(&run_id).await.unwrap().unwrap();
+    let final_run = run_store.get_run("t1", &run_id).await.unwrap().unwrap();
     assert_eq!(final_run.state, PipelineRunState::Succeeded);
 }
 
@@ -131,13 +131,15 @@ async fn test_tenant_isolation() {
     let pipe_b = Pipeline::new("tenant-b".into(), "repo-1".into(), "ci".into(), "sha2".into());
     pipe_store.upsert_pipeline(&pipe_b).await.unwrap();
 
-    // Both should be retrievable by ID
-    assert!(pipe_store.get_pipeline(&pipe_a.id).await.unwrap().is_some());
-    assert!(pipe_store.get_pipeline(&pipe_b.id).await.unwrap().is_some());
+    // Both should be retrievable by ID from their own tenant
+    assert!(pipe_store.get_pipeline("tenant-a", &pipe_a.id).await.unwrap().is_some());
+    assert!(pipe_store.get_pipeline("tenant-b", &pipe_b.id).await.unwrap().is_some());
 
-    // get_by_repo returns both (cross-tenant)
-    let all = pipe_store.get_by_repo("repo-1").await.unwrap();
-    assert_eq!(all.len(), 2);
+    // get_by_repo is now tenant-scoped — each tenant sees only its own
+    let tenant_a_pipes = pipe_store.get_by_repo("tenant-a", "repo-1").await.unwrap();
+    assert_eq!(tenant_a_pipes.len(), 1);
+    let tenant_b_pipes = pipe_store.get_by_repo("tenant-b", "repo-1").await.unwrap();
+    assert_eq!(tenant_b_pipes.len(), 1);
 
     // Create runs in different tenants
     let run_a = make_run("tenant-a", &pipe_a.id, "repo-1", 1);
@@ -163,12 +165,12 @@ async fn test_tenant_isolation() {
     step_store.create_step(&step_a).await.unwrap();
     step_store.create_step(&step_b).await.unwrap();
 
-    // Steps should be isolated by run_id
-    let steps_a = step_store.list_by_run(&run_a.id).await.unwrap();
+    // Steps should be isolated by tenant+run_id
+    let steps_a = step_store.list_by_run("tenant-a", &run_a.id).await.unwrap();
     assert_eq!(steps_a.len(), 1);
     assert_eq!(steps_a[0].tenant_id, "tenant-a");
 
-    let steps_b = step_store.list_by_run(&run_b.id).await.unwrap();
+    let steps_b = step_store.list_by_run("tenant-b", &run_b.id).await.unwrap();
     assert_eq!(steps_b.len(), 1);
     assert_eq!(steps_b[0].tenant_id, "tenant-b");
 }
@@ -187,25 +189,25 @@ async fn test_run_pagination() {
     }
 
     // Page 1: limit 3, offset 0
-    let page1 = run_store.list_by_repo("repo-1", None, 3, 0).await.unwrap();
+    let page1 = run_store.list_by_repo("t1", "repo-1", None, 3, 0).await.unwrap();
     assert_eq!(page1.len(), 3);
     assert_eq!(page1[0].run_number, 10); // Newest first
     assert_eq!(page1[1].run_number, 9);
     assert_eq!(page1[2].run_number, 8);
 
     // Page 2
-    let page2 = run_store.list_by_repo("repo-1", None, 3, 3).await.unwrap();
+    let page2 = run_store.list_by_repo("t1", "repo-1", None, 3, 3).await.unwrap();
     assert_eq!(page2.len(), 3);
     assert_eq!(page2[0].run_number, 7);
 
     // Last page
-    let page4 = run_store.list_by_repo("repo-1", None, 3, 9).await.unwrap();
+    let page4 = run_store.list_by_repo("t1", "repo-1", None, 3, 9).await.unwrap();
     assert_eq!(page4.len(), 1);
     assert_eq!(page4[0].run_number, 1);
 
     // Beyond end
     let empty = run_store
-        .list_by_repo("repo-1", None, 3, 10)
+        .list_by_repo("t1", "repo-1", None, 3, 10)
         .await
         .unwrap();
     assert!(empty.is_empty());
@@ -233,14 +235,14 @@ async fn test_cache_eviction_flow() {
     }
 
     // Verify all 5 exist
-    let all = cache_store.list_by_repo("repo-1").await.unwrap();
+    let all = cache_store.list_by_repo("t1", "repo-1").await.unwrap();
     assert_eq!(all.len(), 5);
 
     // Evict to 2500 bytes (should remove at least 2 oldest entries)
-    let evicted = cache_store.evict_lru("repo-1", 2500).await.unwrap();
+    let evicted = cache_store.evict_lru("t1", "repo-1", 2500).await.unwrap();
     assert!(evicted >= 2, "should evict at least 2 entries, evicted {evicted}");
 
-    let remaining = cache_store.list_by_repo("repo-1").await.unwrap();
+    let remaining = cache_store.list_by_repo("t1", "repo-1").await.unwrap();
     let total: u64 = remaining.iter().map(|e| e.size_bytes).sum();
     assert!(
         total <= 3000,
@@ -262,23 +264,23 @@ async fn test_secrets_cross_repo_isolation() {
 
     // Same name, different repos
     let fetched1 = secret_store
-        .get_secret("repo-1", "API_KEY")
+        .get_secret("t1", "repo-1", "API_KEY")
         .await
         .unwrap()
         .unwrap();
     assert_eq!(fetched1.encrypted_value, "enc1");
 
     let fetched2 = secret_store
-        .get_secret("repo-2", "API_KEY")
+        .get_secret("t1", "repo-2", "API_KEY")
         .await
         .unwrap()
         .unwrap();
     assert_eq!(fetched2.encrypted_value, "enc2");
 
     // list_names should be repo-scoped
-    let names1 = secret_store.list_names("repo-1").await.unwrap();
+    let names1 = secret_store.list_names("t1", "repo-1").await.unwrap();
     assert_eq!(names1, vec!["API_KEY"]);
-    let names2 = secret_store.list_names("repo-2").await.unwrap();
+    let names2 = secret_store.list_names("t1", "repo-2").await.unwrap();
     assert_eq!(names2, vec!["API_KEY"]);
 }
 
@@ -310,11 +312,11 @@ async fn test_artifacts_across_runs() {
     store.create_artifact(&a1).await.unwrap();
     store.create_artifact(&a2).await.unwrap();
 
-    let run1_artifacts = store.list_by_run("run-1").await.unwrap();
+    let run1_artifacts = store.list_by_run("t1", "run-1").await.unwrap();
     assert_eq!(run1_artifacts.len(), 1);
     assert_eq!(run1_artifacts[0].size_bytes, 1024);
 
-    let run2_artifacts = store.list_by_run("run-2").await.unwrap();
+    let run2_artifacts = store.list_by_run("t1", "run-2").await.unwrap();
     assert_eq!(run2_artifacts.len(), 1);
     assert_eq!(run2_artifacts[0].size_bytes, 2048);
 }
@@ -337,13 +339,13 @@ async fn test_next_run_number_across_pipelines() {
     run_store.create_run(&run_b1).await.unwrap();
 
     // Each pipeline should have independent run numbers
-    let next_a = run_store.next_run_number("pipe-a").await.unwrap();
+    let next_a = run_store.next_run_number("t1", "pipe-a").await.unwrap();
     assert_eq!(next_a, 3);
 
-    let next_b = run_store.next_run_number("pipe-b").await.unwrap();
+    let next_b = run_store.next_run_number("t1", "pipe-b").await.unwrap();
     assert_eq!(next_b, 2);
 
     // Non-existent pipeline
-    let next_new = run_store.next_run_number("pipe-new").await.unwrap();
+    let next_new = run_store.next_run_number("t1", "pipe-new").await.unwrap();
     assert_eq!(next_new, 1);
 }

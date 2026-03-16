@@ -172,13 +172,13 @@ steps:
     assert_eq!(result, PipelineRunState::Succeeded);
 
     // Verify run state persisted
-    let final_run = run_store.get_run(&run.id).await.unwrap().unwrap();
+    let final_run = run_store.get_run("t1", &run.id).await.unwrap().unwrap();
     assert_eq!(final_run.state, PipelineRunState::Succeeded);
     assert!(final_run.started_at.is_some());
     assert!(final_run.finished_at.is_some());
 
     // Verify all steps succeeded
-    let steps = step_store.list_by_run(&run.id).await.unwrap();
+    let steps = step_store.list_by_run("t1", &run.id).await.unwrap();
     assert_eq!(steps.len(), 2);
     for step in &steps {
         assert_eq!(step.state, StepRunState::Succeeded);
@@ -244,7 +244,7 @@ steps:
     assert_eq!(result, PipelineRunState::Failed);
 
     // build step should be cancelled (dependency failed with Stop strategy)
-    let steps = step_store.list_by_run(&run.id).await.unwrap();
+    let steps = step_store.list_by_run("t1", &run.id).await.unwrap();
     let build = steps.iter().find(|s| s.step_name == "build").unwrap();
     assert_eq!(build.state, StepRunState::Cancelled);
 }
@@ -364,7 +364,7 @@ steps:
     let result = executor.execute(&mut run, &pipeline_def, &step_runs, None).await.unwrap();
     assert_eq!(result, PipelineRunState::Succeeded);
 
-    let steps = step_store.list_by_run(&run.id).await.unwrap();
+    let steps = step_store.list_by_run("t1", &run.id).await.unwrap();
     let deploy = steps.iter().find(|s| s.step_name == "deploy").unwrap();
     assert_eq!(deploy.state, StepRunState::Skipped);
     assert!(deploy.job_id.is_none(), "skipped step should have no job_id");
@@ -417,7 +417,7 @@ steps:
     assert_eq!(result, PipelineRunState::Succeeded);
 
     // Both matrix variants should have jobs
-    let steps = step_store.list_by_run(&run.id).await.unwrap();
+    let steps = step_store.list_by_run("t1", &run.id).await.unwrap();
     assert_eq!(steps.len(), 2);
     for step in &steps {
         assert_eq!(step.state, StepRunState::Succeeded);
@@ -466,7 +466,7 @@ steps:
     executor.execute(&mut run, &pipeline_def, &[sr.clone()], None).await.unwrap();
 
     // Check the Job's env vars
-    let steps = step_store.list_by_run(&run.id).await.unwrap();
+    let steps = step_store.list_by_run("t1", &run.id).await.unwrap();
     let job = job_store.get_job(steps[0].job_id.as_ref().unwrap()).await.unwrap().unwrap();
 
     let env_map: HashMap<String, String> = job.spec.env_vars.iter().map(|e| (e.name.clone(), e.value.clone())).collect();
@@ -540,7 +540,7 @@ steps:
     assert_eq!(result, PipelineRunState::Succeeded);
 
     // All 4 steps should succeed
-    let steps = step_store.list_by_run(&run.id).await.unwrap();
+    let steps = step_store.list_by_run("t1", &run.id).await.unwrap();
     assert_eq!(steps.len(), 4);
     for step in &steps {
         assert_eq!(step.state, StepRunState::Succeeded, "step {} should succeed", step.step_name);

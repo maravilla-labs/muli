@@ -176,7 +176,7 @@ impl PipelineTriggerImpl {
         }
 
         // 7. Create a PipelineRun
-        let run_number = match self.run_store.next_run_number(&pipeline.id).await {
+        let run_number = match self.run_store.next_run_number(tenant_id, &pipeline.id).await {
             Ok(n) => n,
             Err(e) => {
                 error!(error = %e, "pipeline trigger: failed to get next run number");

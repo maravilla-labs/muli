@@ -209,6 +209,7 @@ async fn create_steps_from_yaml(
 /// Resolve muli-native pipeline secrets and merge with caller env_vars.
 async fn resolve_env_vars(
     secret_store: &Arc<dyn PipelineSecretStore>,
+    tenant_id: &str,
     repo_id: &str,
     caller_env_vars: HashMap<String, String>,
 ) -> Result<HashMap<String, String>, Status> {
@@ -216,12 +217,12 @@ async fn resolve_env_vars(
 
     // Muli's own pipeline secrets (from PipelineSecretStore)
     let secret_names = secret_store
-        .list_names(repo_id)
+        .list_names(tenant_id, repo_id)
         .await
         .map_err(|e| Status::internal(format!("Failed to list secrets: {e}")))?;
 
     for name in secret_names {
-        if let Ok(Some(_secret)) = secret_store.get_secret(repo_id, &name).await {
+        if let Ok(Some(_secret)) = secret_store.get_secret(tenant_id, repo_id, &name).await {
             // SECURITY: muli-native secrets are AES-256-GCM encrypted at rest.
             // Decryption requires `pipeline_secret_encryption_key` from server config,
             // which is not yet wired into this code path. Skip these secrets rather
@@ -271,7 +272,7 @@ impl PipelineService for PipelineServiceImpl {
         // Find or create pipeline for this repo
         let pipelines = self
             .pipeline_store
-            .get_by_repo(&req.repo_id)
+            .get_by_repo(&caller_tenant, &req.repo_id)
             .await
             .map_err(|e| Status::internal(format!("Failed to get pipelines: {e}")))?;
 
@@ -294,12 +295,12 @@ impl PipelineService for PipelineServiceImpl {
 
         // Resolve env vars (muli secrets + caller env_vars)
         let env_vars =
-            resolve_env_vars(&self.secret_store, &req.repo_id, req.env_vars).await?;
+            resolve_env_vars(&self.secret_store, &caller_tenant, &req.repo_id, req.env_vars).await?;
 
         // Get next run number
         let run_number = self
             .run_store
-            .next_run_number(&pipeline.id)
+            .next_run_number(&caller_tenant, &pipeline.id)
             .await
             .map_err(|e| Status::internal(format!("Failed to get run number: {e}")))?;
 
@@ -357,7 +358,7 @@ impl PipelineService for PipelineServiceImpl {
         // Look up the pipeline for this repo to get the pipeline_id
         let pipelines = self
             .pipeline_store
-            .get_by_repo(&req.repo_id)
+            .get_by_repo(&caller_tenant, &req.repo_id)
             .await
             .map_err(|e| Status::internal(format!("Failed to get pipelines: {e}")))?;
 
@@ -367,7 +368,7 @@ impl PipelineService for PipelineServiceImpl {
 
         let run = self
             .run_store
-            .get_run_by_number(&pipeline.id, req.run_number)
+            .get_run_by_number(&caller_tenant, &pipeline.id, req.run_number)
             .await
             .map_err(|e| Status::internal(format!("Failed to get run: {e}")))?
             .ok_or_else(|| Status::not_found(format!("run #{} not found", req.run_number)))?;
@@ -380,7 +381,7 @@ impl PipelineService for PipelineServiceImpl {
 
         let steps = self
             .step_store
-            .list_by_run(&run.id)
+            .list_by_run(&caller_tenant, &run.id)
             .await
             .map_err(|e| Status::internal(format!("Failed to list steps: {e}")))?;
 
@@ -411,7 +412,7 @@ impl PipelineService for PipelineServiceImpl {
 
         let runs = self
             .run_store
-            .list_by_repo(&req.repo_id, state_filter, limit, offset)
+            .list_by_repo(&caller_tenant, &req.repo_id, state_filter, limit, offset)
             .await
             .map_err(|e| Status::internal(format!("Failed to list runs: {e}")))?;
 
@@ -443,7 +444,7 @@ impl PipelineService for PipelineServiceImpl {
 
         let mut run = self
             .run_store
-            .get_run(&req.run_id)
+            .get_run(&caller_tenant, &req.run_id)
             .await
             .map_err(|e| Status::internal(format!("Failed to get run: {e}")))?
             .ok_or_else(|| Status::not_found(format!("run {} not found", req.run_id)))?;
@@ -462,14 +463,14 @@ impl PipelineService for PipelineServiceImpl {
         // Cancel all non-terminal steps
         let steps = self
             .step_store
-            .list_by_run(&req.run_id)
+            .list_by_run(&caller_tenant, &req.run_id)
             .await
             .map_err(|e| Status::internal(format!("Failed to list steps: {e}")))?;
 
         for step in &steps {
             if !step.state.is_terminal() {
                 self.step_store
-                    .update_step_state(&step.id, DomainStepState::Cancelled)
+                    .update_step_state(&caller_tenant, &step.id, DomainStepState::Cancelled)
                     .await
                     .map_err(|e| {
                         Status::internal(format!("Failed to cancel step {}: {e}", step.step_name))
@@ -517,7 +518,7 @@ impl PipelineService for PipelineServiceImpl {
         // Look up original run
         let original = self
             .run_store
-            .get_run(&req.run_id)
+            .get_run(&caller_tenant, &req.run_id)
             .await
             .map_err(|e| Status::internal(format!("Failed to get run: {e}")))?
             .ok_or_else(|| Status::not_found(format!("run {} not found", req.run_id)))?;
@@ -536,7 +537,7 @@ impl PipelineService for PipelineServiceImpl {
         // Get next run number
         let run_number = self
             .run_store
-            .next_run_number(&original.pipeline_id)
+            .next_run_number(&caller_tenant, &original.pipeline_id)
             .await
             .map_err(|e| Status::internal(format!("Failed to get run number: {e}")))?;
 
@@ -604,7 +605,7 @@ impl PipelineService for PipelineServiceImpl {
 
         let final_steps = self
             .step_store
-            .list_by_run(&new_run.id)
+            .list_by_run(&caller_tenant, &new_run.id)
             .await
             .unwrap_or_default();
 
@@ -632,7 +633,7 @@ impl PipelineService for PipelineServiceImpl {
         // Find the step by run_id + step_name
         let steps = self
             .step_store
-            .list_by_run(&req.run_id)
+            .list_by_run(&caller_tenant, &req.run_id)
             .await
             .map_err(|e| Status::internal(format!("Failed to list steps: {e}")))?;
 
@@ -698,7 +699,7 @@ impl PipelineService for PipelineServiceImpl {
 
         let artifacts = self
             .artifact_store
-            .list_by_run(&req.run_id)
+            .list_by_run(&caller_tenant, &req.run_id)
             .await
             .map_err(|e| Status::internal(format!("Failed to list artifacts: {e}")))?;
 
@@ -734,7 +735,7 @@ impl PipelineService for PipelineServiceImpl {
 
         let caches = self
             .cache_store
-            .list_by_repo(&req.repo_id)
+            .list_by_repo(&caller_tenant, &req.repo_id)
             .await
             .map_err(|e| Status::internal(format!("Failed to list caches: {e}")))?;
 
@@ -763,7 +764,7 @@ impl PipelineService for PipelineServiceImpl {
         }
 
         self.cache_store
-            .delete_cache(&req.repo_id, &req.cache_key)
+            .delete_cache(&caller_tenant, &req.repo_id, &req.cache_key)
             .await
             .map_err(|e| Status::internal(format!("Failed to delete cache: {e}")))?;
 

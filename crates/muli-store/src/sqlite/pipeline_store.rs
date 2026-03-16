@@ -42,73 +42,50 @@ impl PipelineStore for SqlitePipelineStore {
         .map_err(store_err)
     }
 
-    async fn get_pipeline(&self, pipeline_id: &str) -> Result<Option<Pipeline>> {
+    async fn get_pipeline(&self, tenant_id: &str, pipeline_id: &str) -> Result<Option<Pipeline>> {
+        let conn = self.factory.tenant_conn(tenant_id).await?;
         let pid = pipeline_id.to_string();
-        for tenant_id in self.factory.all_tenant_ids().await? {
-            let conn = self.factory.tenant_conn(&tenant_id).await?;
-            let p = pid.clone();
-            let result = conn
-                .call(move |c| {
-                    let mut stmt =
-                        c.prepare("SELECT full_json FROM pipelines WHERE id = ?1")?;
-                    let mut rows = stmt.query(rusqlite::params![p])?;
-                    if let Some(row) = rows.next()? {
-                        let json: String = row.get(0)?;
-                        Ok(Some(from_json::<Pipeline>(&json)?))
-                    } else {
-                        Ok(None)
-                    }
-                })
-                .await
-                .map_err(store_err)?;
-            if result.is_some() {
-                return Ok(result);
+        conn.call(move |c| {
+            let mut stmt = c.prepare("SELECT full_json FROM pipelines WHERE id = ?1")?;
+            let mut rows = stmt.query(rusqlite::params![pid])?;
+            if let Some(row) = rows.next()? {
+                let json: String = row.get(0)?;
+                Ok(Some(from_json::<Pipeline>(&json)?))
+            } else {
+                Ok(None)
             }
-        }
-        Ok(None)
+        })
+        .await
+        .map_err(store_err)
     }
 
-    async fn get_by_repo(&self, repo_id: &str) -> Result<Vec<Pipeline>> {
+    async fn get_by_repo(&self, tenant_id: &str, repo_id: &str) -> Result<Vec<Pipeline>> {
+        let conn = self.factory.tenant_conn(tenant_id).await?;
         let rid = repo_id.to_string();
-        let mut all = Vec::new();
-        for tenant_id in self.factory.all_tenant_ids().await? {
-            let conn = self.factory.tenant_conn(&tenant_id).await?;
-            let r = rid.clone();
-            let mut results: Vec<Pipeline> = conn
-                .call(move |c| {
-                    let mut stmt =
-                        c.prepare("SELECT full_json FROM pipelines WHERE repo_id = ?1")?;
-                    let mut rows = stmt.query(rusqlite::params![r])?;
-                    let mut result = Vec::new();
-                    while let Some(row) = rows.next()? {
-                        let json: String = row.get(0)?;
-                        result.push(from_json::<Pipeline>(&json)?);
-                    }
-                    Ok(result)
-                })
-                .await
-                .map_err(store_err)?;
-            all.append(&mut results);
-        }
-        Ok(all)
+        conn.call(move |c| {
+            let mut stmt =
+                c.prepare("SELECT full_json FROM pipelines WHERE repo_id = ?1")?;
+            let mut rows = stmt.query(rusqlite::params![rid])?;
+            let mut result = Vec::new();
+            while let Some(row) = rows.next()? {
+                let json: String = row.get(0)?;
+                result.push(from_json::<Pipeline>(&json)?);
+            }
+            Ok(result)
+        })
+        .await
+        .map_err(store_err)
     }
 
-    async fn delete_pipeline(&self, pipeline_id: &str) -> Result<()> {
+    async fn delete_pipeline(&self, tenant_id: &str, pipeline_id: &str) -> Result<()> {
+        let conn = self.factory.tenant_conn(tenant_id).await?;
         let pid = pipeline_id.to_string();
-        for tenant_id in self.factory.all_tenant_ids().await? {
-            let conn = self.factory.tenant_conn(&tenant_id).await?;
-            let p = pid.clone();
-            let rows = conn
-                .call(move |c| {
-                    Ok(c.execute("DELETE FROM pipelines WHERE id = ?1", rusqlite::params![p])?)
-                })
-                .await
-                .map_err(store_err)?;
-            if rows > 0 {
-                return Ok(());
-            }
-        }
-        Ok(())
+        conn.call(move |c| {
+            c.execute("DELETE FROM pipelines WHERE id = ?1", rusqlite::params![pid])?;
+            Ok(())
+        })
+        .await
+        .map_err(store_err)
     }
 }
 
@@ -129,7 +106,7 @@ mod tests {
         let store = SqlitePipelineStore::new(factory);
         let p = Pipeline::new("t1".into(), "repo-1".into(), "ci".into(), "sha1".into());
         store.upsert_pipeline(&p).await.unwrap();
-        let fetched = store.get_pipeline(&p.id).await.unwrap().unwrap();
+        let fetched = store.get_pipeline("t1", &p.id).await.unwrap().unwrap();
         assert_eq!(fetched.name, "ci");
         assert_eq!(fetched.repo_id, "repo-1");
         assert_eq!(fetched.yaml_sha, "sha1");
@@ -145,7 +122,7 @@ mod tests {
         store.upsert_pipeline(&p1).await.unwrap();
         store.upsert_pipeline(&p2).await.unwrap();
         store.upsert_pipeline(&p3).await.unwrap();
-        let list = store.get_by_repo("repo-1").await.unwrap();
+        let list = store.get_by_repo("t1", "repo-1").await.unwrap();
         assert_eq!(list.len(), 2);
         let names: Vec<&str> = list.iter().map(|p| p.name.as_str()).collect();
         assert!(names.contains(&"ci"));
@@ -158,8 +135,8 @@ mod tests {
         let store = SqlitePipelineStore::new(factory);
         let p = Pipeline::new("t1".into(), "repo-1".into(), "ci".into(), "sha1".into());
         store.upsert_pipeline(&p).await.unwrap();
-        store.delete_pipeline(&p.id).await.unwrap();
-        let fetched = store.get_pipeline(&p.id).await.unwrap();
+        store.delete_pipeline("t1", &p.id).await.unwrap();
+        let fetched = store.get_pipeline("t1", &p.id).await.unwrap();
         assert!(fetched.is_none());
     }
 
@@ -171,10 +148,10 @@ mod tests {
         store.upsert_pipeline(&p).await.unwrap();
         p.yaml_sha = "sha2".into();
         store.upsert_pipeline(&p).await.unwrap();
-        let fetched = store.get_pipeline(&p.id).await.unwrap().unwrap();
+        let fetched = store.get_pipeline("t1", &p.id).await.unwrap().unwrap();
         assert_eq!(fetched.yaml_sha, "sha2");
         // Should still be only one pipeline for the repo
-        let list = store.get_by_repo("repo-1").await.unwrap();
+        let list = store.get_by_repo("t1", "repo-1").await.unwrap();
         assert_eq!(list.len(), 1);
     }
 }

@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-03-16
+
+### Fixed
+
+- **Pipeline store queries scan all tenant databases, causing 500 errors** — all pipeline store trait methods (`PipelineStore`, `PipelineRunStore`, `StepRunStore`, `ArtifactStore`, `CacheStore`, `PipelineSecretStore`) now accept `tenant_id` as a parameter and query only the caller's tenant database instead of scanning every `.db` file on disk via `all_tenant_ids()`. This eliminates the `attempt to write a readonly database` error when stale or read-only database files exist.
+- **`list_by_repo` pagination applied in-memory instead of SQL** — `SqlitePipelineRunStore::list_by_repo` now uses SQL `LIMIT`/`OFFSET` instead of fetching all rows across all tenants and slicing in Rust.
+- **`ArtifactStore::delete_expired` crashes on inaccessible tenant DB** — cross-tenant expired artifact cleanup now skips tenant databases that fail to open instead of aborting the entire operation.
+
+### Security
+
+- Pipeline store queries are now fully tenant-isolated at the storage layer. Previously, query methods scanned all tenant databases, which was both a performance issue and a potential information leak vector.
+
 ## [0.2.3] - 2026-03-16
 
 ### Fixed
