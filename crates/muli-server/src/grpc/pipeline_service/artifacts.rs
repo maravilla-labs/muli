@@ -109,10 +109,87 @@ impl PipelineServiceImpl {
 
     pub async fn get_pipeline_config_impl(
         &self,
-        _request: Request<GetPipelineConfigRequest>,
+        request: Request<GetPipelineConfigRequest>,
     ) -> Result<Response<GetPipelineConfigResponse>, Status> {
-        Err(Status::unimplemented(
-            "GetPipelineConfig requires git repository access",
-        ))
+        let (caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
+
+        if req.repo_id.is_empty() {
+            return Err(Status::invalid_argument("repo_id is required"));
+        }
+
+        // Look up repo to get namespace + name for the filesystem path
+        let repo = self
+            .repo_store
+            .get_repository(&req.repo_id)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to get repository: {e}")))?
+            .ok_or_else(|| Status::not_found("repository not found"))?;
+
+        if repo.tenant_id != caller_tenant {
+            return Err(Status::not_found("repository not found"));
+        }
+
+        let repo_path = self
+            .git_root
+            .join(&caller_tenant)
+            .join(&repo.namespace)
+            .join(format!("{}.git", &repo.name));
+
+        // Determine which commit to read from
+        let commit_ref = if !req.commit_sha.is_empty() {
+            req.commit_sha.clone()
+        } else {
+            // Fall back to HEAD of default branch
+            repo.default_branch.clone()
+        };
+
+        let yaml_content = tokio::task::spawn_blocking({
+            let repo_path = repo_path.clone();
+            let commit_ref = commit_ref.clone();
+            move || -> Result<Option<String>, Status> {
+                let git_repo = git2::Repository::open(&repo_path)
+                    .map_err(|e| Status::internal(format!("Cannot open repo: {e}")))?;
+
+                // Resolve the reference (can be a SHA, branch name, or ref)
+                let obj = git_repo
+                    .revparse_single(&commit_ref)
+                    .map_err(|e| Status::not_found(format!("Cannot resolve ref '{commit_ref}': {e}")))?;
+
+                let commit = obj
+                    .peel_to_commit()
+                    .map_err(|e| Status::internal(format!("Cannot peel to commit: {e}")))?;
+
+                let tree = commit
+                    .tree()
+                    .map_err(|e| Status::internal(format!("Cannot read tree: {e}")))?;
+
+                let entry = match tree.get_path(std::path::Path::new(".maravilla/pipeline.yml")) {
+                    Ok(e) => e,
+                    Err(_) => return Ok(None),
+                };
+
+                let blob = git_repo
+                    .find_blob(entry.id())
+                    .map_err(|e| Status::internal(format!("Cannot read blob: {e}")))?;
+
+                let content = std::str::from_utf8(blob.content())
+                    .map_err(|e| Status::internal(format!("pipeline.yml is not valid UTF-8: {e}")))?;
+
+                Ok(Some(content.to_string()))
+            }
+        })
+        .await
+        .map_err(|e| Status::internal(format!("spawn_blocking failed: {e}")))??;
+
+        match yaml_content {
+            Some(content) => Ok(Response::new(GetPipelineConfigResponse {
+                yaml_content: content,
+                pipeline_detected: true,
+            })),
+            None => Ok(Response::new(GetPipelineConfigResponse {
+                yaml_content: String::new(),
+                pipeline_detected: false,
+            })),
+        }
     }
 }

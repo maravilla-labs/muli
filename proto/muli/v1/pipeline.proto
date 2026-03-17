@@ -237,6 +237,7 @@ message WatchPipelineRunRequest {
 message GetPipelineConfigRequest {
   string tenant_id = 1;
   string repo_id = 2;
+  string commit_sha = 3;  // Read config from this commit (falls back to HEAD of default branch)
 }
 
 message GetPipelineConfigResponse {

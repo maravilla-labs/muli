@@ -125,6 +125,8 @@ pub(crate) async fn start_grpc(
         job_store: stores.job_store.clone(),
         job_log_store: stores.job_log_store.clone(),
         job_submitter: pipeline_job_submitter,
+        repo_store: stores.repo_store.clone(),
+        git_root: config.effective_git_root(),
     };
 
     // Auth interceptor (no-op when MULI_API_KEY is unset)

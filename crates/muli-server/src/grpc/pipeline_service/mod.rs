@@ -3,6 +3,7 @@
 
 //! Pipeline CI/CD gRPC service.
 
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -11,7 +12,7 @@ use tonic::{Request, Response, Status};
 
 use muli_core::traits::{
     ArtifactStore, CacheStore, JobLogStore, JobStore, PipelineRunStore, PipelineSecretStore,
-    PipelineStore, StepRunStore,
+    PipelineStore, RepositoryStore, StepRunStore,
 };
 use muli_pipeline::dag::executor::JobSubmitter;
 
@@ -42,6 +43,8 @@ pub struct PipelineServiceImpl {
     pub job_store: Arc<dyn JobStore>,
     pub job_log_store: Arc<dyn JobLogStore>,
     pub job_submitter: Arc<dyn JobSubmitter>,
+    pub repo_store: Arc<dyn RepositoryStore>,
+    pub git_root: PathBuf,
 }
 
 pub(crate) type BoxStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
