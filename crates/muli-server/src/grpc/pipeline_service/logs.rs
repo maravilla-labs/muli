@@ -21,6 +21,19 @@ impl PipelineServiceImpl {
             return Err(Status::invalid_argument("run_id is required"));
         }
 
+        // Verify run belongs to the requested repo
+        if !req.repo_id.is_empty() {
+            let run = self
+                .run_store
+                .get_run(&caller_tenant, &req.run_id)
+                .await
+                .map_err(|e| Status::internal(format!("Failed to get run: {e}")))?
+                .ok_or_else(|| Status::not_found(format!("run {} not found", req.run_id)))?;
+            if run.repo_id != req.repo_id {
+                return Err(Status::not_found(format!("run {} not found", req.run_id)));
+            }
+        }
+
         // Find the step by run_id + step_name
         let steps = self
             .step_store

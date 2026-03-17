@@ -150,6 +150,7 @@ message GetPipelineRunRequest {
   string tenant_id = 1;
   string repo_id = 2;
   uint64 run_number = 3;
+  string run_id = 4;  // Lookup by UUID (preferred over run_number)
 }
 
 message ListPipelineRunsRequest {
@@ -168,6 +169,7 @@ message ListPipelineRunsResponse {
 message CancelPipelineRequest {
   string tenant_id = 1;
   string run_id = 2;
+  string repo_id = 3;  // Verify run belongs to this repo
 }
 
 message CancelPipelineResponse {}
@@ -175,6 +177,7 @@ message CancelPipelineResponse {}
 message RetryPipelineRequest {
   string tenant_id = 1;
   string run_id = 2;
+  string repo_id = 3;  // Verify run belongs to this repo
 }
 
 message GetStepLogsRequest {
@@ -182,6 +185,7 @@ message GetStepLogsRequest {
   string run_id = 2;
   string step_name = 3;
   uint32 tail = 4;
+  string repo_id = 5;  // Verify run belongs to this repo
 }
 
 message GetStepLogsResponse {

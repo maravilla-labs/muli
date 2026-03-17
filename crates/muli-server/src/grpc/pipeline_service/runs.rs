@@ -121,30 +121,40 @@ impl PipelineServiceImpl {
             return Err(Status::invalid_argument("repo_id is required"));
         }
 
-        // Look up the pipeline for this repo to get the pipeline_id
-        let pipelines = self
-            .pipeline_store
-            .get_by_repo(&caller_tenant, &req.repo_id)
-            .await
-            .map_err(|e| Status::internal(format!("Failed to get pipelines: {e}")))?;
+        // Support lookup by run_id (UUID) or run_number
+        let run = if !req.run_id.is_empty() {
+            // Direct UUID lookup
+            let r = self
+                .run_store
+                .get_run(&caller_tenant, &req.run_id)
+                .await
+                .map_err(|e| Status::internal(format!("Failed to get run: {e}")))?
+                .ok_or_else(|| Status::not_found(format!("run {} not found", req.run_id)))?;
+            // Verify run belongs to the requested repo
+            if r.repo_id != req.repo_id {
+                return Err(Status::not_found(format!("run {} not found", req.run_id)));
+            }
+            r
+        } else {
+            // Legacy run_number lookup (already repo-scoped via pipeline)
+            let pipelines = self
+                .pipeline_store
+                .get_by_repo(&caller_tenant, &req.repo_id)
+                .await
+                .map_err(|e| Status::internal(format!("Failed to get pipelines: {e}")))?;
 
-        let pipeline = pipelines
-            .first()
-            .ok_or_else(|| Status::not_found("no pipeline found for this repo"))?;
+            let pipeline = pipelines
+                .first()
+                .ok_or_else(|| Status::not_found("no pipeline found for this repo"))?;
 
-        let run = self
-            .run_store
-            .get_run_by_number(&caller_tenant, &pipeline.id, req.run_number)
-            .await
-            .map_err(|e| Status::internal(format!("Failed to get run: {e}")))?
-            .ok_or_else(|| Status::not_found(format!("run #{} not found", req.run_number)))?;
-
-        if run.tenant_id != caller_tenant {
-            return Err(Status::not_found(format!(
-                "run #{} not found",
-                req.run_number
-            )));
-        }
+            self.run_store
+                .get_run_by_number(&caller_tenant, &pipeline.id, req.run_number)
+                .await
+                .map_err(|e| Status::internal(format!("Failed to get run: {e}")))?
+                .ok_or_else(|| {
+                    Status::not_found(format!("run #{} not found", req.run_number))
+                })?
+        };
 
         let run = &run;
 
@@ -215,6 +225,11 @@ impl PipelineServiceImpl {
             return Err(Status::not_found(format!("run {} not found", req.run_id)));
         }
 
+        // Verify run belongs to the requested repo
+        if !req.repo_id.is_empty() && run.repo_id != req.repo_id {
+            return Err(Status::not_found(format!("run {} not found", req.run_id)));
+        }
+
         if run.state.is_terminal() {
             return Err(Status::failed_precondition(format!(
                 "run is already in terminal state: {}",
@@ -280,6 +295,11 @@ impl PipelineServiceImpl {
             .ok_or_else(|| Status::not_found(format!("run {} not found", req.run_id)))?;
 
         if original.tenant_id != caller_tenant {
+            return Err(Status::not_found(format!("run {} not found", req.run_id)));
+        }
+
+        // Verify run belongs to the requested repo
+        if !req.repo_id.is_empty() && original.repo_id != req.repo_id {
             return Err(Status::not_found(format!("run {} not found", req.run_id)));
         }
 
