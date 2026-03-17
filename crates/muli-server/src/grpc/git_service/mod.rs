@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 use muli_core::traits::{
-    CollaboratorStore, GitTokenStore, RepositoryStore, SshKeyStore, WebhookStore,
+    CollaboratorStore, GitTokenStore, RepositoryStore, SshKeyStore, TenantLimitsStore, WebhookStore,
 };
 use muli_proto::git_service_server::GitService;
 use muli_proto::{
@@ -39,6 +39,8 @@ pub struct GitServiceImpl {
     pub collaborator_store: Arc<dyn CollaboratorStore>,
     pub git_storage: Arc<muli_git::storage::FilesystemStorage>,
     pub allow_localhost_webhooks: bool,
+    pub repo_service: Arc<muli_core::service::RepositoryService>,
+    pub tenant_limits_store: Option<Arc<dyn TenantLimitsStore>>,
 }
 
 #[tonic::async_trait]

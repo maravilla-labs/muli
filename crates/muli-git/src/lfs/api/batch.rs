@@ -16,8 +16,8 @@ use crate::api::GitState;
 use crate::api::helpers::strip_git_suffix;
 use crate::lfs::storage::LfsStorageError;
 use crate::lfs::types::{
-    self, Action, Actions, BatchRequest, BatchResponse, ObjectError, ObjectResponse, Operation,
-    APPLICATION_VND_GIT_LFS_JSON,
+    self, APPLICATION_VND_GIT_LFS_JSON, Action, Actions, BatchRequest, BatchResponse, ObjectError,
+    ObjectResponse, Operation,
 };
 use crate::tenant::TenantContext;
 
@@ -78,7 +78,10 @@ pub async fn batch(
 
     (
         StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, APPLICATION_VND_GIT_LFS_JSON)],
+        [(
+            axum::http::header::CONTENT_TYPE,
+            APPLICATION_VND_GIT_LFS_JSON,
+        )],
         Json(body),
     )
         .into_response()
@@ -249,7 +252,10 @@ fn lfs_error(status: StatusCode, msg: &str) -> Response {
     });
     (
         status,
-        [(axum::http::header::CONTENT_TYPE, APPLICATION_VND_GIT_LFS_JSON)],
+        [(
+            axum::http::header::CONTENT_TYPE,
+            APPLICATION_VND_GIT_LFS_JSON,
+        )],
         Json(body),
     )
         .into_response()

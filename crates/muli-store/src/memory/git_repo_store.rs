@@ -112,6 +112,14 @@ impl RepositoryStore for MemoryRepositoryStore {
             ))),
         }
     }
+
+    async fn count_by_tenant(&self, tenant_id: &str) -> Result<u64> {
+        Ok(self
+            .repos
+            .iter()
+            .filter(|e| e.value().tenant_id == tenant_id)
+            .count() as u64)
+    }
 }
 
 #[cfg(test)]

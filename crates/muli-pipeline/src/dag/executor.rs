@@ -14,14 +14,12 @@ use tracing::{error, info, warn};
 use muli_core::error::Result;
 use muli_core::job::model::{EnvVar, Job, JobSpec, PriorityTier};
 use muli_core::job::state_machine::JobState;
-use muli_core::pipeline::{
-    FailureStrategy, PipelineRun, PipelineRunState, StepRun, StepRunState,
-};
+use muli_core::pipeline::{FailureStrategy, PipelineRun, PipelineRunState, StepRun, StepRunState};
 use muli_core::resource::limits::ResourceSpec;
 use muli_core::traits::{JobStore, PipelineRunStore, StepRunStore};
 
 use crate::dag::graph::DagGraph;
-use crate::yaml::expression::{evaluate_condition, ExpressionContext};
+use crate::yaml::expression::{ExpressionContext, evaluate_condition};
 use crate::yaml::schema::{PipelineDef, StepDef};
 
 /// Abstraction for submitting jobs to the scheduler.
@@ -92,7 +90,8 @@ impl DagExecutor {
             .collect();
 
         // Collect original step names for matching matrix-expanded step_runs
-        let original_names: Vec<&str> = pipeline_def.steps.iter().map(|s| s.name.as_str()).collect();
+        let original_names: Vec<&str> =
+            pipeline_def.steps.iter().map(|s| s.name.as_str()).collect();
 
         // Build step_run_name → StepRun map, and original_name → [step_run_names] map
         let step_run_map: HashMap<&str, &StepRun> = step_runs
@@ -104,7 +103,10 @@ impl DagExecutor {
         let mut original_to_runs: HashMap<&str, Vec<&str>> = HashMap::new();
         for sr in step_runs {
             if let Some(orig) = find_original_name(&sr.step_name, &original_names) {
-                original_to_runs.entry(orig).or_default().push(&sr.step_name);
+                original_to_runs
+                    .entry(orig)
+                    .or_default()
+                    .push(&sr.step_name);
             }
         }
 
@@ -155,7 +157,11 @@ impl DagExecutor {
                             if let Some(s) = current {
                                 if !s.state.is_terminal() {
                                     self.step_store
-                                        .update_step_state(tenant_id, &sr.id, StepRunState::Cancelled)
+                                        .update_step_state(
+                                            tenant_id,
+                                            &sr.id,
+                                            StepRunState::Cancelled,
+                                        )
                                         .await?;
                                 }
                             }
@@ -407,7 +413,11 @@ impl DagExecutor {
     }
 
     /// Poll the job store until the job reaches a terminal state or deadline.
-    async fn wait_for_job(&self, job_id: &str, deadline: chrono::DateTime<Utc>) -> Option<JobState> {
+    async fn wait_for_job(
+        &self,
+        job_id: &str,
+        deadline: chrono::DateTime<Utc>,
+    ) -> Option<JobState> {
         loop {
             if Utc::now() > deadline {
                 warn!(job_id = %job_id, "pipeline deadline exceeded while waiting for job");

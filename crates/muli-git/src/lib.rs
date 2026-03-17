@@ -14,6 +14,7 @@ pub mod tenant;
 
 pub use api::{GitRouterConfig, git_router};
 pub use auth::GitAuth;
+pub use hooks::{PostPushHooks, RefUpdate};
 pub use ssh::{SshConfig, SshServer};
 pub use storage::check_git_available;
 pub use tenant::TenantConfig;

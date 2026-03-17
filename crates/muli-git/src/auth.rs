@@ -8,10 +8,11 @@ use std::sync::Arc;
 use axum::{
     Json,
     extract::Request,
-    http::{HeaderMap, Method, StatusCode},
+    http::{Method, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use muli_core::auth::extract_any_token;
 use muli_core::token_hash;
 use serde_json::json;
 use tracing::warn;
@@ -121,59 +122,6 @@ fn required_permission(method: &Method, path: &str, query: Option<&str>) -> GitP
         Method::DELETE => GitPermission::Admin,
         _ => GitPermission::Push,
     }
-}
-
-/// Extract the bearer token from the Authorization header.
-fn extract_bearer_token(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .filter(|t| !t.is_empty())
-}
-
-/// Extract a token from Basic auth.
-/// Format: `Authorization: Basic base64(username:token)` — we use the password as the token.
-pub fn extract_basic_auth_token(headers: &HeaderMap) -> Option<String> {
-    use base64::Engine;
-
-    let value = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Basic "))?;
-
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(value)
-        .ok()?;
-    let decoded_str = String::from_utf8(decoded).ok()?;
-    let (_username, token) = decoded_str.split_once(':')?;
-    if token.is_empty() {
-        return None;
-    }
-    Some(token.to_string())
-}
-
-/// Extract a raw token (no scheme prefix).
-pub fn extract_raw_token(headers: &HeaderMap) -> Option<&str> {
-    let value = headers.get("authorization").and_then(|v| v.to_str().ok())?;
-    if value.starts_with("Bearer ") || value.starts_with("Basic ") {
-        return None;
-    }
-    Some(value.trim())
-}
-
-/// Extract a token from any supported auth scheme (Bearer, Basic, or raw).
-pub fn extract_any_token(headers: &HeaderMap) -> Option<String> {
-    if let Some(token) = extract_bearer_token(headers) {
-        return Some(token.to_string());
-    }
-    if let Some(token) = extract_basic_auth_token(headers) {
-        return Some(token);
-    }
-    if let Some(token) = extract_raw_token(headers) {
-        return Some(token.to_string());
-    }
-    None
 }
 
 /// Extract (namespace, repo_name) from paths like:

@@ -7,10 +7,11 @@ use std::sync::Arc;
 
 use axum::{
     extract::Request,
-    http::{HeaderMap, Method, StatusCode},
+    http::{Method, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use muli_core::auth::extract_any_token;
 use muli_core::token_hash;
 use tracing::{debug, warn};
 
@@ -59,79 +60,6 @@ fn required_permission(method: &Method) -> RegistryPermission {
         Method::DELETE => RegistryPermission::Admin,
         _ => RegistryPermission::Admin,
     }
-}
-
-/// Extract the bearer token from the Authorization header.
-/// Per RFC 7235, the auth-scheme is case-insensitive.
-fn extract_bearer_token(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| {
-            if v.len() > 7 && v[..7].eq_ignore_ascii_case("Bearer ") {
-                Some(&v[7..])
-            } else {
-                None
-            }
-        })
-        .filter(|t| !t.is_empty())
-}
-
-/// Extract a token from Basic auth (used by npm).
-/// npm sends `Authorization: Basic base64(username:token)`.
-/// We treat the password portion as the registry token.
-pub fn extract_basic_auth_token(headers: &HeaderMap) -> Option<String> {
-    use base64::Engine;
-
-    let header = headers.get("authorization").and_then(|v| v.to_str().ok())?;
-    // Per RFC 7235, the auth-scheme is case-insensitive
-    let value = if header.len() > 6 && header[..6].eq_ignore_ascii_case("Basic ") {
-        &header[6..]
-    } else {
-        return None;
-    };
-
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(value)
-        .ok()?;
-    let decoded_str = String::from_utf8(decoded).ok()?;
-    // Format: username:password — we use the password as the token
-    let (_username, token) = decoded_str.split_once(':')?;
-    if token.is_empty() {
-        return None;
-    }
-    Some(token.to_string())
-}
-
-/// Extract a raw token (no scheme prefix) used by Cargo.
-/// Cargo sends `Authorization: <token>` without Bearer/Basic prefix.
-pub fn extract_raw_token(headers: &HeaderMap) -> Option<&str> {
-    let value = headers.get("authorization").and_then(|v| v.to_str().ok())?;
-    // If it starts with Bearer or Basic (case-insensitive), it's not a raw token
-    if value.len() >= 7 && value[..7].eq_ignore_ascii_case("bearer ") {
-        return None;
-    }
-    if value.len() >= 6 && value[..6].eq_ignore_ascii_case("basic ") {
-        return None;
-    }
-    Some(value.trim())
-}
-
-/// Extract a token from any supported auth scheme (Bearer, Basic, or raw).
-pub fn extract_any_token(headers: &HeaderMap) -> Option<String> {
-    // Try Bearer first
-    if let Some(token) = extract_bearer_token(headers) {
-        return Some(token.to_string());
-    }
-    // Try Basic auth (npm style)
-    if let Some(token) = extract_basic_auth_token(headers) {
-        return Some(token);
-    }
-    // Try raw token (cargo style)
-    if let Some(token) = extract_raw_token(headers) {
-        return Some(token.to_string());
-    }
-    None
 }
 
 pub async fn auth_middleware(request: Request, next: Next) -> Response {

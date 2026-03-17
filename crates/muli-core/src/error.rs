@@ -62,6 +62,18 @@ pub enum MuliError {
 
     #[error("Pipeline DAG cycle: {0}")]
     PipelineDagCycle(String),
+
+    #[error("Not found: {0}")]
+    NotFound(String),
+
+    #[error("Permission denied: {0}")]
+    PermissionDenied(String),
+
+    #[error("Tenant suspended: {0}")]
+    TenantSuspended(String),
+
+    #[error("Quota exceeded: {0}")]
+    QuotaExceeded(String),
 }
 
 impl MuliError {

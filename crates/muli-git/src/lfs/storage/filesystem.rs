@@ -178,9 +178,7 @@ async fn stream_to_file_with_hash(
     let mut body = body.into_data_stream();
     use futures::StreamExt;
     while let Some(chunk) = body.next().await {
-        let data = chunk.map_err(|e| {
-            std::io::Error::other(format!("body read error: {e}"))
-        })?;
+        let data = chunk.map_err(|e| std::io::Error::other(format!("body read error: {e}")))?;
         written += data.len() as u64;
         if max_size > 0 && written > max_size {
             let _ = fs::remove_file(path).await;

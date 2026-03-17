@@ -3,10 +3,10 @@
 
 //! REST handlers for pipeline secrets.
 
+use axum::Json;
 use axum::extract::Path;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -22,9 +22,7 @@ pub async fn set_secret(
     StatusCode::NOT_IMPLEMENTED.into_response()
 }
 
-pub async fn list_secrets(
-    Path((_namespace, _repo)): Path<(String, String)>,
-) -> Response {
+pub async fn list_secrets(Path((_namespace, _repo)): Path<(String, String)>) -> Response {
     Json(serde_json::json!({ "secrets": [] })).into_response()
 }
 

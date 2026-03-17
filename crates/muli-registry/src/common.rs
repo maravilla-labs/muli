@@ -39,8 +39,75 @@ pub async fn check_quota(
     Ok(())
 }
 
-/// Update the tenant's usage in the quota store after a successful storage operation.
-pub async fn update_quota_usage(
+/// Atomically check quota and reserve `additional_bytes` for a tenant.
+///
+/// Returns `Ok(())` if the reservation succeeded (usage has been incremented),
+/// or an error response if the quota would be exceeded.
+/// If no quota store is configured, always succeeds.
+///
+/// **Use this on write-finalization paths** (blob complete, manifest PUT, npm/cargo/maven publish)
+/// instead of `check_quota` + `adjust_quota_usage` to eliminate the TOCTOU race
+/// where concurrent requests all pass the check before any increment lands.
+pub async fn reserve_quota(
+    quota_store: &Option<Extension<Arc<dyn TenantQuotaStore>>>,
+    tenant_id: &str,
+    additional_bytes: u64,
+) -> Result<(), Response> {
+    if additional_bytes == 0 {
+        return Ok(());
+    }
+    if let Some(Extension(store)) = quota_store {
+        match store.try_reserve(tenant_id, additional_bytes).await {
+            Ok(true) => {} // reserved
+            Ok(false) => {
+                return Err(error_json(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    &format!("tenant quota exceeded: cannot reserve {additional_bytes} bytes"),
+                ));
+            }
+            Err(e) => {
+                warn!(tenant_id, error = %e, "quota reservation failed, allowing write");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Adjust the tenant's quota usage by a signed byte delta (O(1) — no filesystem scan).
+/// Use positive delta for writes, negative for deletes.
+/// Non-blocking: spawns a background task so the HTTP response is not delayed.
+/// Retries once on transient failure before logging a warning.
+pub fn adjust_quota_usage(
+    quota_store: &Option<Extension<Arc<dyn TenantQuotaStore>>>,
+    tenant_id: &str,
+    delta: i64,
+) {
+    if delta == 0 {
+        return;
+    }
+    if let Some(Extension(store)) = quota_store {
+        let store = store.clone();
+        let tenant_id = tenant_id.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = store.adjust_usage(&tenant_id, delta).await {
+                // Retry once after a short delay
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                if let Err(e2) = store.adjust_usage(&tenant_id, delta).await {
+                    warn!(
+                        tenant_id, delta,
+                        error = %e, retry_error = %e2,
+                        "failed to adjust tenant quota usage after retry"
+                    );
+                }
+            }
+        });
+    }
+}
+
+/// Recalculate and set the tenant's absolute usage from a filesystem scan.
+/// Expensive (O(n) in stored files) — use only for periodic reconciliation,
+/// not on the hot write/delete path.
+pub async fn recalculate_quota_usage(
     quota_store: &Option<Extension<Arc<dyn TenantQuotaStore>>>,
     storage: &FilesystemStorage,
     tenant_id: &str,

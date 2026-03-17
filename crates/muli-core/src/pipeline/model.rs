@@ -43,22 +43,11 @@ impl Pipeline {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PipelineTrigger {
-    Push {
-        ref_name: String,
-    },
-    PullRequest {
-        pr_number: u64,
-        event: String,
-    },
-    Manual {
-        triggered_by: String,
-    },
-    Schedule {
-        cron: String,
-    },
-    Retry {
-        original_run_id: String,
-    },
+    Push { ref_name: String },
+    PullRequest { pr_number: u64, event: String },
+    Manual { triggered_by: String },
+    Schedule { cron: String },
+    Retry { original_run_id: String },
 }
 
 /// A single execution of a pipeline.
@@ -249,12 +238,7 @@ pub struct PipelineSecret {
 }
 
 impl PipelineSecret {
-    pub fn new(
-        tenant_id: String,
-        repo_id: String,
-        name: String,
-        encrypted_value: String,
-    ) -> Self {
+    pub fn new(tenant_id: String, repo_id: String, name: String, encrypted_value: String) -> Self {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4().to_string(),

@@ -10,6 +10,7 @@ use axum::{
 };
 use serde_json::json;
 
+use muli_core::error::MuliError;
 use muli_core::git::Repository;
 
 use crate::api::GitState;
@@ -23,6 +24,20 @@ pub fn strip_git_suffix(name: &str) -> &str {
 /// Build a JSON error response with the given status code and message.
 pub fn error_response(status: StatusCode, msg: &str) -> Response {
     (status, Json(json!({"error": msg}))).into_response()
+}
+
+/// Convert a domain error to an HTTP response.
+pub fn domain_err_to_http(e: MuliError) -> Response {
+    match e {
+        MuliError::NotFound(msg) => error_response(StatusCode::NOT_FOUND, &msg),
+        MuliError::Conflict(msg) => error_response(StatusCode::CONFLICT, &msg),
+        MuliError::Validation(msg) => error_response(StatusCode::BAD_REQUEST, &msg),
+        MuliError::PermissionDenied(msg) => error_response(StatusCode::FORBIDDEN, &msg),
+        other => {
+            tracing::error!(error = %other, "internal error");
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+        }
+    }
 }
 
 /// Validate a path component used to construct a filesystem path.

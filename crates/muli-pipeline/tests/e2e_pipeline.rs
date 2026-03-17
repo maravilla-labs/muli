@@ -3,11 +3,11 @@
 
 //! End-to-end pipeline test: parse YAML -> validate -> expand matrix -> trigger matching -> conditions
 
+use muli_pipeline::dag::matrix::expand_matrix;
+use muli_pipeline::trigger::matcher::{PipelineEvent, matches_trigger};
+use muli_pipeline::yaml::expression::{ExpressionContext, evaluate_condition};
 use muli_pipeline::yaml::parser::parse_pipeline;
 use muli_pipeline::yaml::validation::validate_pipeline;
-use muli_pipeline::dag::matrix::expand_matrix;
-use muli_pipeline::trigger::matcher::{matches_trigger, PipelineEvent};
-use muli_pipeline::yaml::expression::{evaluate_condition, ExpressionContext};
 
 #[test]
 fn test_full_pipeline_flow() {

@@ -54,6 +54,8 @@ pub(crate) async fn start_grpc(
         scheduler: scheduler.clone(),
         executor: executor.clone(),
         log_collectors: log_collectors.clone(),
+        tenant_limits_store: Some(stores.tenant_limits_store.clone()),
+        max_jobs_per_tenant: config.max_jobs_per_tenant,
     };
 
     let log_service = LogServiceImpl {
@@ -75,17 +77,24 @@ pub(crate) async fn start_grpc(
 
     let registry_service = RegistryServiceImpl {
         token_store: stores.registry_token_store,
-        quota_store: stores.tenant_quota_store,
+        quota_store: stores.tenant_quota_store.clone(),
     };
 
+    let repo_service = Arc::new(muli_core::service::RepositoryService::new(
+        stores.repo_store.clone(),
+        git_storage.clone(),
+    ));
+
     let git_service = GitServiceImpl {
-        repo_store: stores.repo_store,
+        repo_store: stores.repo_store.clone(),
         token_store: stores.git_token_store,
         ssh_key_store: stores.ssh_key_store,
         webhook_store: stores.webhook_store,
         collaborator_store: stores.collaborator_store,
         git_storage,
         allow_localhost_webhooks: config.git_allow_localhost_webhooks,
+        repo_service,
+        tenant_limits_store: Some(stores.tenant_limits_store.clone()),
     };
 
     let user_service = UserServiceImpl {
@@ -99,6 +108,11 @@ pub(crate) async fn start_grpc(
 
     let tenant_service = TenantServiceImpl {
         tenant_store: stores.tenant_store,
+        tenant_limits_store: stores.tenant_limits_store.clone(),
+        tenant_quota_store: stores.tenant_quota_store,
+        repo_store: stores.repo_store.clone(),
+        job_store: stores.job_store.clone(),
+        pipeline_run_store: stores.pipeline_run_store.clone(),
     };
 
     let pipeline_service = PipelineServiceImpl {

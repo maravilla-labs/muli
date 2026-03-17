@@ -15,3 +15,6 @@ async-trait = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 argon2 = { workspace = true }
 url = { workspace = true }
+http = "1"
+base64 = { workspace = true }
+tracing = { workspace = true }

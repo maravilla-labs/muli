@@ -38,8 +38,8 @@ impl CacheManager {
             .await
             .map_err(|e| MuliError::Storage(format!("create cache dir: {e}")))?;
 
-        let compressed =
-            zstd::encode_all(data, 3).map_err(|e| MuliError::Storage(format!("zstd compress: {e}")))?;
+        let compressed = zstd::encode_all(data, 3)
+            .map_err(|e| MuliError::Storage(format!("zstd compress: {e}")))?;
 
         let file_path = dir.join(format!("{cache_key}.tar.zst"));
         fs::write(&file_path, &compressed)
@@ -83,12 +83,7 @@ impl CacheManager {
     }
 
     /// Delete a specific cache entry.
-    pub async fn delete(
-        &self,
-        tenant_id: &str,
-        repo_id: &str,
-        cache_key: &str,
-    ) -> Result<()> {
+    pub async fn delete(&self, tenant_id: &str, repo_id: &str, cache_key: &str) -> Result<()> {
         validate_component(tenant_id)?;
         validate_component(repo_id)?;
         validate_component(cache_key)?;
@@ -108,12 +103,7 @@ impl CacheManager {
 }
 
 fn validate_component(s: &str) -> Result<()> {
-    if s.is_empty()
-        || s.contains("..")
-        || s.contains('/')
-        || s.contains('\\')
-        || s.contains('\0')
-    {
+    if s.is_empty() || s.contains("..") || s.contains('/') || s.contains('\\') || s.contains('\0') {
         return Err(MuliError::Validation(format!(
             "invalid path component: '{s}'"
         )));
@@ -130,11 +120,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = CacheManager::new(dir.path());
         let data = b"cargo target directory content";
-        let (size, sha) = cache.save("t1", "repo-1", "cargo-lock", data).await.unwrap();
+        let (size, sha) = cache
+            .save("t1", "repo-1", "cargo-lock", data)
+            .await
+            .unwrap();
         assert!(size > 0);
         assert!(!sha.is_empty());
 
-        let restored = cache.restore("t1", "repo-1", "cargo-lock").await.unwrap().unwrap();
+        let restored = cache
+            .restore("t1", "repo-1", "cargo-lock")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(restored, data);
     }
 
@@ -150,7 +147,10 @@ mod tests {
     async fn test_delete_cache() {
         let dir = tempfile::tempdir().unwrap();
         let cache = CacheManager::new(dir.path());
-        cache.save("t1", "repo-1", "cargo-lock", b"data").await.unwrap();
+        cache
+            .save("t1", "repo-1", "cargo-lock", b"data")
+            .await
+            .unwrap();
         cache.delete("t1", "repo-1", "cargo-lock").await.unwrap();
         let result = cache.restore("t1", "repo-1", "cargo-lock").await.unwrap();
         assert!(result.is_none());
@@ -165,7 +165,12 @@ mod tests {
         // repo_id with "/"
         assert!(cache.save("t1", "repo/evil", "key", b"x").await.is_err());
         // cache_key with ".."
-        assert!(cache.save("t1", "repo-1", "../secrets", b"x").await.is_err());
+        assert!(
+            cache
+                .save("t1", "repo-1", "../secrets", b"x")
+                .await
+                .is_err()
+        );
         // empty
         assert!(cache.save("", "repo-1", "key", b"x").await.is_err());
 
@@ -189,6 +194,9 @@ mod tests {
         // Highly compressible data
         let data = vec![0u8; 10_000];
         let (compressed_size, _) = cache.save("t1", "repo-1", "zeros", &data).await.unwrap();
-        assert!(compressed_size < data.len() as u64, "zstd should compress zeros significantly");
+        assert!(
+            compressed_size < data.len() as u64,
+            "zstd should compress zeros significantly"
+        );
     }
 }

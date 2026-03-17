@@ -124,12 +124,7 @@ fn validate_artifact_names(def: &PipelineDef) -> Result<()> {
 }
 
 fn validate_path_component(s: &str, label: &str) -> Result<()> {
-    if s.is_empty()
-        || s.contains("..")
-        || s.contains('/')
-        || s.contains('\\')
-        || s.contains('\0')
-    {
+    if s.is_empty() || s.contains("..") || s.contains('/') || s.contains('\\') || s.contains('\0') {
         return Err(MuliError::PipelineYamlError(format!(
             "invalid {label}: '{s}' (path traversal not allowed)"
         )));
@@ -281,7 +276,16 @@ steps:
         // Note: YAML parser may or may not pass the null byte through.
         // If it does, validation should catch it.
         if let Ok(def) = parse_pipeline(yaml) {
-            if def.steps[0].artifacts.as_ref().unwrap().upload.as_ref().unwrap().name.contains('\0') {
+            if def.steps[0]
+                .artifacts
+                .as_ref()
+                .unwrap()
+                .upload
+                .as_ref()
+                .unwrap()
+                .name
+                .contains('\0')
+            {
                 assert!(validate_pipeline(&def).is_err());
             }
         }

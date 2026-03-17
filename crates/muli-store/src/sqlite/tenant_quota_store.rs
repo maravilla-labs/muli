@@ -79,6 +79,42 @@ impl TenantQuotaStore for SqliteTenantQuotaStore {
         .await
         .map_err(store_err)
     }
+
+    async fn adjust_usage(&self, tenant_id: &str, delta: i64) -> Result<()> {
+        let conn = self.factory.global_conn();
+        let tenant_id = tenant_id.to_string();
+        conn.call(move |c| {
+            c.execute(
+                "INSERT INTO tenant_quotas (tenant_id, max_storage_bytes, current_usage_bytes)
+                 VALUES (?1, 0, MAX(0, ?2))
+                 ON CONFLICT(tenant_id) DO UPDATE SET current_usage_bytes = MAX(0, current_usage_bytes + ?2)",
+                rusqlite::params![tenant_id, delta],
+            )?;
+            Ok(())
+        })
+        .await
+        .map_err(store_err)
+    }
+
+    async fn try_reserve(&self, tenant_id: &str, additional_bytes: u64) -> Result<bool> {
+        let conn = self.factory.global_conn();
+        let tenant_id = tenant_id.to_string();
+        let additional = additional_bytes as i64;
+        conn.call(move |c| {
+            // Atomic check-and-reserve: INSERT for new tenants (unlimited, always succeeds),
+            // or UPDATE only if quota allows (max_storage_bytes=0 means unlimited).
+            c.execute(
+                "INSERT INTO tenant_quotas (tenant_id, max_storage_bytes, current_usage_bytes)
+                 VALUES (?1, 0, ?2)
+                 ON CONFLICT(tenant_id) DO UPDATE SET current_usage_bytes = current_usage_bytes + ?2
+                 WHERE max_storage_bytes = 0 OR current_usage_bytes + ?2 <= max_storage_bytes",
+                rusqlite::params![tenant_id, additional],
+            )?;
+            Ok(c.changes() > 0)
+        })
+        .await
+        .map_err(store_err)
+    }
 }
 
 #[cfg(test)]
@@ -131,5 +167,120 @@ mod tests {
     async fn test_get_nonexistent() {
         let (store, _dir) = make_store().await;
         assert!(store.get_quota("missing").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_adjust_usage_increment() {
+        let (store, _dir) = make_store().await;
+        store.set_quota("t1", 1_000_000).await.unwrap();
+        store.adjust_usage("t1", 100).await.unwrap();
+        store.adjust_usage("t1", 200).await.unwrap();
+        let q = store.get_quota("t1").await.unwrap().unwrap();
+        assert_eq!(q.current_usage_bytes, 300);
+    }
+
+    #[tokio::test]
+    async fn test_adjust_usage_decrement() {
+        let (store, _dir) = make_store().await;
+        store.set_quota("t1", 1_000_000).await.unwrap();
+        store.update_usage("t1", 500).await.unwrap();
+        store.adjust_usage("t1", -200).await.unwrap();
+        let q = store.get_quota("t1").await.unwrap().unwrap();
+        assert_eq!(q.current_usage_bytes, 300);
+    }
+
+    #[tokio::test]
+    async fn test_adjust_usage_floors_at_zero() {
+        let (store, _dir) = make_store().await;
+        store.set_quota("t1", 1_000_000).await.unwrap();
+        store.update_usage("t1", 100).await.unwrap();
+        store.adjust_usage("t1", -500).await.unwrap();
+        let q = store.get_quota("t1").await.unwrap().unwrap();
+        assert_eq!(q.current_usage_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn test_adjust_usage_upserts() {
+        let (store, _dir) = make_store().await;
+        store.adjust_usage("new", 250).await.unwrap();
+        let q = store.get_quota("new").await.unwrap().unwrap();
+        assert_eq!(q.current_usage_bytes, 250);
+        assert_eq!(q.max_storage_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn test_try_reserve_within_quota() {
+        let (store, _dir) = make_store().await;
+        store.set_quota("t1", 1000).await.unwrap();
+        assert!(store.try_reserve("t1", 500).await.unwrap());
+        let q = store.get_quota("t1").await.unwrap().unwrap();
+        assert_eq!(q.current_usage_bytes, 500);
+    }
+
+    #[tokio::test]
+    async fn test_try_reserve_exceeds_quota() {
+        let (store, _dir) = make_store().await;
+        store.set_quota("t1", 1000).await.unwrap();
+        store.update_usage("t1", 900).await.unwrap();
+        assert!(!store.try_reserve("t1", 200).await.unwrap());
+        // Usage unchanged
+        let q = store.get_quota("t1").await.unwrap().unwrap();
+        assert_eq!(q.current_usage_bytes, 900);
+    }
+
+    #[tokio::test]
+    async fn test_try_reserve_unlimited() {
+        let (store, _dir) = make_store().await;
+        // max_storage_bytes=0 means unlimited
+        store.set_quota("t1", 0).await.unwrap();
+        assert!(store.try_reserve("t1", 1_000_000).await.unwrap());
+        let q = store.get_quota("t1").await.unwrap().unwrap();
+        assert_eq!(q.current_usage_bytes, 1_000_000);
+    }
+
+    #[tokio::test]
+    async fn test_try_reserve_no_quota_row() {
+        let (store, _dir) = make_store().await;
+        // No quota row → unlimited, insert with reserved amount
+        assert!(store.try_reserve("new", 500).await.unwrap());
+        let q = store.get_quota("new").await.unwrap().unwrap();
+        assert_eq!(q.current_usage_bytes, 500);
+        assert_eq!(q.max_storage_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn test_try_reserve_exactly_at_limit() {
+        let (store, _dir) = make_store().await;
+        store.set_quota("t1", 1000).await.unwrap();
+        store.update_usage("t1", 500).await.unwrap();
+        // Exactly at the limit should succeed
+        assert!(store.try_reserve("t1", 500).await.unwrap());
+        let q = store.get_quota("t1").await.unwrap().unwrap();
+        assert_eq!(q.current_usage_bytes, 1000);
+    }
+
+    #[tokio::test]
+    async fn test_try_reserve_one_over_limit() {
+        let (store, _dir) = make_store().await;
+        store.set_quota("t1", 1000).await.unwrap();
+        store.update_usage("t1", 500).await.unwrap();
+        // One byte over → rejected
+        assert!(!store.try_reserve("t1", 501).await.unwrap());
+        let q = store.get_quota("t1").await.unwrap().unwrap();
+        assert_eq!(q.current_usage_bytes, 500);
+    }
+
+    #[tokio::test]
+    async fn test_try_reserve_concurrent_serialized() {
+        let (store, _dir) = make_store().await;
+        store.set_quota("t1", 1000).await.unwrap();
+        // First reserve takes 600
+        assert!(store.try_reserve("t1", 600).await.unwrap());
+        // Second reserve of 500 should fail (600+500 > 1000)
+        assert!(!store.try_reserve("t1", 500).await.unwrap());
+        // But 400 should succeed (600+400 = 1000)
+        assert!(store.try_reserve("t1", 400).await.unwrap());
+        let q = store.get_quota("t1").await.unwrap().unwrap();
+        assert_eq!(q.current_usage_bytes, 1000);
     }
 }

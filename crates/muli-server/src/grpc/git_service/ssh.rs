@@ -15,21 +15,15 @@ use muli_proto::{
 use super::GitServiceImpl;
 use super::helpers::{compute_ssh_fingerprint, ssh_key_to_proto};
 use crate::grpc::conversions::proto_git_permission_to_core;
-use crate::grpc::util::extract_tenant_id;
+use crate::grpc::util::{extract_tenant_id, validate_tenant};
 
 impl GitServiceImpl {
     pub async fn add_ssh_key_impl(
         &self,
         request: Request<AddSshKeyRequest>,
     ) -> Result<Response<ProtoSshKey>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
+        let (_caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
         if req.public_key.is_empty() {
             return Err(Status::invalid_argument("public_key is required"));
         }
@@ -119,14 +113,7 @@ impl GitServiceImpl {
         &self,
         request: Request<ListSshKeysRequest>,
     ) -> Result<Response<ListSshKeysResponse>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
-
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
+        let (_caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
         let keys = self
             .ssh_key_store
@@ -143,14 +130,8 @@ impl GitServiceImpl {
         &self,
         request: Request<ListSshKeysByUserRequest>,
     ) -> Result<Response<ListSshKeysResponse>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
+        let (_caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
         if req.user_id.is_empty() {
             return Err(Status::invalid_argument("user_id is required"));
         }

@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use muli_core::traits::TenantQuotaStore;
 
-use crate::common::{check_quota, update_quota_usage};
+use crate::common::{check_quota, reserve_quota};
 use crate::metrics::RegistryMetrics;
 use crate::storage::{FilesystemStorage, RegistryStorage};
 use crate::tenant::TenantContext;
@@ -280,6 +280,12 @@ pub async fn complete_upload(
         }
     }
 
+    // Check if blob already exists (content-addressable dedup: skip quota for duplicates)
+    let blob_is_new = !storage
+        .has_blob(&tenant.tenant_id, &query.digest)
+        .await
+        .unwrap_or(true);
+
     let response = match storage
         .complete_upload(&tenant.tenant_id, &upload_id, &query.digest)
         .await
@@ -289,8 +295,21 @@ pub async fn complete_upload(
             if !body.is_empty() {
                 metrics.observe_blob_size(&tenant.tenant_id, body.len() as u64);
             }
-            // Update tenant quota usage after successful upload
-            update_quota_usage(&quota_store, &storage, &tenant.tenant_id).await;
+            // Atomic quota reservation — only for genuinely new blobs
+            if blob_is_new {
+                if let Ok(size) = storage.blob_size(&tenant.tenant_id, &query.digest).await {
+                    if let Err(e) = reserve_quota(&quota_store, &tenant.tenant_id, size).await {
+                        // Blob is already on disk — log but don't fail the request.
+                        // Reconciliation will correct the accounting.
+                        tracing::warn!(
+                            tenant_id = %tenant.tenant_id,
+                            digest = %query.digest,
+                            "blob stored but quota reservation failed: over quota"
+                        );
+                        let _ = e;
+                    }
+                }
+            }
             let location = format!("/v2/{}/blobs/{}", name, query.digest);
             (
                 StatusCode::CREATED,

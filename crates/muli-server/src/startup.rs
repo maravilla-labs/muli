@@ -17,13 +17,13 @@ use muli_engine::docker::client::DockerClient;
 use muli_engine::docker::logs::LogCollector;
 use muli_engine::executor::DockerExecutor;
 use muli_engine::resource_manager::ResourceManager;
-use muli_queue::{ConcurrencyLimiter, PriorityQueue, Scheduler};
+use muli_queue::{ConcurrencyLimiter, PriorityQueue, RetryPolicy, Scheduler};
 
 use crate::config::ServerConfig;
 use crate::metrics::metrics_router;
 use crate::start_grpc::start_grpc;
 use crate::stores::init_stores;
-use crate::{cleanup, embedded_agent, execution, recovery};
+use crate::{cleanup, embedded_agent, execution, recovery, watchdog};
 
 /// Run the server with the given configuration.
 pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
@@ -65,6 +65,12 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
 
     recovery::recover_jobs(&stores.job_store, &scheduler).await;
 
+    let retry_policy = Arc::new(RetryPolicy::new(
+        config.retry_max_retries,
+        Duration::from_secs(config.retry_base_delay_secs),
+        Duration::from_secs(config.retry_max_delay_secs),
+    ));
+
     let scheduler_handle = {
         let scheduler = scheduler.clone();
         let store = stores.job_store.clone();
@@ -72,6 +78,8 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
         let log_collectors = log_collectors.clone();
         let ls = stores.job_log_store.clone();
         let cancel = cancel.clone();
+        let sched = scheduler.clone();
+        let rp = retry_policy.clone();
 
         tokio::spawn(async move {
             scheduler
@@ -80,8 +88,19 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
                     let executor = executor.clone();
                     let log_collectors = log_collectors.clone();
                     let ls = ls.clone();
+                    let sched = sched.clone();
+                    let rp = rp.clone();
                     async move {
-                        execution::execute_job(job_id, store, executor, log_collectors, ls).await;
+                        execution::execute_job(
+                            job_id,
+                            store,
+                            executor,
+                            log_collectors,
+                            ls,
+                            sched,
+                            rp,
+                        )
+                        .await;
                     }
                 })
                 .await;
@@ -135,6 +154,7 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
         Arc::new(crate::pipeline_job_submitter::SchedulerJobSubmitter {
             job_store: stores.job_store.clone(),
             scheduler: scheduler.clone(),
+            tenant_limits_store: Some(stores.tenant_limits_store.clone()),
         });
 
     // Pipeline trigger
@@ -150,10 +170,16 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
                 stores.step_run_store.clone(),
                 stores.job_store.clone(),
                 pipeline_job_submitter.clone(),
+                Some(stores.tenant_limits_store.clone()),
             )))
         } else {
             None
         };
+
+    let repo_service = Arc::new(muli_core::service::RepositoryService::new(
+        stores.repo_store.clone(),
+        git_storage.clone(),
+    ));
 
     let git_stores = GitStores {
         storage: git_storage.clone(),
@@ -168,22 +194,14 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
         org_store: stores.org_store.clone(),
         org_member_store: stores.org_member_store.clone(),
         collaborator_store: stores.collaborator_store.clone(),
+        repo_service: repo_service.clone(),
+        quota_store: stores.tenant_quota_store.clone(),
     };
     if config.git_enabled {
         start_git_http(&config, &git_stores, &cancel).await?;
     }
     if config.git_ssh_enabled {
-        start_git_ssh(
-            &config,
-            &stores.ssh_key_store,
-            &stores.repo_store,
-            &git_storage,
-            &stores.org_store,
-            &stores.org_member_store,
-            &stores.collaborator_store,
-            &cancel,
-        )
-        .await?;
+        start_git_ssh(&config, &git_stores, &cancel).await?;
     }
 
     if config.embedded_agent {
@@ -199,6 +217,50 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
         Duration::from_secs(config.cleanup_interval_seconds),
         Duration::from_secs(config.cleanup_max_age_seconds),
     );
+
+    // Stale job watchdog
+    watchdog::spawn_stale_job_watchdog(
+        stores.job_store.clone(),
+        cancel.clone(),
+        Duration::from_secs(config.watchdog_interval_secs),
+        Duration::from_secs(config.watchdog_grace_period_secs),
+    );
+
+    // Artifact cleanup
+    cleanup::spawn_artifact_cleanup(
+        stores.artifact_store.clone(),
+        cancel.clone(),
+        config.pipeline_artifact_retention_days,
+    );
+
+    // Pipeline run cleanup
+    cleanup::spawn_pipeline_run_cleanup(
+        stores.pipeline_run_store.clone(),
+        stores.step_run_store.clone(),
+        cancel.clone(),
+        config.pipeline_run_retention_days,
+    );
+
+    // Periodic quota reconciliation (registry + git storage scan)
+    if config.registry_enabled || config.git_enabled {
+        let registry_storage = Arc::new(
+            muli_registry::storage::FilesystemStorage::with_max_blob_size(
+                config.effective_registry_root(),
+                0,
+            )
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to create registry storage for reconciliation: {e}")
+            })?,
+        );
+        cleanup::spawn_quota_reconciliation(
+            stores.tenant_quota_store.clone(),
+            stores.tenant_store.clone(),
+            registry_storage,
+            git_root.clone(),
+            cancel.clone(),
+        );
+    }
 
     // gRPC server (blocks until shutdown)
     start_grpc(
@@ -231,10 +293,7 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
 
 // ── Helper startup functions ────────────────────────────────────────────
 
-async fn start_metrics(
-    config: &ServerConfig,
-    cancel: &CancellationToken,
-) -> anyhow::Result<()> {
+async fn start_metrics(config: &ServerConfig, cancel: &CancellationToken) -> anyhow::Result<()> {
     let http_addr = format!("0.0.0.0:{}", config.metrics_port);
     let http_listener = tokio::net::TcpListener::bind(&http_addr)
         .await
@@ -351,6 +410,8 @@ pub(crate) struct GitStores {
     pub org_store: Arc<dyn muli_core::traits::OrgStore>,
     pub org_member_store: Arc<dyn muli_core::traits::OrgMemberStore>,
     pub collaborator_store: Arc<dyn muli_core::traits::CollaboratorStore>,
+    pub repo_service: Arc<muli_core::service::RepositoryService>,
+    pub quota_store: Arc<dyn muli_core::traits::TenantQuotaStore>,
 }
 
 async fn start_git_http(
@@ -396,6 +457,8 @@ async fn start_git_http(
         allow_localhost_webhooks: config.git_allow_localhost_webhooks,
         lfs_storage,
         pipeline_trigger: git.pipeline_trigger.clone(),
+        repo_service: git.repo_service.clone(),
+        quota_store: Some(git.quota_store.clone()),
     });
 
     let git_addr = format!("0.0.0.0:{}", config.git_port);
@@ -419,12 +482,7 @@ async fn start_git_http(
 
 async fn start_git_ssh(
     config: &ServerConfig,
-    ssh_key_store: &Arc<dyn muli_core::traits::SshKeyStore>,
-    repo_store: &Arc<dyn muli_core::traits::RepositoryStore>,
-    git_storage: &Arc<muli_git::storage::FilesystemStorage>,
-    org_store: &Arc<dyn muli_core::traits::OrgStore>,
-    org_member_store: &Arc<dyn muli_core::traits::OrgMemberStore>,
-    collaborator_store: &Arc<dyn muli_core::traits::CollaboratorStore>,
+    git: &GitStores,
     cancel: &CancellationToken,
 ) -> anyhow::Result<()> {
     let host_key_path = config
@@ -437,16 +495,27 @@ async fn start_git_ssh(
         .await
         .context("Failed to load or generate SSH host key")?;
 
+    let post_push_hooks = muli_git::hooks::PostPushHooks {
+        pipeline_trigger: git.pipeline_trigger.clone(),
+        webhook_store: git.webhook_store.clone(),
+        http_client: Arc::new(muli_git::hooks::webhook_http_client()),
+        webhook_semaphore: Arc::new(tokio::sync::Semaphore::new(10)),
+        allow_localhost_webhooks: config.git_allow_localhost_webhooks,
+        cache_store: Some(git.cache_store.clone()),
+        quota_store: Some(git.quota_store.clone()),
+    };
+
     let ssh_server = muli_git::SshServer {
-        ssh_key_store: ssh_key_store.clone(),
-        repo_store: repo_store.clone(),
-        storage: git_storage.clone(),
+        ssh_key_store: git.ssh_key_store.clone(),
+        repo_store: git.repo_store.clone(),
+        storage: git.storage.clone(),
         default_tenant_id: config.default_tenant_id.clone(),
-        org_store: org_store.clone(),
-        org_member_store: org_member_store.clone(),
-        collaborator_store: collaborator_store.clone(),
+        org_store: git.org_store.clone(),
+        org_member_store: git.org_member_store.clone(),
+        collaborator_store: git.collaborator_store.clone(),
         token_store: None,
         git_domain: Some(config.git_domain.clone()),
+        post_push_hooks,
     };
 
     let ssh_addr = format!("0.0.0.0:{}", config.git_ssh_port);

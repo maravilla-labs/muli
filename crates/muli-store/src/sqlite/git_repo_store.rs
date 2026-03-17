@@ -238,6 +238,17 @@ impl RepositoryStore for SqliteRepositoryStore {
             "Repository {repo_id} not found"
         )))
     }
+
+    async fn count_by_tenant(&self, tenant_id: &str) -> Result<u64> {
+        let conn = self.factory.tenant_conn(tenant_id).await?;
+        conn.call(move |c| {
+            let count: i64 =
+                c.query_row("SELECT COUNT(*) FROM repositories", [], |row| row.get(0))?;
+            Ok(count as u64)
+        })
+        .await
+        .map_err(store_err)
+    }
 }
 
 #[cfg(test)]

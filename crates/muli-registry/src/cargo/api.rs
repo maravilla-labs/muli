@@ -17,7 +17,7 @@ use tracing::warn;
 
 use muli_core::traits::TenantQuotaStore;
 
-use crate::common::{check_quota, update_quota_usage};
+use crate::common::{adjust_quota_usage, reserve_quota};
 use crate::metrics::RegistryMetrics;
 use crate::storage::FilesystemStorage;
 use crate::tenant::TenantContext;
@@ -67,14 +67,9 @@ pub async fn publish(
         }
     }
 
-    // Check quota
-    if let Err(e) = check_quota(
-        &quota_store,
-        &tenant.tenant_id,
-        parsed.crate_data.len() as u64,
-    )
-    .await
-    {
+    // Atomic quota reservation
+    let crate_size = parsed.crate_data.len() as u64;
+    if let Err(e) = reserve_quota(&quota_store, &tenant.tenant_id, crate_size).await {
         return e;
     }
 
@@ -91,6 +86,8 @@ pub async fn publish(
     )
     .await
     {
+        // Release reserved bytes on failure
+        adjust_quota_usage(&quota_store, &tenant.tenant_id, -(crate_size as i64));
         warn!(error = %e, "failed to store crate file");
         return cargo_error(StatusCode::INTERNAL_SERVER_ERROR, "failed to store crate");
     }
@@ -144,8 +141,7 @@ pub async fn publish(
         return cargo_error(StatusCode::INTERNAL_SERVER_ERROR, "failed to update index");
     }
 
-    // Update quota
-    update_quota_usage(&quota_store, &storage, &tenant.tenant_id).await;
+    // Quota already reserved via reserve_quota above.
 
     metrics.record_cargo_publish(&tenant.tenant_id);
 

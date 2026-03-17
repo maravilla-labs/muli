@@ -48,8 +48,7 @@ impl PipelineRunStore for SqlitePipelineRunStore {
         let conn = self.factory.tenant_conn(tenant_id).await?;
         let rid = run_id.to_string();
         conn.call(move |c| {
-            let mut stmt =
-                c.prepare("SELECT full_json FROM pipeline_runs WHERE id = ?1")?;
+            let mut stmt = c.prepare("SELECT full_json FROM pipeline_runs WHERE id = ?1")?;
             let mut rows = stmt.query(rusqlite::params![rid])?;
             if let Some(row) = rows.next()? {
                 let json: String = row.get(0)?;
@@ -166,6 +165,78 @@ impl PipelineRunStore for SqlitePipelineRunStore {
             .map_err(store_err)?;
         Ok(result.map(|m| m as u64 + 1).unwrap_or(1))
     }
+
+    async fn delete_old_runs(&self, before: chrono::DateTime<chrono::Utc>) -> Result<u64> {
+        let before_str = before.to_rfc3339();
+        let mut total = 0u64;
+        for tenant_id in self.factory.all_tenant_ids().await? {
+            let conn = self.factory.tenant_conn(&tenant_id).await?;
+            let bs = before_str.clone();
+            let count: u64 = conn
+                .call(move |c| {
+                    // Delete step runs for old terminal pipeline runs first
+                    c.execute(
+                        "DELETE FROM step_runs WHERE run_id IN (
+                            SELECT id FROM pipeline_runs
+                            WHERE state IN ('Succeeded','Failed','Cancelled','Degraded')
+                              AND full_json LIKE '%' || ?1 || '%'
+                        )",
+                        rusqlite::params![bs],
+                    )?;
+                    // Then delete the runs themselves
+                    // We parse created_at from the full_json. For simplicity, use a scan-based
+                    // approach: read all terminal runs and check timestamp in Rust.
+                    let mut stmt = c.prepare(
+                        "SELECT id, full_json FROM pipeline_runs
+                         WHERE state IN ('Succeeded','Failed','Cancelled','Degraded')",
+                    )?;
+                    let mut rows = stmt.query([])?;
+                    let mut ids_to_delete = Vec::new();
+                    while let Some(row) = rows.next()? {
+                        let id: String = row.get(0)?;
+                        let json: String = row.get(1)?;
+                        if let Ok(run) = from_json::<muli_core::pipeline::PipelineRun>(&json) {
+                            if run.created_at
+                                < bs.parse::<chrono::DateTime<chrono::Utc>>()
+                                    .unwrap_or(chrono::Utc::now())
+                            {
+                                ids_to_delete.push(id);
+                            }
+                        }
+                    }
+                    let count = ids_to_delete.len() as u64;
+                    for id in &ids_to_delete {
+                        c.execute(
+                            "DELETE FROM step_runs WHERE run_id = ?1",
+                            rusqlite::params![id],
+                        )?;
+                        c.execute(
+                            "DELETE FROM pipeline_runs WHERE id = ?1",
+                            rusqlite::params![id],
+                        )?;
+                    }
+                    Ok(count)
+                })
+                .await
+                .map_err(store_err)?;
+            total += count;
+        }
+        Ok(total)
+    }
+
+    async fn count_active(&self, tenant_id: &str) -> Result<u64> {
+        let conn = self.factory.tenant_conn(tenant_id).await?;
+        conn.call(move |c| {
+            let count: i64 = c.query_row(
+                "SELECT COUNT(*) FROM pipeline_runs WHERE state IN ('Pending','Running')",
+                [],
+                |row| row.get(0),
+            )?;
+            Ok(count as u64)
+        })
+        .await
+        .map_err(store_err)
+    }
 }
 
 #[cfg(test)]
@@ -217,7 +288,10 @@ mod tests {
         store.create_run(&run1).await.unwrap();
         store.create_run(&run2).await.unwrap();
 
-        let all = store.list_by_repo("t1", "repo-1", None, 10, 0).await.unwrap();
+        let all = store
+            .list_by_repo("t1", "repo-1", None, 10, 0)
+            .await
+            .unwrap();
         assert_eq!(all.len(), 2);
 
         let pending = store
@@ -244,13 +318,19 @@ mod tests {
             store.create_run(&run).await.unwrap();
         }
         // Limit 2, offset 0 => runs 5, 4 (desc order)
-        let page1 = store.list_by_repo("t1", "repo-1", None, 2, 0).await.unwrap();
+        let page1 = store
+            .list_by_repo("t1", "repo-1", None, 2, 0)
+            .await
+            .unwrap();
         assert_eq!(page1.len(), 2);
         assert_eq!(page1[0].run_number, 5);
         assert_eq!(page1[1].run_number, 4);
 
         // Limit 2, offset 2 => runs 3, 2
-        let page2 = store.list_by_repo("t1", "repo-1", None, 2, 2).await.unwrap();
+        let page2 = store
+            .list_by_repo("t1", "repo-1", None, 2, 2)
+            .await
+            .unwrap();
         assert_eq!(page2.len(), 2);
         assert_eq!(page2[0].run_number, 3);
         assert_eq!(page2[1].run_number, 2);
@@ -289,7 +369,11 @@ mod tests {
         let store = SqlitePipelineRunStore::new(factory);
         let run = make_run("t1", "pipe-1", "repo-1", 42);
         store.create_run(&run).await.unwrap();
-        let fetched = store.get_run_by_number("t1", "pipe-1", 42).await.unwrap().unwrap();
+        let fetched = store
+            .get_run_by_number("t1", "pipe-1", 42)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(fetched.id, run.id);
         let missing = store.get_run_by_number("t1", "pipe-1", 99).await.unwrap();
         assert!(missing.is_none());

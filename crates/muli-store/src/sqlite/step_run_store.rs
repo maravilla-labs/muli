@@ -36,14 +36,7 @@ impl StepRunStore for SqliteStepRunStore {
             c.execute(
                 "INSERT INTO step_runs (id, run_id, step_name, job_id, state, full_json)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                rusqlite::params![
-                    idc,
-                    s.run_id,
-                    s.step_name,
-                    s.job_id,
-                    s.state.as_str(),
-                    json,
-                ],
+                rusqlite::params![idc, s.run_id, s.step_name, s.job_id, s.state.as_str(), json,],
             )?;
             Ok(())
         })
@@ -56,8 +49,7 @@ impl StepRunStore for SqliteStepRunStore {
         let conn = self.factory.tenant_conn(tenant_id).await?;
         let sid = step_id.to_string();
         conn.call(move |c| {
-            let mut stmt =
-                c.prepare("SELECT full_json FROM step_runs WHERE id = ?1")?;
+            let mut stmt = c.prepare("SELECT full_json FROM step_runs WHERE id = ?1")?;
             let mut rows = stmt.query(rusqlite::params![sid])?;
             if let Some(row) = rows.next()? {
                 let json: String = row.get(0)?;
@@ -74,8 +66,7 @@ impl StepRunStore for SqliteStepRunStore {
         let conn = self.factory.tenant_conn(tenant_id).await?;
         let rid = run_id.to_string();
         conn.call(move |c| {
-            let mut stmt =
-                c.prepare("SELECT full_json FROM step_runs WHERE run_id = ?1")?;
+            let mut stmt = c.prepare("SELECT full_json FROM step_runs WHERE run_id = ?1")?;
             let mut rows = stmt.query(rusqlite::params![rid])?;
             let mut result = Vec::new();
             while let Some(row) = rows.next()? {
@@ -103,12 +94,16 @@ impl StepRunStore for SqliteStepRunStore {
         .map_err(store_err)
     }
 
-    async fn update_step_state(&self, tenant_id: &str, step_id: &str, state: StepRunState) -> Result<()> {
+    async fn update_step_state(
+        &self,
+        tenant_id: &str,
+        step_id: &str,
+        state: StepRunState,
+    ) -> Result<()> {
         let conn = self.factory.tenant_conn(tenant_id).await?;
         let sid = step_id.to_string();
         conn.call(move |c| {
-            let mut stmt =
-                c.prepare("SELECT full_json FROM step_runs WHERE id = ?1")?;
+            let mut stmt = c.prepare("SELECT full_json FROM step_runs WHERE id = ?1")?;
             let mut rows = stmt.query(rusqlite::params![sid])?;
             if let Some(row) = rows.next()? {
                 let json: String = row.get(0)?;
@@ -121,6 +116,20 @@ impl StepRunStore for SqliteStepRunStore {
                 )?;
             }
             Ok(())
+        })
+        .await
+        .map_err(store_err)
+    }
+
+    async fn delete_by_run(&self, tenant_id: &str, run_id: &str) -> Result<u64> {
+        let conn = self.factory.tenant_conn(tenant_id).await?;
+        let rid = run_id.to_string();
+        conn.call(move |c| {
+            let rows = c.execute(
+                "DELETE FROM step_runs WHERE run_id = ?1",
+                rusqlite::params![rid],
+            )?;
+            Ok(rows as u64)
         })
         .await
         .map_err(store_err)

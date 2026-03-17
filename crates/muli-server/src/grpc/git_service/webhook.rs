@@ -15,21 +15,15 @@ use muli_proto::{
 use super::GitServiceImpl;
 use super::helpers::webhook_to_proto;
 use crate::grpc::conversions::proto_webhook_event_to_core;
-use crate::grpc::util::extract_tenant_id;
+use crate::grpc::util::{extract_tenant_id, validate_tenant};
 
 impl GitServiceImpl {
     pub async fn create_webhook_impl(
         &self,
         request: Request<CreateWebhookRequest>,
     ) -> Result<Response<GitWebhook>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
+        let (caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
         if req.url.is_empty() {
             return Err(Status::invalid_argument("url is required"));
         }
@@ -89,14 +83,7 @@ impl GitServiceImpl {
         &self,
         request: Request<ListWebhooksRequest>,
     ) -> Result<Response<ListWebhooksResponse>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
-
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
+        let (_caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
         let webhooks = self
             .webhook_store
@@ -195,6 +182,11 @@ mod tests {
             .await
             .expect("create repo");
 
+        let repo_service = Arc::new(muli_core::service::RepositoryService::new(
+            repo_store.clone(),
+            git_storage.clone(),
+        ));
+
         let service = GitServiceImpl {
             repo_store,
             token_store: Arc::new(muli_store::memory::MemoryGitTokenStore::new()),
@@ -203,6 +195,8 @@ mod tests {
             collaborator_store,
             git_storage,
             allow_localhost_webhooks: false,
+            repo_service,
+            tenant_limits_store: None,
         };
 
         let mut req = Request::new(CreateWebhookRequest {

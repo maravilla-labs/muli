@@ -4,6 +4,8 @@
 //! Unit tests for registry authentication.
 
 use super::*;
+use axum::http::HeaderMap;
+use muli_core::auth::extract_bearer_token;
 
 #[test]
 fn hash_token_is_argon2id() {

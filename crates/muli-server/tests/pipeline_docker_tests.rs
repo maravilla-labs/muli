@@ -58,14 +58,15 @@ async fn setup_pipeline_infra() -> (
     let dir = tempfile::tempdir().unwrap();
     let factory = SqliteStoreFactory::new(dir.path()).await.unwrap();
 
-    let ps: Arc<dyn PipelineStore> =
-        Arc::new(muli_store::sqlite::SqlitePipelineStore::new(factory.clone()));
-    let rs: Arc<dyn PipelineRunStore> =
-        Arc::new(muli_store::sqlite::SqlitePipelineRunStore::new(factory.clone()));
+    let ps: Arc<dyn PipelineStore> = Arc::new(muli_store::sqlite::SqlitePipelineStore::new(
+        factory.clone(),
+    ));
+    let rs: Arc<dyn PipelineRunStore> = Arc::new(muli_store::sqlite::SqlitePipelineRunStore::new(
+        factory.clone(),
+    ));
     let ss: Arc<dyn StepRunStore> =
         Arc::new(muli_store::sqlite::SqliteStepRunStore::new(factory.clone()));
-    let js: Arc<dyn JobStore> =
-        Arc::new(muli_store::sqlite::SqliteJobStore::new(factory.clone()));
+    let js: Arc<dyn JobStore> = Arc::new(muli_store::sqlite::SqliteJobStore::new(factory.clone()));
     let jls: Arc<dyn JobLogStore> =
         Arc::new(muli_store::sqlite::SqliteJobLogStore::new(factory.clone()));
 
@@ -130,7 +131,12 @@ steps:
     let pipeline_def = parse_pipeline(yaml).unwrap();
     validate_pipeline(&pipeline_def).unwrap();
 
-    let pipeline = Pipeline::new("t1".into(), "repo1".into(), "docker-test".into(), "sha".into());
+    let pipeline = Pipeline::new(
+        "t1".into(),
+        "repo1".into(),
+        "docker-test".into(),
+        "sha".into(),
+    );
     ps.upsert_pipeline(&pipeline).await.unwrap();
 
     let mut run = PipelineRun::new(
@@ -189,7 +195,10 @@ steps:
     let job = js.get_job(job_id).await.unwrap().unwrap();
     assert_eq!(job.state, JobState::Succeeded);
     assert_eq!(job.spec.runner_image, "alpine:latest");
-    assert_eq!(job.spec.commands, vec!["echo \"PIPELINE_OUTPUT_HELLO_WORLD\""]);
+    assert_eq!(
+        job.spec.commands,
+        vec!["echo \"PIPELINE_OUTPUT_HELLO_WORLD\""]
+    );
 
     // Verify logs contain our output
     let logs = jls.get_logs(job_id, 100).await.unwrap();
@@ -198,7 +207,8 @@ steps:
         eprintln!("  [{}] {}", line.stream, line.message);
     }
     assert!(
-        logs.iter().any(|l| l.message.contains("PIPELINE_OUTPUT_HELLO_WORLD")),
+        logs.iter()
+            .any(|l| l.message.contains("PIPELINE_OUTPUT_HELLO_WORLD")),
         "Expected 'PIPELINE_OUTPUT_HELLO_WORLD' in logs, got: {:?}",
         logs.iter().map(|l| &l.message).collect::<Vec<_>>()
     );
@@ -230,7 +240,12 @@ steps:
 "#;
 
     let pipeline_def = parse_pipeline(yaml).unwrap();
-    let pipeline = Pipeline::new("t1".into(), "repo1".into(), "fail-test".into(), "sha".into());
+    let pipeline = Pipeline::new(
+        "t1".into(),
+        "repo1".into(),
+        "fail-test".into(),
+        "sha".into(),
+    );
     ps.upsert_pipeline(&pipeline).await.unwrap();
 
     let mut run = PipelineRun::new(
@@ -240,12 +255,20 @@ steps:
         1,
         "abc".into(),
         "refs/heads/main".into(),
-        PipelineTrigger::Manual { triggered_by: "test".into() },
+        PipelineTrigger::Manual {
+            triggered_by: "test".into(),
+        },
         yaml.into(),
     );
     rs.create_run(&run).await.unwrap();
 
-    let sr = StepRun::new(run.id.clone(), "t1".into(), "fail".into(), FailureStrategy::Stop, None);
+    let sr = StepRun::new(
+        run.id.clone(),
+        "t1".into(),
+        "fail".into(),
+        FailureStrategy::Stop,
+        None,
+    );
     ss.create_step(&sr).await.unwrap();
 
     let submitter: Arc<dyn JobSubmitter> = Arc::new(RealJobSubmitter {
@@ -254,7 +277,10 @@ steps:
     });
     let executor = DagExecutor::new(rs.clone(), ss.clone(), js.clone(), submitter);
 
-    let result = executor.execute(&mut run, &pipeline_def, &[sr], None).await.unwrap();
+    let result = executor
+        .execute(&mut run, &pipeline_def, &[sr], None)
+        .await
+        .unwrap();
     cancel.cancel();
 
     eprintln!("Pipeline result: {result:?}");
@@ -303,16 +329,28 @@ steps:
     ps.upsert_pipeline(&pipeline).await.unwrap();
 
     let mut run = PipelineRun::new(
-        pipeline.id.clone(), "t1".into(), "repo1".into(), 1, "abc".into(),
+        pipeline.id.clone(),
+        "t1".into(),
+        "repo1".into(),
+        1,
+        "abc".into(),
         "refs/heads/main".into(),
-        PipelineTrigger::Manual { triggered_by: "test".into() },
+        PipelineTrigger::Manual {
+            triggered_by: "test".into(),
+        },
         yaml.into(),
     );
     rs.create_run(&run).await.unwrap();
 
     let mut step_runs = Vec::new();
     for step_def in &pipeline_def.steps {
-        let sr = StepRun::new(run.id.clone(), "t1".into(), step_def.name.clone(), FailureStrategy::Stop, None);
+        let sr = StepRun::new(
+            run.id.clone(),
+            "t1".into(),
+            step_def.name.clone(),
+            FailureStrategy::Stop,
+            None,
+        );
         ss.create_step(&sr).await.unwrap();
         step_runs.push(sr);
     }
@@ -323,7 +361,10 @@ steps:
     });
     let executor = DagExecutor::new(rs.clone(), ss.clone(), js.clone(), submitter);
 
-    let result = executor.execute(&mut run, &pipeline_def, &step_runs, None).await.unwrap();
+    let result = executor
+        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .await
+        .unwrap();
     cancel.cancel();
 
     eprintln!("Pipeline result: {result:?}");
@@ -333,7 +374,12 @@ steps:
     let steps = ss.list_by_run("t1", &run.id).await.unwrap();
     assert_eq!(steps.len(), 2);
     for step in &steps {
-        assert_eq!(step.state, StepRunState::Succeeded, "step {} failed", step.step_name);
+        assert_eq!(
+            step.state,
+            StepRunState::Succeeded,
+            "step {} failed",
+            step.step_name
+        );
         assert!(step.job_id.is_some());
 
         let job_id = step.job_id.as_ref().unwrap();
@@ -346,13 +392,27 @@ steps:
 
     // Verify test step logs
     let test_step = steps.iter().find(|s| s.step_name == "test").unwrap();
-    let test_logs = jls.get_logs(test_step.job_id.as_ref().unwrap(), 100).await.unwrap();
-    assert!(test_logs.iter().any(|l| l.message.contains("STEP_TEST_OUTPUT")));
+    let test_logs = jls
+        .get_logs(test_step.job_id.as_ref().unwrap(), 100)
+        .await
+        .unwrap();
+    assert!(
+        test_logs
+            .iter()
+            .any(|l| l.message.contains("STEP_TEST_OUTPUT"))
+    );
 
     // Verify build step logs
     let build_step = steps.iter().find(|s| s.step_name == "build").unwrap();
-    let build_logs = jls.get_logs(build_step.job_id.as_ref().unwrap(), 100).await.unwrap();
-    assert!(build_logs.iter().any(|l| l.message.contains("STEP_BUILD_OUTPUT")));
+    let build_logs = jls
+        .get_logs(build_step.job_id.as_ref().unwrap(), 100)
+        .await
+        .unwrap();
+    assert!(
+        build_logs
+            .iter()
+            .any(|l| l.message.contains("STEP_BUILD_OUTPUT"))
+    );
 
     muli_test::docker_helpers::cleanup_test_containers(&docker).await;
 }

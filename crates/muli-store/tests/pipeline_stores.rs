@@ -23,12 +23,7 @@ async fn make_factory() -> (Arc<SqliteStoreFactory>, tempfile::TempDir) {
     (factory, dir)
 }
 
-fn make_run(
-    tenant_id: &str,
-    pipeline_id: &str,
-    repo_id: &str,
-    run_number: u64,
-) -> PipelineRun {
+fn make_run(tenant_id: &str, pipeline_id: &str, repo_id: &str, run_number: u64) -> PipelineRun {
     PipelineRun::new(
         pipeline_id.into(),
         tenant_id.into(),
@@ -54,9 +49,18 @@ async fn test_full_pipeline_crud_flow() {
     let step_store = SqliteStepRunStore::new(factory.clone());
 
     // 1. Create pipeline
-    let pipeline = Pipeline::new("t1".into(), "repo-1".into(), "ci".into(), "sha256abc".into());
+    let pipeline = Pipeline::new(
+        "t1".into(),
+        "repo-1".into(),
+        "ci".into(),
+        "sha256abc".into(),
+    );
     pipe_store.upsert_pipeline(&pipeline).await.unwrap();
-    let fetched = pipe_store.get_pipeline("t1", &pipeline.id).await.unwrap().unwrap();
+    let fetched = pipe_store
+        .get_pipeline("t1", &pipeline.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(fetched.name, "ci");
 
     // 2. Create run
@@ -124,16 +128,38 @@ async fn test_tenant_isolation() {
     let step_store = SqliteStepRunStore::new(factory.clone());
 
     // Create pipeline in tenant A
-    let pipe_a = Pipeline::new("tenant-a".into(), "repo-1".into(), "ci".into(), "sha1".into());
+    let pipe_a = Pipeline::new(
+        "tenant-a".into(),
+        "repo-1".into(),
+        "ci".into(),
+        "sha1".into(),
+    );
     pipe_store.upsert_pipeline(&pipe_a).await.unwrap();
 
     // Create pipeline in tenant B with same repo_id
-    let pipe_b = Pipeline::new("tenant-b".into(), "repo-1".into(), "ci".into(), "sha2".into());
+    let pipe_b = Pipeline::new(
+        "tenant-b".into(),
+        "repo-1".into(),
+        "ci".into(),
+        "sha2".into(),
+    );
     pipe_store.upsert_pipeline(&pipe_b).await.unwrap();
 
     // Both should be retrievable by ID from their own tenant
-    assert!(pipe_store.get_pipeline("tenant-a", &pipe_a.id).await.unwrap().is_some());
-    assert!(pipe_store.get_pipeline("tenant-b", &pipe_b.id).await.unwrap().is_some());
+    assert!(
+        pipe_store
+            .get_pipeline("tenant-a", &pipe_a.id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        pipe_store
+            .get_pipeline("tenant-b", &pipe_b.id)
+            .await
+            .unwrap()
+            .is_some()
+    );
 
     // get_by_repo is now tenant-scoped — each tenant sees only its own
     let tenant_a_pipes = pipe_store.get_by_repo("tenant-a", "repo-1").await.unwrap();
@@ -189,19 +215,28 @@ async fn test_run_pagination() {
     }
 
     // Page 1: limit 3, offset 0
-    let page1 = run_store.list_by_repo("t1", "repo-1", None, 3, 0).await.unwrap();
+    let page1 = run_store
+        .list_by_repo("t1", "repo-1", None, 3, 0)
+        .await
+        .unwrap();
     assert_eq!(page1.len(), 3);
     assert_eq!(page1[0].run_number, 10); // Newest first
     assert_eq!(page1[1].run_number, 9);
     assert_eq!(page1[2].run_number, 8);
 
     // Page 2
-    let page2 = run_store.list_by_repo("t1", "repo-1", None, 3, 3).await.unwrap();
+    let page2 = run_store
+        .list_by_repo("t1", "repo-1", None, 3, 3)
+        .await
+        .unwrap();
     assert_eq!(page2.len(), 3);
     assert_eq!(page2[0].run_number, 7);
 
     // Last page
-    let page4 = run_store.list_by_repo("t1", "repo-1", None, 3, 9).await.unwrap();
+    let page4 = run_store
+        .list_by_repo("t1", "repo-1", None, 3, 9)
+        .await
+        .unwrap();
     assert_eq!(page4.len(), 1);
     assert_eq!(page4[0].run_number, 1);
 
@@ -240,7 +275,10 @@ async fn test_cache_eviction_flow() {
 
     // Evict to 2500 bytes (should remove at least 2 oldest entries)
     let evicted = cache_store.evict_lru("t1", "repo-1", 2500).await.unwrap();
-    assert!(evicted >= 2, "should evict at least 2 entries, evicted {evicted}");
+    assert!(
+        evicted >= 2,
+        "should evict at least 2 entries, evicted {evicted}"
+    );
 
     let remaining = cache_store.list_by_repo("t1", "repo-1").await.unwrap();
     let total: u64 = remaining.iter().map(|e| e.size_bytes).sum();
@@ -257,8 +295,18 @@ async fn test_secrets_cross_repo_isolation() {
     let (factory, _dir) = make_factory().await;
     let secret_store = SqlitePipelineSecretStore::new(factory);
 
-    let s1 = PipelineSecret::new("t1".into(), "repo-1".into(), "API_KEY".into(), "enc1".into());
-    let s2 = PipelineSecret::new("t1".into(), "repo-2".into(), "API_KEY".into(), "enc2".into());
+    let s1 = PipelineSecret::new(
+        "t1".into(),
+        "repo-1".into(),
+        "API_KEY".into(),
+        "enc1".into(),
+    );
+    let s2 = PipelineSecret::new(
+        "t1".into(),
+        "repo-2".into(),
+        "API_KEY".into(),
+        "enc2".into(),
+    );
     secret_store.set_secret(&s1).await.unwrap();
     secret_store.set_secret(&s2).await.unwrap();
 

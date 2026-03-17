@@ -14,7 +14,7 @@ use axum::{
 
 use crate::api::GitState;
 use crate::lfs::storage::LfsStorageError;
-use crate::lfs::types::{self, VerifyRequest, APPLICATION_VND_GIT_LFS_JSON};
+use crate::lfs::types::{self, APPLICATION_VND_GIT_LFS_JSON, VerifyRequest};
 use crate::tenant::TenantContext;
 
 /// PUT `/{namespace}/{repo}/info/lfs/objects/{oid}`
@@ -91,18 +91,13 @@ pub async fn download(
                         axum::http::header::CONTENT_TYPE,
                         "application/octet-stream".to_string(),
                     ),
-                    (
-                        axum::http::header::CONTENT_LENGTH,
-                        size.to_string(),
-                    ),
+                    (axum::http::header::CONTENT_LENGTH, size.to_string()),
                 ],
                 body,
             )
                 .into_response()
         }
-        Err(LfsStorageError::NotFound(_)) => {
-            lfs_error(StatusCode::NOT_FOUND, "object not found")
-        }
+        Err(LfsStorageError::NotFound(_)) => lfs_error(StatusCode::NOT_FOUND, "object not found"),
         Err(e) => {
             tracing::error!(error = %e, %oid, "LFS download failed");
             lfs_error(StatusCode::INTERNAL_SERVER_ERROR, "download failed")
@@ -149,7 +144,10 @@ fn lfs_error(status: StatusCode, msg: &str) -> Response {
     });
     (
         status,
-        [(axum::http::header::CONTENT_TYPE, APPLICATION_VND_GIT_LFS_JSON)],
+        [(
+            axum::http::header::CONTENT_TYPE,
+            APPLICATION_VND_GIT_LFS_JSON,
+        )],
         Json(body),
     )
         .into_response()

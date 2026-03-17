@@ -14,7 +14,7 @@ use tracing::info;
 use muli_core::job::model::{self as core_model, Job, JobSpec};
 use muli_core::job::state_machine::JobState;
 use muli_core::resource::limits::ResourceSpec;
-use muli_core::traits::JobStore;
+use muli_core::traits::{JobStore, TenantLimitsStore};
 use muli_core::validation;
 use muli_engine::docker::logs::LogCollector;
 use muli_engine::executor::DockerExecutor;
@@ -26,8 +26,8 @@ use muli_proto::{
     GetJobStatusResponse, SubmitJobRequest, SubmitJobResponse, Timestamp,
 };
 
-use super::conversions::{core_state_to_proto, proto_tier_to_core};
-use super::util::{datetime_to_proto, extract_tenant_id};
+use super::conversions::core_state_to_proto;
+use super::util::{datetime_to_proto, extract_tenant_id, validate_tenant};
 
 /// Maximum duration a watch_job_status stream can stay open (1 hour).
 pub(crate) const MAX_WATCH_DURATION: Duration = Duration::from_secs(3600);
@@ -37,6 +37,8 @@ pub struct JobServiceImpl {
     pub scheduler: Arc<Scheduler>,
     pub executor: Arc<DockerExecutor>,
     pub log_collectors: Arc<DashMap<String, Arc<LogCollector>>>,
+    pub tenant_limits_store: Option<Arc<dyn TenantLimitsStore>>,
+    pub max_jobs_per_tenant: usize,
 }
 
 /// Verify that a job belongs to the requesting tenant.
@@ -60,17 +62,24 @@ impl JobServiceImpl {
         &self,
         request: Request<SubmitJobRequest>,
     ) -> Result<Response<SubmitJobResponse>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
+        let (_caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
+
+        // Enforcement checks
+        crate::enforcement::check_not_suspended(
+            self.tenant_limits_store.as_deref(),
+            &req.tenant_id,
+        )
+        .await?;
+        crate::enforcement::check_job_limit(
+            self.tenant_limits_store.as_deref(),
+            &*self.store,
+            &req.tenant_id,
+            self.max_jobs_per_tenant,
+        )
+        .await?;
 
         validation::validate_identifier("tenant_id", &req.tenant_id)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
-
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
 
         validation::validate_identifier("project_id", &req.project_id)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
@@ -106,7 +115,12 @@ impl JobServiceImpl {
                 .map_err(|e| Status::invalid_argument(e.to_string()))?;
         }
 
-        let tier = proto_tier_to_core(req.priority_tier);
+        let tier = crate::enforcement::resolve_effective_tier(
+            self.tenant_limits_store.as_deref(),
+            &req.tenant_id,
+            req.priority_tier,
+        )
+        .await;
 
         if !req.idempotency_key.is_empty() {
             match self

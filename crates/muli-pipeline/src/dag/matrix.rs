@@ -117,13 +117,20 @@ mod tests {
     #[test]
     fn test_matrix_3x3() {
         let mut matrix = HashMap::new();
-        matrix.insert("os".into(), vec!["linux".into(), "macos".into(), "windows".into()]);
-        matrix.insert("version".into(), vec!["1.80".into(), "1.81".into(), "1.82".into()]);
+        matrix.insert(
+            "os".into(),
+            vec!["linux".into(), "macos".into(), "windows".into()],
+        );
+        matrix.insert(
+            "version".into(),
+            vec!["1.80".into(), "1.81".into(), "1.82".into()],
+        );
         let step = make_step("build", matrix);
         let expanded = expand_matrix(&step).unwrap();
         assert_eq!(expanded.len(), 9);
         // Each expanded step should have a unique name
-        let names: std::collections::HashSet<&str> = expanded.iter().map(|s| s.name.as_str()).collect();
+        let names: std::collections::HashSet<&str> =
+            expanded.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names.len(), 9);
     }
 
@@ -131,8 +138,21 @@ mod tests {
     fn test_matrix_over_limit() {
         // 6 x 5 = 30 > 25
         let mut matrix = HashMap::new();
-        matrix.insert("a".into(), vec!["1".into(), "2".into(), "3".into(), "4".into(), "5".into(), "6".into()]);
-        matrix.insert("b".into(), vec!["1".into(), "2".into(), "3".into(), "4".into(), "5".into()]);
+        matrix.insert(
+            "a".into(),
+            vec![
+                "1".into(),
+                "2".into(),
+                "3".into(),
+                "4".into(),
+                "5".into(),
+                "6".into(),
+            ],
+        );
+        matrix.insert(
+            "b".into(),
+            vec!["1".into(), "2".into(), "3".into(), "4".into(), "5".into()],
+        );
         let step = make_step("build", matrix);
         let result = expand_matrix(&step);
         assert!(result.is_err());
@@ -177,8 +197,14 @@ mod tests {
     fn test_matrix_exactly_25() {
         // 5 x 5 = 25, exactly at the limit, should succeed
         let mut matrix = HashMap::new();
-        matrix.insert("a".into(), vec!["1".into(), "2".into(), "3".into(), "4".into(), "5".into()]);
-        matrix.insert("b".into(), vec!["1".into(), "2".into(), "3".into(), "4".into(), "5".into()]);
+        matrix.insert(
+            "a".into(),
+            vec!["1".into(), "2".into(), "3".into(), "4".into(), "5".into()],
+        );
+        matrix.insert(
+            "b".into(),
+            vec!["1".into(), "2".into(), "3".into(), "4".into(), "5".into()],
+        );
         let step = make_step("build", matrix);
         let expanded = expand_matrix(&step).unwrap();
         assert_eq!(expanded.len(), 25);

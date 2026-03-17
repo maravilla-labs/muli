@@ -18,7 +18,7 @@ use tracing::warn;
 
 use muli_core::traits::TenantQuotaStore;
 
-use crate::common::{check_quota, error_json, update_quota_usage};
+use crate::common::{adjust_quota_usage, error_json, reserve_quota};
 use crate::metrics::RegistryMetrics;
 use crate::storage::FilesystemStorage;
 use crate::tenant::TenantContext;
@@ -99,7 +99,7 @@ async fn handle_publish(
         return error_json(StatusCode::BAD_REQUEST, &e.to_string());
     }
 
-    // Process each attachment (tarball)
+    // Process each attachment (tarball) with per-tarball quota reservation
     for (filename, attachment) in &publish_req.attachments {
         let tarball_data = match base64::engine::general_purpose::STANDARD.decode(&attachment.data)
         {
@@ -109,8 +109,9 @@ async fn handle_publish(
             }
         };
 
-        // Check quota
-        if let Err(e) = check_quota(quota_store, &tenant.tenant_id, tarball_data.len() as u64).await
+        // Atomic quota reservation per tarball
+        if let Err(e) =
+            reserve_quota(quota_store, &tenant.tenant_id, tarball_data.len() as u64).await
         {
             return e;
         }
@@ -120,6 +121,8 @@ async fn handle_publish(
             npm_storage::store_tarball(storage, &tenant.tenant_id, package, filename, &tarball_data)
                 .await
         {
+            // Release reserved bytes on failure
+            adjust_quota_usage(quota_store, &tenant.tenant_id, -(tarball_data.len() as i64));
             warn!(error = %e, "failed to store npm tarball");
             return error_json(StatusCode::INTERNAL_SERVER_ERROR, "failed to store tarball");
         }
@@ -269,8 +272,7 @@ async fn handle_publish(
         );
     }
 
-    // Update quota
-    update_quota_usage(quota_store, storage, &tenant.tenant_id).await;
+    // Quota already reserved per-tarball via reserve_quota above.
 
     metrics.record_npm_publish(&tenant.tenant_id);
 

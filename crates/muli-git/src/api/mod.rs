@@ -22,7 +22,6 @@ pub mod tree;
 pub mod webhooks;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::{
     Router,
@@ -31,20 +30,17 @@ use axum::{
 
 use muli_core::traits::{
     GitTokenStore, PrCommentStore, PullRequestStore, RepositoryStore, SshKeyStore,
-    TreeCommitCacheStore, WebhookStore,
+    TenantQuotaStore, TreeCommitCacheStore, WebhookStore,
 };
 
 use crate::auth::GitAuth;
+use crate::hooks::PostPushHooks;
 use crate::lfs;
 use crate::storage::FilesystemStorage;
 use crate::tenant::TenantConfig;
 
-/// Hook for triggering pipeline runs from git events (push, PR).
-#[async_trait::async_trait]
-pub trait PipelineTriggerHook: Send + Sync {
-    async fn on_push(&self, tenant_id: &str, repo_id: &str, commit_sha: &str, ref_name: &str);
-    async fn on_pr_event(&self, tenant_id: &str, repo_id: &str, pr_number: u64, event: &str);
-}
+// Re-export PipelineTriggerHook from hooks (preserves public path).
+pub use crate::hooks::PipelineTriggerHook;
 
 // Re-export for backward compatibility
 pub use helpers::strip_git_suffix;
@@ -59,15 +55,15 @@ pub struct GitState {
     pub ssh_key_store: Arc<dyn SshKeyStore>,
     pub pr_store: Arc<dyn PullRequestStore>,
     pub pr_comment_store: Arc<dyn PrCommentStore>,
-    pub http_client: Arc<reqwest::Client>,
     pub cache_store: Option<Arc<dyn TreeCommitCacheStore>>,
-    pub webhook_semaphore: Arc<tokio::sync::Semaphore>,
     /// When true, skip SSRF checks on webhook URLs (for testing only).
     pub allow_localhost_webhooks: bool,
     /// LFS object storage backend (None = LFS disabled).
     pub lfs_storage: Option<Arc<dyn lfs::storage::LfsStorage>>,
-    /// Pipeline trigger hook (None = pipelines disabled).
-    pub pipeline_trigger: Option<Arc<dyn PipelineTriggerHook>>,
+    /// Shared post-push hook infrastructure (pipelines, webhooks, cache invalidation).
+    pub post_push_hooks: PostPushHooks,
+    /// Repository domain service (create, delete, fork, transfer).
+    pub repo_service: Arc<muli_core::service::RepositoryService>,
 }
 
 /// Configuration for building the git router.
@@ -88,6 +84,10 @@ pub struct GitRouterConfig {
     pub lfs_storage: Option<Arc<dyn lfs::storage::LfsStorage>>,
     /// Pipeline trigger hook (None = pipelines disabled).
     pub pipeline_trigger: Option<Arc<dyn PipelineTriggerHook>>,
+    /// Repository domain service (create, delete, fork, transfer).
+    pub repo_service: Arc<muli_core::service::RepositoryService>,
+    /// Tenant quota store for tracking git storage usage (None = quota tracking disabled).
+    pub quota_store: Option<Arc<dyn TenantQuotaStore>>,
 }
 
 /// Build the complete git service router.
@@ -106,13 +106,19 @@ pub fn git_router(cfg: GitRouterConfig) -> Router {
         allow_localhost_webhooks,
         lfs_storage,
         pipeline_trigger,
+        repo_service,
+        quota_store,
     } = cfg;
 
-    let http_client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("failed to build reqwest client");
+    let post_push_hooks = PostPushHooks {
+        pipeline_trigger,
+        webhook_store: webhook_store.clone(),
+        http_client: Arc::new(crate::hooks::webhook_http_client()),
+        webhook_semaphore: Arc::new(tokio::sync::Semaphore::new(10)),
+        allow_localhost_webhooks,
+        cache_store: cache_store.clone(),
+        quota_store,
+    };
 
     let state = Arc::new(GitState {
         storage,
@@ -122,12 +128,11 @@ pub fn git_router(cfg: GitRouterConfig) -> Router {
         ssh_key_store,
         pr_store,
         pr_comment_store,
-        http_client: Arc::new(http_client),
         cache_store,
-        webhook_semaphore: Arc::new(tokio::sync::Semaphore::new(10)),
         allow_localhost_webhooks,
         lfs_storage,
-        pipeline_trigger,
+        post_push_hooks,
+        repo_service,
     });
 
     // Git Smart HTTP protocol routes.

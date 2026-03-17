@@ -48,10 +48,7 @@ pub fn matches_trigger(trigger: &TriggerDef, event: &PipelineEvent) -> bool {
         } => {
             if let Some(pr) = &trigger.pull_request {
                 let branch_match = pr.branches.is_empty()
-                    || pr
-                        .branches
-                        .iter()
-                        .any(|b| matches_glob(b, target_branch));
+                    || pr.branches.iter().any(|b| matches_glob(b, target_branch));
                 let event_match = pr.events.is_empty() || pr.events.iter().any(|e| e == ev);
                 branch_match && event_match
             } else {

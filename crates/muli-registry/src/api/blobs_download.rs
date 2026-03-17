@@ -15,7 +15,7 @@ use axum::{
 
 use muli_core::traits::TenantQuotaStore;
 
-use crate::common::update_quota_usage;
+use crate::common::adjust_quota_usage;
 use crate::metrics::RegistryMetrics;
 use crate::storage::{FilesystemStorage, RegistryStorage};
 use crate::tenant::TenantContext;
@@ -123,9 +123,16 @@ pub async fn delete_blob(
         return e;
     }
     let start = std::time::Instant::now();
+    // Stat blob size before delete so we can decrement quota
+    let freed_bytes = storage
+        .blob_size(&tenant.tenant_id, &digest)
+        .await
+        .unwrap_or(0);
     let response = match storage.delete_blob(&tenant.tenant_id, &digest).await {
         Ok(()) => {
-            update_quota_usage(&quota_store, &storage, &tenant.tenant_id).await;
+            if freed_bytes > 0 {
+                adjust_quota_usage(&quota_store, &tenant.tenant_id, -(freed_bytes as i64));
+            }
             StatusCode::ACCEPTED.into_response()
         }
         Err(_) => oci_error(StatusCode::NOT_FOUND, "BLOB_UNKNOWN", "blob not found"),

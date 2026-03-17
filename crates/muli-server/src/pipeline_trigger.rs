@@ -11,11 +11,10 @@ use dashmap::DashMap;
 use sha2::{Digest, Sha256};
 use tracing::{error, info, warn};
 
-use muli_core::pipeline::{
-    FailureStrategy, Pipeline, PipelineRun, PipelineTrigger, StepRun,
-};
+use muli_core::pipeline::{FailureStrategy, Pipeline, PipelineRun, PipelineTrigger, StepRun};
 use muli_core::traits::{
     JobStore, PipelineRunStore, PipelineStore, PullRequestStore, RepositoryStore, StepRunStore,
+    TenantLimitsStore,
 };
 use muli_git::api::PipelineTriggerHook;
 use muli_git::storage::FilesystemStorage;
@@ -23,7 +22,7 @@ use std::path::Path;
 
 use muli_core::error::MuliError;
 use muli_pipeline::dag::executor::{DagExecutor, JobSubmitter};
-use muli_pipeline::trigger::matcher::{matches_trigger, PipelineEvent};
+use muli_pipeline::trigger::matcher::{PipelineEvent, matches_trigger};
 use muli_pipeline::trigger::reader::read_pipeline_yaml;
 use muli_pipeline::yaml::parser::parse_pipeline;
 use muli_pipeline::yaml::validation::validate_pipeline;
@@ -40,11 +39,13 @@ pub struct PipelineTriggerImpl {
     step_store: Arc<dyn StepRunStore>,
     job_store: Arc<dyn JobStore>,
     job_submitter: Arc<dyn JobSubmitter>,
+    tenant_limits_store: Option<Arc<dyn TenantLimitsStore>>,
     /// Per-repo last-trigger time for rate limiting.
     last_trigger: DashMap<String, Instant>,
 }
 
 impl PipelineTriggerImpl {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         git_storage: Arc<FilesystemStorage>,
         repo_store: Arc<dyn RepositoryStore>,
@@ -54,6 +55,7 @@ impl PipelineTriggerImpl {
         step_store: Arc<dyn StepRunStore>,
         job_store: Arc<dyn JobStore>,
         job_submitter: Arc<dyn JobSubmitter>,
+        tenant_limits_store: Option<Arc<dyn TenantLimitsStore>>,
     ) -> Self {
         Self {
             git_storage,
@@ -64,6 +66,7 @@ impl PipelineTriggerImpl {
             step_store,
             job_store,
             job_submitter,
+            tenant_limits_store,
             last_trigger: DashMap::new(),
         }
     }
@@ -90,6 +93,44 @@ impl PipelineTriggerImpl {
             }
         }
         self.last_trigger.insert(repo_key, Instant::now());
+
+        // 0b. Tenant enforcement checks
+        if let Some(ref limits_store) = self.tenant_limits_store {
+            if limits_store.is_suspended(tenant_id).await.unwrap_or(false) {
+                warn!(tenant_id = %tenant_id, "pipeline trigger: tenant is suspended");
+                return;
+            }
+            if let Ok(Some(limits)) = limits_store.get_limits(tenant_id).await {
+                // Check daily run limit
+                if limits.max_pipeline_runs_per_day > 0 {
+                    if let Ok(count) = limits_store.get_daily_run_count(tenant_id).await {
+                        if count >= limits.max_pipeline_runs_per_day as u64 {
+                            warn!(
+                                tenant_id = %tenant_id,
+                                count = count,
+                                limit = limits.max_pipeline_runs_per_day,
+                                "pipeline trigger: daily run limit exceeded"
+                            );
+                            return;
+                        }
+                    }
+                }
+                // Check concurrent pipeline limit
+                if limits.max_concurrent_pipelines > 0 {
+                    if let Ok(active) = self.run_store.count_active(tenant_id).await {
+                        if active >= limits.max_concurrent_pipelines as u64 {
+                            warn!(
+                                tenant_id = %tenant_id,
+                                active = active,
+                                limit = limits.max_concurrent_pipelines,
+                                "pipeline trigger: concurrent pipeline limit exceeded"
+                            );
+                            return;
+                        }
+                    }
+                }
+            }
+        }
 
         // 1. Look up the repository to get namespace/name for the file path
         let repo = match self.repo_store.get_repository(repo_id).await {
@@ -176,7 +217,11 @@ impl PipelineTriggerImpl {
         }
 
         // 7. Create a PipelineRun
-        let run_number = match self.run_store.next_run_number(tenant_id, &pipeline.id).await {
+        let run_number = match self
+            .run_store
+            .next_run_number(tenant_id, &pipeline.id)
+            .await
+        {
             Ok(n) => n,
             Err(e) => {
                 error!(error = %e, "pipeline trigger: failed to get next run number");
@@ -198,6 +243,13 @@ impl PipelineTriggerImpl {
         if let Err(e) = self.run_store.create_run(&run).await {
             error!(error = %e, "pipeline trigger: failed to create pipeline run");
             return;
+        }
+
+        // Increment daily run count for limit enforcement
+        if let Some(ref limits_store) = self.tenant_limits_store {
+            if let Err(e) = limits_store.increment_daily_run_count(tenant_id).await {
+                warn!(error = %e, "pipeline trigger: failed to increment daily run count");
+            }
         }
 
         info!(
@@ -231,10 +283,7 @@ impl PipelineTriggerImpl {
                     failure_strategy,
                     None,
                 );
-                conditions.insert(
-                    expanded_step.name.clone(),
-                    expanded_step.condition.clone(),
-                );
+                conditions.insert(expanded_step.name.clone(), expanded_step.condition.clone());
                 if let Err(e) = self.step_store.create_step(&step_run).await {
                     error!(error = %e, step = %expanded_step.name, "failed to create step run");
                     continue;
@@ -252,7 +301,10 @@ impl PipelineTriggerImpl {
         );
         // Build clone URL for auto-checkout
         let clone_url: Option<String> = None; // TODO: construct from git_storage + repo info
-        match executor.execute(&mut run, &pipeline_def, &all_steps, clone_url.as_deref()).await {
+        match executor
+            .execute(&mut run, &pipeline_def, &all_steps, clone_url.as_deref())
+            .await
+        {
             Ok(state) => {
                 info!(
                     run_id = %run.id,
@@ -363,8 +415,15 @@ impl PipelineTriggerHook for PipelineTriggerImpl {
             event: event.to_string(),
         };
 
-        self.trigger_pipeline(tenant_id, repo_id, &commit_sha, &ref_name, pipeline_event, trigger)
-            .await;
+        self.trigger_pipeline(
+            tenant_id,
+            repo_id,
+            &commit_sha,
+            &ref_name,
+            pipeline_event,
+            trigger,
+        )
+        .await;
     }
 }
 

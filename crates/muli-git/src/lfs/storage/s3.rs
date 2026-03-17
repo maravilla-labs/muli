@@ -139,10 +139,7 @@ impl LfsStorage for S3LfsStorage {
         let stream = futures::stream::unfold(byte_stream, |mut bs| async move {
             match bs.next().await {
                 Some(Ok(bytes)) => Some((Ok(bytes.to_vec()), bs)),
-                Some(Err(e)) => Some((
-                    Err(std::io::Error::new(std::io::ErrorKind::Other, e)),
-                    bs,
-                )),
+                Some(Err(e)) => Some((Err(std::io::Error::new(std::io::ErrorKind::Other, e)), bs)),
                 None => None,
             }
         });
@@ -318,9 +315,7 @@ impl LfsStorage for S3LfsStorage {
 }
 
 /// Check if an S3 SDK error is a "not found" (NoSuchKey / 404).
-fn is_not_found(
-    e: &aws_sdk_s3::error::SdkError<impl std::fmt::Debug>,
-) -> bool {
+fn is_not_found(e: &aws_sdk_s3::error::SdkError<impl std::fmt::Debug>) -> bool {
     matches!(
         e,
         aws_sdk_s3::error::SdkError::ServiceError(se)

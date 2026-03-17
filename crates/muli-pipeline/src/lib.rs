@@ -4,11 +4,11 @@
 //! CI/CD pipeline orchestration: YAML parser, DAG engine, trigger system,
 //! artifact/cache storage, and REST API.
 
-pub mod yaml;
+pub mod api;
+pub mod artifact;
 pub mod dag;
 pub mod trigger;
-pub mod artifact;
-pub mod api;
+pub mod yaml;
 
 pub use dag::JobSubmitter;
 pub use trigger::PipelineTriggerHook;

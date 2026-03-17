@@ -16,7 +16,11 @@ use crate::protocol::upload_pack::run_git_http_backend_authenticated;
 ///
 /// `remote_user` should be the authenticated tenant/user identifier so that
 /// git http-backend enables the receive-pack service (push operations).
-pub async fn info_refs_receive(repo_path: PathBuf, headers: &HeaderMap, remote_user: &str) -> Response<Body> {
+pub async fn info_refs_receive(
+    repo_path: PathBuf,
+    headers: &HeaderMap,
+    remote_user: &str,
+) -> Response<Body> {
     run_git_http_backend_authenticated(
         &repo_path,
         "GET",

@@ -15,6 +15,7 @@ pub mod job_store;
 pub mod org_store;
 pub mod pr_store;
 pub mod registry_token_store;
+pub mod tenant_limits_store;
 pub mod tenant_quota_store;
 pub mod user_store;
 
@@ -29,5 +30,6 @@ pub use job_store::MemoryJobStore;
 pub use org_store::{MemoryOrgMemberStore, MemoryOrgStore};
 pub use pr_store::{MemoryPrCommentStore, MemoryPullRequestStore};
 pub use registry_token_store::MemoryRegistryTokenStore;
+pub use tenant_limits_store::MemoryTenantLimitsStore;
 pub use tenant_quota_store::MemoryTenantQuotaStore;
 pub use user_store::MemoryUserStore;

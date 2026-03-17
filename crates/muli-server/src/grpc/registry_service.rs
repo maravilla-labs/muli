@@ -22,7 +22,9 @@ use muli_proto::{
 };
 
 use super::conversions::{core_registry_permission_to_proto, proto_registry_permission_to_core};
-use super::util::{datetime_to_proto, extract_tenant_id, generate_token, hash_token, token_prefix};
+use super::util::{
+    datetime_to_proto, extract_tenant_id, generate_token, hash_token, token_prefix, validate_tenant,
+};
 
 pub struct RegistryServiceImpl {
     pub token_store: Arc<dyn RegistryTokenStore>,
@@ -57,14 +59,8 @@ impl RegistryService for RegistryServiceImpl {
         &self,
         request: Request<CreateRegistryTokenRequest>,
     ) -> Result<Response<CreateRegistryTokenResponse>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
+        let (_caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
         if req.tenant_id.is_empty() {
             return Err(Status::invalid_argument("tenant_id is required"));
         }
@@ -120,14 +116,7 @@ impl RegistryService for RegistryServiceImpl {
         &self,
         request: Request<ListRegistryTokensRequest>,
     ) -> Result<Response<ListRegistryTokensResponse>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
-
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
+        let (_caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
         let tokens = self
             .token_store
@@ -254,14 +243,7 @@ impl RegistryService for RegistryServiceImpl {
         &self,
         request: Request<GetRegistryUsageRequest>,
     ) -> Result<Response<GetRegistryUsageResponse>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
-
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
+        let (_caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
         let quota = self
             .quota_store
@@ -327,14 +309,7 @@ impl RegistryService for RegistryServiceImpl {
         &self,
         request: Request<GetTenantQuotaRequest>,
     ) -> Result<Response<GetTenantQuotaResponse>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
-
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
+        let (_caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
         let quota = self
             .quota_store

@@ -31,9 +31,7 @@ pub fn parse_pipeline(yaml_str: &str) -> Result<PipelineDef> {
     }
     for step in &def.steps {
         if step.name.is_empty() {
-            return Err(MuliError::PipelineYamlError(
-                "step name is required".into(),
-            ));
+            return Err(MuliError::PipelineYamlError("step name is required".into()));
         }
         if step.image.is_empty() {
             return Err(MuliError::PipelineYamlError(format!(

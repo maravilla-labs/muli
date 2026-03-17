@@ -58,14 +58,15 @@ async fn setup() -> (
     let dir = tempfile::tempdir().unwrap();
     let factory = SqliteStoreFactory::new(dir.path()).await.unwrap();
 
-    let ps: Arc<dyn PipelineStore> =
-        Arc::new(muli_store::sqlite::SqlitePipelineStore::new(factory.clone()));
-    let rs: Arc<dyn PipelineRunStore> =
-        Arc::new(muli_store::sqlite::SqlitePipelineRunStore::new(factory.clone()));
+    let ps: Arc<dyn PipelineStore> = Arc::new(muli_store::sqlite::SqlitePipelineStore::new(
+        factory.clone(),
+    ));
+    let rs: Arc<dyn PipelineRunStore> = Arc::new(muli_store::sqlite::SqlitePipelineRunStore::new(
+        factory.clone(),
+    ));
     let ss: Arc<dyn StepRunStore> =
         Arc::new(muli_store::sqlite::SqliteStepRunStore::new(factory.clone()));
-    let js: Arc<dyn JobStore> =
-        Arc::new(muli_store::sqlite::SqliteJobStore::new(factory.clone()));
+    let js: Arc<dyn JobStore> = Arc::new(muli_store::sqlite::SqliteJobStore::new(factory.clone()));
     let jls: Arc<dyn JobLogStore> =
         Arc::new(muli_store::sqlite::SqliteJobLogStore::new(factory.clone()));
 
@@ -215,8 +216,7 @@ steps:
     let pipeline_def = parse_pipeline(yaml).unwrap();
     validate_pipeline(&pipeline_def).unwrap();
 
-    let pipeline =
-        Pipeline::new("t1".into(), "repo1".into(), "ci".into(), "sha".into());
+    let pipeline = Pipeline::new("t1".into(), "repo1".into(), "ci".into(), "sha".into());
     ps.upsert_pipeline(&pipeline).await.unwrap();
 
     let mut run = PipelineRun::new(
@@ -302,10 +302,8 @@ steps:
     // Verify each step's logs contain expected markers
     let assert_log_contains = |name: &str, marker: &str| {
         let step = steps.iter().find(|s| s.step_name == name).unwrap();
-        let logs = futures::executor::block_on(
-            jls.get_logs(step.job_id.as_ref().unwrap(), 200),
-        )
-        .unwrap();
+        let logs =
+            futures::executor::block_on(jls.get_logs(step.job_id.as_ref().unwrap(), 200)).unwrap();
         assert!(
             logs.iter().any(|l| l.message.contains(marker)),
             "Step '{}' logs should contain '{}', got:\n{}",
@@ -347,18 +345,9 @@ steps:
         env_map.get("WUNDER_NPM_TOKEN"),
         Some(&"fake-token-123".to_string())
     );
-    assert_eq!(
-        env_map.get("PIPELINE_SHA"),
-        Some(&"a1b2c3d4".to_string())
-    );
-    assert_eq!(
-        env_map.get("PIPELINE_BRANCH"),
-        Some(&"main".to_string())
-    );
-    assert_eq!(
-        env_map.get("PIPELINE_EVENT"),
-        Some(&"push".to_string())
-    );
+    assert_eq!(env_map.get("PIPELINE_SHA"), Some(&"a1b2c3d4".to_string()));
+    assert_eq!(env_map.get("PIPELINE_BRANCH"), Some(&"main".to_string()));
+    assert_eq!(env_map.get("PIPELINE_EVENT"), Some(&"push".to_string()));
     assert_eq!(
         env_map.get("PIPELINE_STEP_NAME"),
         Some(&"install".to_string())

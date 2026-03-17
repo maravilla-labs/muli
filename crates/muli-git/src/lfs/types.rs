@@ -111,7 +111,10 @@ pub struct SshAuthResponse {
 
 /// Validate an LFS oid: must be exactly 64 lowercase hex characters (SHA-256).
 pub fn validate_oid(oid: &str) -> bool {
-    oid.len() == 64 && oid.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    oid.len() == 64
+        && oid
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
 #[cfg(test)]
@@ -120,7 +123,7 @@ mod tests {
 
     #[test]
     fn validate_oid_accepts_valid() {
-        let oid = "a" .repeat(64);
+        let oid = "a".repeat(64);
         assert!(validate_oid(&oid));
         let oid = "0123456789abcdef".repeat(4);
         assert!(validate_oid(&oid));
@@ -179,6 +182,13 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         let parsed: BatchResponse = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.objects[0].size, 2048);
-        assert!(parsed.objects[0].actions.as_ref().unwrap().download.is_some());
+        assert!(
+            parsed.objects[0]
+                .actions
+                .as_ref()
+                .unwrap()
+                .download
+                .is_some()
+        );
     }
 }

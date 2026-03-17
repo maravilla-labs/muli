@@ -6,7 +6,6 @@
 use tonic::{Request, Response, Status};
 use tracing::info;
 
-use muli_core::git::Repository;
 use muli_proto::{
     CreateRepositoryRequest, DeleteRepositoryRequest, DeleteRepositoryResponse,
     ForkRepositoryRequest, GetRepositoryRequest, GitRepository, ListRepositoriesRequest,
@@ -17,43 +16,48 @@ use muli_git::api::helpers::validate_path_component;
 
 use super::GitServiceImpl;
 use super::helpers::repo_to_proto;
-use crate::grpc::util::extract_tenant_id;
+use crate::grpc::util::{domain_err_to_grpc, validate_tenant};
 
 impl GitServiceImpl {
     pub async fn create_repository_impl(
         &self,
         request: Request<CreateRepositoryRequest>,
     ) -> Result<Response<GitRepository>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
+        let (_caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
+        // Enforcement checks
+        crate::enforcement::check_not_suspended(
+            self.tenant_limits_store.as_deref(),
+            &req.tenant_id,
+        )
+        .await?;
+        crate::enforcement::check_repo_limit(
+            self.tenant_limits_store.as_deref(),
+            &*self.repo_store,
+            &req.tenant_id,
+        )
+        .await?;
+
+        if req.tenant_id.is_empty() || req.namespace.is_empty() || req.name.is_empty() {
+            return Err(Status::invalid_argument(
+                "tenant_id, namespace, and name are required",
             ));
-        }
-
-        if req.tenant_id.is_empty() {
-            return Err(Status::invalid_argument("tenant_id is required"));
-        }
-        if req.namespace.is_empty() {
-            return Err(Status::invalid_argument("namespace is required"));
-        }
-        if req.name.is_empty() {
-            return Err(Status::invalid_argument("name is required"));
         }
         if !validate_path_component(&req.namespace) || !validate_path_component(&req.name) {
             return Err(Status::invalid_argument("invalid namespace or name"));
         }
 
-        let mut repo = Repository::new(
-            req.tenant_id.clone(),
-            req.namespace.clone(),
-            req.name.clone(),
-            req.description.clone(),
-            req.is_private,
-        )
-        .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let mut repo = self
+            .repo_service
+            .create(
+                &req.tenant_id,
+                &req.namespace,
+                &req.name,
+                &req.description,
+                req.is_private,
+            )
+            .await
+            .map_err(domain_err_to_grpc)?;
 
         // Set owner_id and owner_type from request if provided
         if !req.owner_id.is_empty() {
@@ -65,16 +69,10 @@ impl GitServiceImpl {
                 _ => muli_core::git::OwnerType::User,
             };
         }
-
-        self.git_storage
-            .init_repo(&req.tenant_id, &req.namespace, &req.name)
-            .await
-            .map_err(|e| Status::internal(format!("Failed to initialize git repo: {e}")))?;
-
-        self.repo_store
-            .create_repository(&repo)
-            .await
-            .map_err(|e| Status::internal(format!("Failed to create repository: {e}")))?;
+        // If owner was set, update the record
+        if !req.owner_id.is_empty() || !req.owner_type.is_empty() {
+            let _ = self.repo_store.update_repository(&repo).await;
+        }
 
         info!(
             operation = "create_repository",
@@ -91,14 +89,7 @@ impl GitServiceImpl {
         &self,
         request: Request<GetRepositoryRequest>,
     ) -> Result<Response<GitRepository>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
-
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
+        let (_caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
         let repo = self
             .repo_store
@@ -119,31 +110,12 @@ impl GitServiceImpl {
         &self,
         request: Request<DeleteRepositoryRequest>,
     ) -> Result<Response<DeleteRepositoryResponse>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
+        let (_caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
-
-        let repo = self
-            .repo_store
-            .get_repository_by_name(&req.tenant_id, &req.namespace, &req.name)
+        self.repo_service
+            .delete(&req.tenant_id, &req.namespace, &req.name)
             .await
-            .map_err(|e| Status::internal(format!("Failed to look up repository: {e}")))?
-            .ok_or_else(|| {
-                Status::not_found(format!(
-                    "repository {}/{} not found",
-                    req.namespace, req.name
-                ))
-            })?;
-
-        self.repo_store
-            .delete_repository(&repo.id)
-            .await
-            .map_err(|e| Status::internal(format!("Failed to delete repository: {e}")))?;
+            .map_err(domain_err_to_grpc)?;
 
         info!(
             operation = "delete_repository",
@@ -160,14 +132,7 @@ impl GitServiceImpl {
         &self,
         request: Request<ListRepositoriesRequest>,
     ) -> Result<Response<ListRepositoriesResponse>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
-
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
+        let (_caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
         let repos = self
             .repo_store
@@ -184,14 +149,7 @@ impl GitServiceImpl {
         &self,
         request: Request<ForkRepositoryRequest>,
     ) -> Result<Response<GitRepository>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
-
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
+        let (_caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
         if req.dest_namespace.is_empty() || req.dest_name.is_empty() {
             return Err(Status::invalid_argument(
@@ -205,44 +163,17 @@ impl GitServiceImpl {
             ));
         }
 
-        let source = self
-            .repo_store
-            .get_repository_by_name(&req.tenant_id, &req.source_namespace, &req.source_name)
-            .await
-            .map_err(|e| Status::internal(format!("Failed to look up source repository: {e}")))?
-            .ok_or_else(|| {
-                Status::not_found(format!(
-                    "source repository {}/{} not found",
-                    req.source_namespace, req.source_name
-                ))
-            })?;
-
-        let mut forked = Repository::new(
-            req.tenant_id.clone(),
-            req.dest_namespace.clone(),
-            req.dest_name.clone(),
-            source.description.clone(),
-            source.is_private,
-        )
-        .map_err(|e| Status::invalid_argument(e.to_string()))?;
-        forked.fork_of = Some(source.id.clone());
-
-        self.git_storage
-            .fork_repo(
+        let forked = self
+            .repo_service
+            .fork(
                 &req.tenant_id,
                 &req.source_namespace,
                 &req.source_name,
-                &req.tenant_id,
                 &req.dest_namespace,
                 &req.dest_name,
             )
             .await
-            .map_err(|e| Status::internal(format!("Failed to fork git repo: {e}")))?;
-
-        self.repo_store
-            .create_repository(&forked)
-            .await
-            .map_err(|e| Status::internal(format!("Failed to create forked repository: {e}")))?;
+            .map_err(domain_err_to_grpc)?;
 
         info!(
             operation = "fork_repository",
@@ -259,14 +190,7 @@ impl GitServiceImpl {
         &self,
         request: Request<TransferRepositoryRequest>,
     ) -> Result<Response<GitRepository>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
-
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
+        let (_caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
         if req.new_namespace.is_empty() {
             return Err(Status::invalid_argument("new_namespace is required"));
@@ -275,41 +199,16 @@ impl GitServiceImpl {
             return Err(Status::invalid_argument("invalid new_namespace"));
         }
 
-        let repo = self
-            .repo_store
-            .get_repository_by_name(&req.tenant_id, &req.namespace, &req.name)
-            .await
-            .map_err(|e| Status::internal(format!("Failed to look up repository: {e}")))?
-            .ok_or_else(|| {
-                Status::not_found(format!(
-                    "repository {}/{} not found",
-                    req.namespace, req.name
-                ))
-            })?;
-
-        if repo.namespace == req.new_namespace {
-            return Err(Status::invalid_argument(
-                "new_namespace is same as current namespace",
-            ));
-        }
-
-        self.git_storage
-            .transfer_repo(
+        let updated = self
+            .repo_service
+            .transfer(
                 &req.tenant_id,
                 &req.namespace,
                 &req.name,
                 &req.new_namespace,
             )
             .await
-            .map_err(|e| Status::internal(format!("Failed to transfer git repo: {e}")))?;
-
-        self.repo_store
-            .transfer_repository(&repo.id, &req.new_namespace)
-            .await
-            .map_err(|e| Status::internal(format!("Failed to update repository namespace: {e}")))?;
-
-        let mut updated = repo;
-        updated.namespace = req.new_namespace;
+            .map_err(domain_err_to_grpc)?;
 
         info!(
             operation = "transfer_repository",
@@ -326,14 +225,7 @@ impl GitServiceImpl {
         &self,
         request: Request<UpdateVisibilityRequest>,
     ) -> Result<Response<GitRepository>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
-
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
+        let (_caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
         let mut repo = self
             .repo_store

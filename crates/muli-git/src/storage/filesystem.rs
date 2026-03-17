@@ -5,6 +5,10 @@
 
 use std::path::PathBuf;
 
+use async_trait::async_trait;
+use muli_core::error::{MuliError, Result as CoreResult};
+use muli_core::traits::GitStorage;
+
 /// Manages bare git repositories on disk.
 ///
 /// Repository layout: `{root}/{tenant_id}/{namespace}/{repo_name}.git`
@@ -194,4 +198,57 @@ pub enum GitStorageError {
 
     #[error("git command failed: {0}")]
     GitCommand(String),
+}
+
+#[async_trait]
+impl GitStorage for FilesystemStorage {
+    async fn init_repo(&self, tenant_id: &str, namespace: &str, name: &str) -> CoreResult<PathBuf> {
+        self.init_repo(tenant_id, namespace, name)
+            .await
+            .map_err(|e| MuliError::Storage(e.to_string()))
+    }
+
+    async fn delete_repo(&self, tenant_id: &str, namespace: &str, name: &str) -> CoreResult<()> {
+        self.delete_repo(tenant_id, namespace, name)
+            .await
+            .map_err(|e| MuliError::Storage(e.to_string()))
+    }
+
+    async fn fork_repo(
+        &self,
+        src_tenant: &str,
+        src_namespace: &str,
+        src_name: &str,
+        dst_tenant: &str,
+        dst_namespace: &str,
+        dst_name: &str,
+    ) -> CoreResult<()> {
+        self.fork_repo(
+            src_tenant,
+            src_namespace,
+            src_name,
+            dst_tenant,
+            dst_namespace,
+            dst_name,
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| MuliError::Storage(e.to_string()))
+    }
+
+    async fn transfer_repo(
+        &self,
+        tenant_id: &str,
+        old_namespace: &str,
+        name: &str,
+        new_namespace: &str,
+    ) -> CoreResult<()> {
+        self.transfer_repo(tenant_id, old_namespace, name, new_namespace)
+            .await
+            .map_err(|e| MuliError::Storage(e.to_string()))
+    }
+
+    fn repo_path(&self, tenant_id: &str, namespace: &str, name: &str) -> PathBuf {
+        self.repo_path(tenant_id, namespace, name)
+    }
 }

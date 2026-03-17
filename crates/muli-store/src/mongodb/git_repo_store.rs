@@ -168,4 +168,11 @@ impl RepositoryStore for MongoRepositoryStore {
         }
         Ok(())
     }
+
+    async fn count_by_tenant(&self, tenant_id: &str) -> Result<u64> {
+        self.collection
+            .count_documents(doc! { "tenant_id": tenant_id })
+            .await
+            .map_err(|e| MuliError::Storage(format!("Failed to count repositories: {e}")))
+    }
 }

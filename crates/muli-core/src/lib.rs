@@ -4,6 +4,7 @@
 //! Core domain models, traits, and error types for the Muli distributed job execution system.
 
 pub mod agent;
+pub mod auth;
 pub mod config;
 pub mod error;
 pub mod git;
@@ -13,6 +14,7 @@ pub mod pipeline;
 pub mod pr;
 pub mod registry;
 pub mod resource;
+pub mod service;
 pub mod tenant;
 pub mod token;
 pub mod token_hash;

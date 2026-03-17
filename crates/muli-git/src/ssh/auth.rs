@@ -68,7 +68,10 @@ pub fn parse_lfs_authenticate_args(args: &str) -> Option<(String, String)> {
     let args = args.trim();
     // The last token is the operation, everything before is the repo path.
     let last_space = args.rfind(' ')?;
-    let repo_path = args[..last_space].trim().trim_matches('\'').trim_matches('"');
+    let repo_path = args[..last_space]
+        .trim()
+        .trim_matches('\'')
+        .trim_matches('"');
     let operation = args[last_space + 1..].trim();
     if operation != "upload" && operation != "download" {
         return None;
@@ -183,16 +186,14 @@ mod tests {
 
     #[test]
     fn test_parse_lfs_authenticate_args_upload() {
-        let (repo, op) =
-            parse_lfs_authenticate_args("'/acme/my-repo.git' upload").unwrap();
+        let (repo, op) = parse_lfs_authenticate_args("'/acme/my-repo.git' upload").unwrap();
         assert_eq!(repo, "/acme/my-repo.git");
         assert_eq!(op, "upload");
     }
 
     #[test]
     fn test_parse_lfs_authenticate_args_download() {
-        let (repo, op) =
-            parse_lfs_authenticate_args("/acme/my-repo.git download").unwrap();
+        let (repo, op) = parse_lfs_authenticate_args("/acme/my-repo.git download").unwrap();
         assert_eq!(repo, "/acme/my-repo.git");
         assert_eq!(op, "download");
     }

@@ -6,6 +6,7 @@
 pub mod cleanup;
 pub mod config;
 pub mod embedded_agent;
+pub mod enforcement;
 pub mod execution;
 pub mod grpc;
 pub mod metrics;
@@ -16,5 +17,6 @@ pub mod shutdown;
 mod start_grpc;
 pub mod startup;
 pub(crate) mod stores;
+pub mod watchdog;
 
 pub use startup::run;

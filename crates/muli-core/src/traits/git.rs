@@ -3,6 +3,8 @@
 
 //! Git repository, token, webhook, and SSH key storage traits.
 
+use std::path::PathBuf;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
@@ -40,6 +42,9 @@ pub trait RepositoryStore: Send + Sync {
 
     /// Transfer a repository to a new namespace (rename the owner).
     async fn transfer_repository(&self, repo_id: &str, new_namespace: &str) -> Result<()>;
+
+    /// Count all repositories for a tenant.
+    async fn count_by_tenant(&self, tenant_id: &str) -> Result<u64>;
 }
 
 /// Persistent storage for git access tokens.
@@ -163,4 +168,36 @@ pub trait TreeCommitCacheStore: Send + Sync {
 
     /// Wipe all cache rows for a repo (call after a successful push).
     async fn invalidate_repo(&self, tenant_id: &str, repo_id: &str) -> Result<()>;
+}
+
+/// Abstraction over git repository filesystem operations.
+///
+/// This trait allows the domain service layer to manage git repositories
+/// without depending on the concrete `FilesystemStorage` implementation.
+#[async_trait]
+pub trait GitStorage: Send + Sync {
+    /// Initialize a new bare repository.
+    async fn init_repo(&self, tenant_id: &str, namespace: &str, name: &str) -> Result<PathBuf>;
+    /// Delete a bare repository directory.
+    async fn delete_repo(&self, tenant_id: &str, namespace: &str, name: &str) -> Result<()>;
+    /// Fork (clone --bare) a repository.
+    async fn fork_repo(
+        &self,
+        src_tenant: &str,
+        src_namespace: &str,
+        src_name: &str,
+        dst_tenant: &str,
+        dst_namespace: &str,
+        dst_name: &str,
+    ) -> Result<()>;
+    /// Transfer (rename) a repository from one namespace to another.
+    async fn transfer_repo(
+        &self,
+        tenant_id: &str,
+        old_namespace: &str,
+        name: &str,
+        new_namespace: &str,
+    ) -> Result<()>;
+    /// Compute the path to a bare repository.
+    fn repo_path(&self, tenant_id: &str, namespace: &str, name: &str) -> PathBuf;
 }

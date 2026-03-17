@@ -17,7 +17,7 @@ use tracing::{debug, warn};
 
 use muli_core::traits::TenantQuotaStore;
 
-use crate::common::{check_quota, error_json, update_quota_usage};
+use crate::common::{adjust_quota_usage, error_json, reserve_quota};
 use crate::metrics::RegistryMetrics;
 use crate::storage::FilesystemStorage;
 use crate::tenant::TenantContext;
@@ -82,8 +82,8 @@ pub async fn put_artifact(
         Err(e) => return error_json(StatusCode::BAD_REQUEST, &e.to_string()),
     };
 
-    // Check quota before writing.
-    if let Err(resp) = check_quota(&quota_store, tenant_id, body.len() as u64).await {
+    // Atomic quota reservation before writing.
+    if let Err(resp) = reserve_quota(&quota_store, tenant_id, body.len() as u64).await {
         return resp;
     }
 
@@ -150,6 +150,7 @@ pub async fn put_artifact(
 
             // Write the checksum file.
             if let Err(e) = maven_storage::atomic_write(&file_path, &body).await {
+                adjust_quota_usage(&quota_store, tenant_id, -(body.len() as i64));
                 warn!(error = %e, "failed to write checksum file");
                 return error_json(
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -161,6 +162,7 @@ pub async fn put_artifact(
         MavenPathKind::ArtifactLevelMetadata | MavenPathKind::VersionLevelMetadata => {
             // Client is uploading maven-metadata.xml — accept as-is (trust client merge logic).
             if let Err(e) = maven_storage::atomic_write(&file_path, &body).await {
+                adjust_quota_usage(&quota_store, tenant_id, -(body.len() as i64));
                 warn!(error = %e, "failed to write metadata");
                 return error_json(
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -184,6 +186,7 @@ pub async fn put_artifact(
 
             // Write the artifact atomically.
             if let Err(e) = maven_storage::atomic_write(&file_path, &body).await {
+                adjust_quota_usage(&quota_store, tenant_id, -(body.len() as i64));
                 warn!(error = %e, "failed to write artifact");
                 return error_json(
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -229,8 +232,7 @@ pub async fn put_artifact(
         }
     }
 
-    // Update quota after successful write.
-    update_quota_usage(&quota_store, &storage, tenant_id).await;
+    // Quota already reserved via reserve_quota above.
 
     (StatusCode::CREATED, "").into_response()
 }

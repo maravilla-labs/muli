@@ -13,6 +13,7 @@ use muli_core::job::state_machine::JobState;
 use muli_core::traits::{JobLogStore, JobStore};
 use muli_engine::docker::logs::LogCollector;
 use muli_engine::executor::DockerExecutor;
+use muli_queue::{RetryPolicy, Scheduler};
 
 /// Execute a single job: update states, run container, collect logs, record result.
 pub async fn execute_job(
@@ -21,6 +22,8 @@ pub async fn execute_job(
     executor: Arc<DockerExecutor>,
     log_collectors: Arc<DashMap<String, Arc<LogCollector>>>,
     log_store: Arc<dyn JobLogStore>,
+    scheduler: Arc<Scheduler>,
+    retry_policy: Arc<RetryPolicy>,
 ) {
     // Get the job from store
     let job = match store.get_job(&job_id).await {
@@ -110,6 +113,59 @@ pub async fn execute_job(
             info!(job_id = %job_id, state = ?final_state, "Job execution completed");
         }
         Err(e) => {
+            // Check if we should retry before going to terminal state
+            if let Some(delay) = retry_policy.should_retry(&e, job.retry_count) {
+                info!(
+                    job_id = %job_id,
+                    attempt = job.retry_count + 1,
+                    delay_secs = delay.as_secs(),
+                    error = %e,
+                    "Retrying job after transient failure"
+                );
+
+                // Reset to Pending and increment retry count
+                match store
+                    .update_state(&job_id, JobState::Running, JobState::Pending)
+                    .await
+                {
+                    Ok(()) => {
+                        let mut updated_job = job.clone();
+                        updated_job.state = JobState::Pending;
+                        updated_job.retry_count += 1;
+                        updated_job.updated_at = chrono::Utc::now();
+                        if let Err(ue) = store.update_job(&updated_job).await {
+                            error!(job_id = %job_id, error = %ue, "Failed to update retry count");
+                        }
+
+                        // Schedule delayed re-enqueue
+                        let scheduler = scheduler.clone();
+                        let jid = job_id.clone();
+                        let tier = job.spec.priority_tier;
+                        let tid = job.spec.tenant_id.clone();
+                        tokio::spawn(async move {
+                            tokio::time::sleep(delay).await;
+                            scheduler.enqueue(jid, tier, tid);
+                        });
+                    }
+                    Err(cas_err) => {
+                        warn!(
+                            job_id = %job_id,
+                            error = %cas_err,
+                            "Failed to reset job for retry (job may have been cancelled)"
+                        );
+                    }
+                }
+
+                record_completion_metrics(
+                    &job.spec.tenant_id,
+                    &job.spec.priority_tier,
+                    JobState::Failed,
+                    started_at,
+                );
+                log_collectors.remove(&job_id);
+                return;
+            }
+
             let final_state = if e.is_retryable() {
                 JobState::Failed
             } else {

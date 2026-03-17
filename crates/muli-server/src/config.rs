@@ -83,6 +83,18 @@ pub struct ServerConfig {
     pub pipeline_max_matrix_size: usize,
     /// AES-256-GCM encryption key for pipeline secrets (base64).
     pub pipeline_secret_encryption_key: Option<String>,
+    /// Maximum number of retry attempts for failed jobs (default: 2).
+    pub retry_max_retries: u32,
+    /// Base delay in seconds for exponential backoff retry (default: 5).
+    pub retry_base_delay_secs: u64,
+    /// Maximum delay in seconds for exponential backoff retry (default: 300).
+    pub retry_max_delay_secs: u64,
+    /// Interval in seconds between stale job watchdog checks (default: 60).
+    pub watchdog_interval_secs: u64,
+    /// Grace period in seconds before a stale job is failed by the watchdog (default: 300).
+    pub watchdog_grace_period_secs: u64,
+    /// Retention period for pipeline runs in days (default: 90).
+    pub pipeline_run_retention_days: u64,
 }
 
 impl std::fmt::Debug for ServerConfig {
@@ -148,7 +160,22 @@ impl std::fmt::Debug for ServerConfig {
             .field("pipeline_max_matrix_size", &self.pipeline_max_matrix_size)
             .field(
                 "pipeline_secret_encryption_key",
-                &self.pipeline_secret_encryption_key.as_ref().map(|_| "[REDACTED]"),
+                &self
+                    .pipeline_secret_encryption_key
+                    .as_ref()
+                    .map(|_| "[REDACTED]"),
+            )
+            .field("retry_max_retries", &self.retry_max_retries)
+            .field("retry_base_delay_secs", &self.retry_base_delay_secs)
+            .field("retry_max_delay_secs", &self.retry_max_delay_secs)
+            .field("watchdog_interval_secs", &self.watchdog_interval_secs)
+            .field(
+                "watchdog_grace_period_secs",
+                &self.watchdog_grace_period_secs,
+            )
+            .field(
+                "pipeline_run_retention_days",
+                &self.pipeline_run_retention_days,
             )
             .finish()
     }
@@ -203,6 +230,12 @@ impl Default for ServerConfig {
             pipeline_cache_max_gb: 5.0,
             pipeline_max_matrix_size: 25,
             pipeline_secret_encryption_key: None,
+            retry_max_retries: 2,
+            retry_base_delay_secs: 5,
+            retry_max_delay_secs: 300,
+            watchdog_interval_secs: 60,
+            watchdog_grace_period_secs: 300,
+            pipeline_run_retention_days: 90,
         }
     }
 }

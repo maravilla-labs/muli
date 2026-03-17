@@ -13,9 +13,9 @@ pub fn resolve_hash_templates(template: &str, repo_path: &Path) -> Result<String
     let mut result = template.to_string();
     while let Some(start) = result.find("{{ hash('") {
         let after = &result[start + 9..];
-        let end = after.find("') }}").ok_or_else(|| {
-            MuliError::PipelineYamlError("unclosed hash template".into())
-        })?;
+        let end = after
+            .find("') }}")
+            .ok_or_else(|| MuliError::PipelineYamlError("unclosed hash template".into()))?;
         let filename = &after[..end];
         let file_path = repo_path.join(filename);
         let hash = hash_file(&file_path)?;
@@ -55,8 +55,7 @@ mod tests {
         let mut f = std::fs::File::create(&file_path).unwrap();
         f.write_all(b"hello").unwrap();
 
-        let result =
-            resolve_hash_templates("cache-{{ hash('test.lock') }}", dir.path()).unwrap();
+        let result = resolve_hash_templates("cache-{{ hash('test.lock') }}", dir.path()).unwrap();
         assert!(result.starts_with("cache-"));
         assert_eq!(result.len(), "cache-".len() + 64);
     }

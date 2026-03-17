@@ -3,6 +3,8 @@
 
 //! Multi-tenant isolation: tenant configuration and quotas.
 
+pub mod limits;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 

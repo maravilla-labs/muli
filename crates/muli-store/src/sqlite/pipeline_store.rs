@@ -63,8 +63,7 @@ impl PipelineStore for SqlitePipelineStore {
         let conn = self.factory.tenant_conn(tenant_id).await?;
         let rid = repo_id.to_string();
         conn.call(move |c| {
-            let mut stmt =
-                c.prepare("SELECT full_json FROM pipelines WHERE repo_id = ?1")?;
+            let mut stmt = c.prepare("SELECT full_json FROM pipelines WHERE repo_id = ?1")?;
             let mut rows = stmt.query(rusqlite::params![rid])?;
             let mut result = Vec::new();
             while let Some(row) = rows.next()? {
@@ -81,7 +80,10 @@ impl PipelineStore for SqlitePipelineStore {
         let conn = self.factory.tenant_conn(tenant_id).await?;
         let pid = pipeline_id.to_string();
         conn.call(move |c| {
-            c.execute("DELETE FROM pipelines WHERE id = ?1", rusqlite::params![pid])?;
+            c.execute(
+                "DELETE FROM pipelines WHERE id = ?1",
+                rusqlite::params![pid],
+            )?;
             Ok(())
         })
         .await

@@ -62,7 +62,7 @@ export function registerJobCommands(program: Command): void {
             ],
             resources: Object.keys(resources).length > 0 ? resources : undefined,
             timeout_seconds: parseInt(opts.timeout, 10),
-            priority_tier: 'PRIORITY_TIER_STANDARD',
+            priority_tier: 'PRIORITY_TIER_UNSPECIFIED',
           },
           clients.meta,
         );

@@ -17,7 +17,7 @@ use muli_proto::{
 use super::GitServiceImpl;
 use crate::grpc::conversions::{core_git_permission_to_proto, proto_git_permission_to_core};
 use crate::grpc::util::{
-    datetime_to_proto, extract_tenant_id, generate_token, hash_token, token_prefix,
+    datetime_to_proto, extract_tenant_id, generate_token, hash_token, token_prefix, validate_tenant,
 };
 
 impl GitServiceImpl {
@@ -25,14 +25,8 @@ impl GitServiceImpl {
         &self,
         request: Request<CreateGitTokenRequest>,
     ) -> Result<Response<CreateGitTokenResponse>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
+        let (_caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
         if req.tenant_id.is_empty() {
             return Err(Status::invalid_argument("tenant_id is required"));
         }
@@ -90,14 +84,7 @@ impl GitServiceImpl {
         &self,
         request: Request<ListGitTokensRequest>,
     ) -> Result<Response<ListGitTokensResponse>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
-
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
+        let (_caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
         let tokens = self
             .token_store
@@ -172,14 +159,8 @@ impl GitServiceImpl {
         &self,
         request: Request<ListGitTokensByUserRequest>,
     ) -> Result<Response<ListGitTokensResponse>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
+        let (_caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
         if req.user_id.is_empty() {
             return Err(Status::invalid_argument("user_id is required"));
         }
@@ -217,14 +198,8 @@ impl GitServiceImpl {
         &self,
         request: Request<CreateImpersonationTokenRequest>,
     ) -> Result<Response<CreateGitTokenResponse>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
+        let (_caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
         if req.user_id.is_empty() {
             return Err(Status::invalid_argument("user_id is required"));
         }

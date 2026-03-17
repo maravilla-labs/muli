@@ -51,8 +51,7 @@ impl ArtifactStore for SqliteArtifactStore {
         let conn = self.factory.tenant_conn(tenant_id).await?;
         let aid = artifact_id.to_string();
         conn.call(move |c| {
-            let mut stmt =
-                c.prepare("SELECT full_json FROM pipeline_artifacts WHERE id = ?1")?;
+            let mut stmt = c.prepare("SELECT full_json FROM pipeline_artifacts WHERE id = ?1")?;
             let mut rows = stmt.query(rusqlite::params![aid])?;
             if let Some(row) = rows.next()? {
                 let json: String = row.get(0)?;

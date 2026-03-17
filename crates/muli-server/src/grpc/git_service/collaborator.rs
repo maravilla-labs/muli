@@ -14,21 +14,14 @@ use muli_proto::{
 
 use super::GitServiceImpl;
 use crate::grpc::conversions::{core_git_permission_to_proto, proto_git_permission_to_core};
-use crate::grpc::util::{datetime_to_proto, extract_tenant_id};
+use crate::grpc::util::{datetime_to_proto, validate_tenant};
 
 impl GitServiceImpl {
     pub async fn add_repository_collaborator_impl(
         &self,
         request: Request<AddCollaboratorRequest>,
     ) -> Result<Response<CollaboratorResponse>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
-
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
+        let (_caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
         let repo = self
             .repo_store
@@ -85,14 +78,7 @@ impl GitServiceImpl {
         &self,
         request: Request<RemoveCollaboratorRequest>,
     ) -> Result<Response<CollaboratorResponse>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
-
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
+        let (_caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
         let repo = self
             .repo_store
@@ -126,14 +112,7 @@ impl GitServiceImpl {
         &self,
         request: Request<ListCollaboratorsRequest>,
     ) -> Result<Response<ListCollaboratorsResponse>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
-
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
+        let (_caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
         let repo = self
             .repo_store

@@ -5,8 +5,8 @@ pub mod artifacts;
 pub mod runs;
 pub mod secrets;
 
-use axum::routing::{delete, get, post};
 use axum::Router;
+use axum::routing::{delete, get, post};
 
 /// Build the pipeline REST API router.
 /// Routes are mounted under /api/v1/repos/{namespace}/{repo}/pipelines/

@@ -3,12 +3,195 @@
 
 //! Server-side git hook execution and webhook delivery.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use muli_core::git::{WebhookEvent, validate_webhook_target};
-use muli_core::traits::WebhookStore;
+use muli_core::traits::{TenantQuotaStore, TreeCommitCacheStore, WebhookStore};
 
 use crate::api::webhooks::sign_payload;
+
+/// Hook for triggering pipeline runs from git events (push, PR).
+#[async_trait::async_trait]
+pub trait PipelineTriggerHook: Send + Sync {
+    async fn on_push(&self, tenant_id: &str, repo_id: &str, commit_sha: &str, ref_name: &str);
+    async fn on_pr_event(&self, tenant_id: &str, repo_id: &str, pr_number: u64, event: &str);
+}
+
+/// A single ref update from a push operation.
+#[derive(Clone, Debug)]
+pub struct RefUpdate {
+    pub old_sha: String,
+    pub new_sha: String,
+    pub ref_name: String,
+}
+
+/// Shared infrastructure for firing post-push hooks (pipeline triggers,
+/// webhooks, cache invalidation, quota tracking). Cloneable — shared across transports.
+#[derive(Clone)]
+pub struct PostPushHooks {
+    pub pipeline_trigger: Option<Arc<dyn PipelineTriggerHook>>,
+    pub webhook_store: Arc<dyn WebhookStore>,
+    pub http_client: Arc<reqwest::Client>,
+    pub webhook_semaphore: Arc<tokio::sync::Semaphore>,
+    pub allow_localhost_webhooks: bool,
+    pub cache_store: Option<Arc<dyn TreeCommitCacheStore>>,
+    pub quota_store: Option<Arc<dyn TenantQuotaStore>>,
+}
+
+impl PostPushHooks {
+    /// Fire all post-push hooks in background tasks. Non-blocking.
+    pub fn fire(
+        &self,
+        tenant_id: String,
+        repo_id: String,
+        repo_name: String,
+        ref_updates: Vec<RefUpdate>,
+        repo_size_before: Option<u64>,
+        repo_path: PathBuf,
+    ) {
+        let zero_sha = "0".repeat(40);
+
+        // 1. Pipeline triggers (spawn per non-deletion ref)
+        if let Some(trigger) = self.pipeline_trigger.as_ref() {
+            for update in &ref_updates {
+                if update.new_sha != zero_sha {
+                    let trigger = trigger.clone();
+                    let tid = tenant_id.clone();
+                    let rid = repo_id.clone();
+                    let sha = update.new_sha.clone();
+                    let rn = update.ref_name.clone();
+                    tokio::spawn(async move {
+                        trigger.on_push(&tid, &rid, &sha, &rn).await;
+                    });
+                }
+            }
+        }
+
+        // 2. Webhook delivery (single spawned task, semaphore-gated)
+        let webhook_store = self.webhook_store.clone();
+        let http_client = self.http_client.clone();
+        let semaphore = self.webhook_semaphore.clone();
+        let allow_localhost = self.allow_localhost_webhooks;
+        let tid = tenant_id.clone();
+        let rid = repo_id.clone();
+        let rname = repo_name;
+        tokio::spawn(async move {
+            let _permit = semaphore.acquire().await;
+            if ref_updates.is_empty() {
+                deliver_webhooks(
+                    webhook_store,
+                    http_client,
+                    &tid,
+                    &rid,
+                    &HookDelivery {
+                        repo_id: rid.clone(),
+                        event: WebhookEvent::Push,
+                        payload: serde_json::json!({
+                            "repository": rname,
+                        }),
+                    },
+                    allow_localhost,
+                )
+                .await;
+            } else {
+                for update in &ref_updates {
+                    if update.new_sha == zero_sha {
+                        continue;
+                    }
+                    deliver_webhooks(
+                        webhook_store.clone(),
+                        http_client.clone(),
+                        &tid,
+                        &rid,
+                        &HookDelivery {
+                            repo_id: rid.clone(),
+                            event: WebhookEvent::Push,
+                            payload: serde_json::json!({
+                                "repository": rname,
+                                "ref": update.ref_name,
+                                "before": update.old_sha,
+                                "after": update.new_sha,
+                            }),
+                        },
+                        allow_localhost,
+                    )
+                    .await;
+                }
+            }
+        });
+
+        // 3. Cache invalidation (spawn if cache_store is Some)
+        if let Some(cache) = self.cache_store.clone() {
+            let tid = tenant_id.clone();
+            let rid = repo_id.clone();
+            tokio::spawn(async move {
+                let _ = cache.invalidate_repo(&tid, &rid).await;
+            });
+        }
+
+        // 4. Quota tracking — compute repo size delta and adjust usage
+        if let (Some(store), Some(size_before)) = (self.quota_store.clone(), repo_size_before) {
+            let tid = tenant_id;
+            tokio::spawn(async move {
+                let size_after = compute_dir_size(&repo_path).await.unwrap_or(size_before);
+                let delta = size_after as i64 - size_before as i64;
+                if delta != 0 {
+                    if let Err(e) = store.adjust_usage(&tid, delta).await {
+                        // Retry once after a short delay
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        if let Err(e2) = store.adjust_usage(&tid, delta).await {
+                            tracing::warn!(
+                                tenant_id = %tid, delta,
+                                error = %e, retry_error = %e2,
+                                "failed to adjust git quota usage after push (retried)"
+                            );
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    /// Fire a single webhook event (for PR events etc). Non-blocking.
+    pub fn fire_webhook(
+        &self,
+        tenant_id: String,
+        repo_id: String,
+        event: WebhookEvent,
+        payload: serde_json::Value,
+    ) {
+        let webhook_store = self.webhook_store.clone();
+        let http_client = self.http_client.clone();
+        let semaphore = self.webhook_semaphore.clone();
+        let allow_localhost = self.allow_localhost_webhooks;
+        tokio::spawn(async move {
+            let _permit = semaphore.acquire().await;
+            deliver_webhooks(
+                webhook_store,
+                http_client,
+                &tenant_id,
+                &repo_id,
+                &HookDelivery {
+                    repo_id: repo_id.clone(),
+                    event,
+                    payload,
+                },
+                allow_localhost,
+            )
+            .await;
+        });
+    }
+}
+
+/// Build a shared HTTP client configured for webhook delivery.
+pub fn webhook_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("failed to build webhook HTTP client")
+}
 
 /// A webhook delivery payload for a repository event.
 pub struct HookDelivery {
@@ -95,6 +278,24 @@ pub async fn deliver_webhooks(
             }
         }
     }
+}
+
+/// Recursively sum file sizes in a directory.
+pub async fn compute_dir_size(dir: &Path) -> std::io::Result<u64> {
+    let mut total = 0u64;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let mut entries = tokio::fs::read_dir(&current).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let ft = entry.file_type().await?;
+            if ft.is_file() {
+                total += entry.metadata().await?.len();
+            } else if ft.is_dir() {
+                stack.push(entry.path());
+            }
+        }
+    }
+    Ok(total)
 }
 
 fn event_name(event: &WebhookEvent) -> &'static str {

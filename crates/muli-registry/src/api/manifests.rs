@@ -20,7 +20,7 @@ use crate::storage::{FilesystemStorage, RegistryStorage};
 use crate::tenant::TenantContext;
 
 use super::{oci_error, validate_name, validate_ref};
-use crate::common::{check_quota, update_quota_usage};
+use crate::common::{adjust_quota_usage, reserve_quota};
 
 /// HEAD /v2/{name}/manifests/{reference}
 pub async fn head_manifest(
@@ -133,8 +133,9 @@ pub async fn put_manifest(
     }
     let start = std::time::Instant::now();
 
-    // Check quota before storing manifest
-    if let Err(e) = check_quota(&quota_store, &tenant.tenant_id, body.len() as u64).await {
+    // Atomic quota reservation: accounts for both by-ref and by-digest copies.
+    let reserved_bytes = 2 * body.len() as u64;
+    if let Err(e) = reserve_quota(&quota_store, &tenant.tenant_id, reserved_bytes).await {
         return e;
     }
 
@@ -152,9 +153,6 @@ pub async fn put_manifest(
 
             metrics.record_push(&tenant.tenant_id);
 
-            // Update tenant quota usage after successful manifest store
-            update_quota_usage(&quota_store, &storage, &tenant.tenant_id).await;
-
             let location = format!("/v2/{name}/manifests/{reference}");
             (
                 StatusCode::CREATED,
@@ -166,11 +164,15 @@ pub async fn put_manifest(
             )
                 .into_response()
         }
-        Err(_) => oci_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "MANIFEST_INVALID",
-            "failed to store manifest",
-        ),
+        Err(_) => {
+            // Release the reservation on failure
+            adjust_quota_usage(&quota_store, &tenant.tenant_id, -(reserved_bytes as i64));
+            oci_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "MANIFEST_INVALID",
+                "failed to store manifest",
+            )
+        }
     };
     metrics.observe_request_duration("PUT", "manifests", start.elapsed());
     response
@@ -191,13 +193,20 @@ pub async fn delete_manifest(
         return e;
     }
     let start = std::time::Instant::now();
+    // Stat manifest size before delete so we can decrement quota
+    let freed_bytes = storage
+        .get_manifest(&tenant.tenant_id, &name, &reference)
+        .await
+        .map(|data| data.len() as i64)
+        .unwrap_or(0);
     let response = match storage
         .delete_manifest(&tenant.tenant_id, &name, &reference)
         .await
     {
         Ok(()) => {
-            // Update tenant quota usage after manifest deletion
-            update_quota_usage(&quota_store, &storage, &tenant.tenant_id).await;
+            if freed_bytes > 0 {
+                adjust_quota_usage(&quota_store, &tenant.tenant_id, -freed_bytes);
+            }
             StatusCode::ACCEPTED.into_response()
         }
         Err(_) => oci_error(

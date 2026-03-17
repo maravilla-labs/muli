@@ -79,11 +79,7 @@ pub async fn create_container(
             script.push_str(c);
             script.push('\n');
         }
-        Some(vec![
-            "/bin/sh".to_string(),
-            "-c".to_string(),
-            script,
-        ])
+        Some(vec!["/bin/sh".to_string(), "-c".to_string(), script])
     };
 
     let config = Config {

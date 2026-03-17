@@ -92,12 +92,7 @@ impl ArtifactStorage {
 }
 
 fn validate_component(s: &str) -> Result<()> {
-    if s.is_empty()
-        || s.contains("..")
-        || s.contains('/')
-        || s.contains('\\')
-        || s.contains('\0')
-    {
+    if s.is_empty() || s.contains("..") || s.contains('/') || s.contains('\\') || s.contains('\0') {
         return Err(MuliError::Validation(format!(
             "invalid path component: '{s}'"
         )));
@@ -127,11 +122,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let storage = ArtifactStorage::new(dir.path());
         // tenant_id with ".."
-        assert!(storage.upload("../evil", "run-1", "binary", b"x").await.is_err());
+        assert!(
+            storage
+                .upload("../evil", "run-1", "binary", b"x")
+                .await
+                .is_err()
+        );
         // run_id with "/"
-        assert!(storage.upload("t1", "run/evil", "binary", b"x").await.is_err());
+        assert!(
+            storage
+                .upload("t1", "run/evil", "binary", b"x")
+                .await
+                .is_err()
+        );
         // artifact_name with ".."
-        assert!(storage.upload("t1", "run-1", "../passwd", b"x").await.is_err());
+        assert!(
+            storage
+                .upload("t1", "run-1", "../passwd", b"x")
+                .await
+                .is_err()
+        );
         // empty component
         assert!(storage.upload("", "run-1", "binary", b"x").await.is_err());
         // backslash
@@ -142,8 +152,14 @@ mod tests {
     async fn test_delete_run() {
         let dir = tempfile::tempdir().unwrap();
         let storage = ArtifactStorage::new(dir.path());
-        storage.upload("t1", "run-1", "binary", b"data").await.unwrap();
-        storage.upload("t1", "run-1", "report", b"data2").await.unwrap();
+        storage
+            .upload("t1", "run-1", "binary", b"data")
+            .await
+            .unwrap();
+        storage
+            .upload("t1", "run-1", "report", b"data2")
+            .await
+            .unwrap();
         storage.delete_run("t1", "run-1").await.unwrap();
         assert!(storage.download("t1", "run-1", "binary").await.is_err());
         assert!(storage.download("t1", "run-1", "report").await.is_err());

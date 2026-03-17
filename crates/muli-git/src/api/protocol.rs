@@ -15,6 +15,7 @@ use serde::Deserialize;
 
 use crate::api::GitState;
 use crate::api::helpers::{resolve_repo, strip_git_suffix};
+use crate::hooks::RefUpdate;
 use crate::tenant::TenantContext;
 
 /// Maximum allowed body size for git protocol requests (100 MB).
@@ -26,8 +27,7 @@ pub struct InfoRefsQuery {
 }
 
 /// Parse the pkt-line ref-update section at the start of a git receive-pack body.
-/// Returns `Vec<(old_sha, new_sha, ref_name)>` for each updated ref.
-fn parse_ref_updates(body: &[u8]) -> Vec<(String, String, String)> {
+fn parse_ref_updates(body: &[u8]) -> Vec<RefUpdate> {
     let mut updates = Vec::new();
     let mut pos = 0;
     while pos + 4 <= body.len() {
@@ -55,7 +55,11 @@ fn parse_ref_updates(body: &[u8]) -> Vec<(String, String, String)> {
                 .unwrap_or(line.len() - 82);
             let ref_name = String::from_utf8_lossy(&line[82..82 + ref_end]).into_owned();
             if !ref_name.is_empty() {
-                updates.push((old_sha, new_sha, ref_name));
+                updates.push(RefUpdate {
+                    old_sha,
+                    new_sha,
+                    ref_name,
+                });
             }
         }
         pos += pkt_len;
@@ -147,92 +151,42 @@ pub async fn receive_pack(
         }
     };
 
+    // Pre-push quota gate: reject if tenant is already over quota.
+    if let Some(ref store) = state.post_push_hooks.quota_store {
+        if let Ok(Some(quota)) = store.get_quota(&tenant.tenant_id).await {
+            if quota.max_storage_bytes > 0 && quota.current_usage_bytes >= quota.max_storage_bytes {
+                return (
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "tenant storage quota exceeded",
+                )
+                    .into_response();
+            }
+        }
+    }
+
     let ref_updates = parse_ref_updates(&body);
 
-    let response =
-        crate::protocol::receive_pack::post_receive_pack(path, &headers, body, &tenant.tenant_id)
-            .await;
+    // Snapshot repo size before push for quota delta calculation.
+    let repo_size_before = crate::hooks::compute_dir_size(&path).await.ok();
 
-    // After a successful push, fire webhooks (with backpressure) and invalidate cache.
+    let response = crate::protocol::receive_pack::post_receive_pack(
+        path.clone(),
+        &headers,
+        body,
+        &tenant.tenant_id,
+    )
+    .await;
+
+    // After a successful push, fire post-push hooks (pipelines, webhooks, cache, quota).
     if response.status().is_success() {
-        let zero_sha = "0".repeat(40);
-
-        // Trigger pipeline runs for each ref update (before webhook spawn consumes ref_updates)
-        if let Some(trigger) = state.pipeline_trigger.as_ref() {
-            for (_old_sha, new_sha, ref_name) in &ref_updates {
-                if *new_sha != zero_sha {
-                    let trigger = trigger.clone();
-                    let tid = tenant.tenant_id.clone();
-                    let rid = repo.id.clone();
-                    let sha = new_sha.clone();
-                    let rn = ref_name.clone();
-                    tokio::spawn(async move {
-                        trigger.on_push(&tid, &rid, &sha, &rn).await;
-                    });
-                }
-            }
-        }
-
-        let webhook_store = state.webhook_store.clone();
-        let http_client = state.http_client.clone();
-        let semaphore = state.webhook_semaphore.clone();
-        let allow_localhost = state.allow_localhost_webhooks;
-        let tenant_id = tenant.tenant_id.clone();
-        let repo_id = repo.id.clone();
-        let repo_name_clone = repo_name.clone();
-        tokio::spawn(async move {
-            let _permit = semaphore.acquire().await;
-            if ref_updates.is_empty() {
-                crate::hooks::deliver_webhooks(
-                    webhook_store,
-                    http_client,
-                    &tenant_id,
-                    &repo_id,
-                    &crate::hooks::HookDelivery {
-                        repo_id: repo_id.clone(),
-                        event: muli_core::git::WebhookEvent::Push,
-                        payload: serde_json::json!({
-                            "repository": repo_name_clone,
-                        }),
-                    },
-                    allow_localhost,
-                )
-                .await;
-            } else {
-                for (old_sha, new_sha, ref_name) in &ref_updates {
-                    if new_sha == &zero_sha {
-                        continue;
-                    }
-                    crate::hooks::deliver_webhooks(
-                        webhook_store.clone(),
-                        http_client.clone(),
-                        &tenant_id,
-                        &repo_id,
-                        &crate::hooks::HookDelivery {
-                            repo_id: repo_id.clone(),
-                            event: muli_core::git::WebhookEvent::Push,
-                            payload: serde_json::json!({
-                                "repository": repo_name_clone,
-                                "ref": ref_name,
-                                "before": old_sha,
-                                "after": new_sha,
-                            }),
-                        },
-                        allow_localhost,
-                    )
-                    .await;
-                }
-            }
-        });
-
-        // Invalidate tree-commits cache
-        if let Some(cache) = state.cache_store.clone() {
-            let tid = tenant.tenant_id.clone();
-            let rid = repo.id.clone();
-            tokio::spawn(async move {
-                let _ = cache.invalidate_repo(&tid, &rid).await;
-            });
-        }
+        state.post_push_hooks.fire(
+            tenant.tenant_id.clone(),
+            repo.id.clone(),
+            repo_name.clone(),
+            ref_updates,
+            repo_size_before,
+            path,
+        );
     }
 
     response.into_response()

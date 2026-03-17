@@ -51,6 +51,10 @@ pub trait PipelineRunStore: Send + Sync {
     async fn update_run(&self, run: &PipelineRun) -> Result<()>;
     /// Get the next run number for a pipeline.
     async fn next_run_number(&self, tenant_id: &str, pipeline_id: &str) -> Result<u64>;
+    /// Delete terminal runs older than the given timestamp. Returns number deleted.
+    async fn delete_old_runs(&self, before: chrono::DateTime<chrono::Utc>) -> Result<u64>;
+    /// Count active (non-terminal) pipeline runs for a tenant.
+    async fn count_active(&self, tenant_id: &str) -> Result<u64>;
 }
 
 /// Storage for step run records.
@@ -71,6 +75,8 @@ pub trait StepRunStore: Send + Sync {
         step_id: &str,
         state: StepRunState,
     ) -> Result<()>;
+    /// Delete all step runs for a given pipeline run. Returns number deleted.
+    async fn delete_by_run(&self, tenant_id: &str, run_id: &str) -> Result<u64>;
 }
 
 /// Storage for build artifacts.
@@ -90,9 +96,19 @@ pub trait ArtifactStore: Send + Sync {
 #[async_trait]
 pub trait CacheStore: Send + Sync {
     /// Get a cache entry by exact key.
-    async fn get_cache(&self, tenant_id: &str, repo_id: &str, cache_key: &str) -> Result<Option<CacheEntry>>;
+    async fn get_cache(
+        &self,
+        tenant_id: &str,
+        repo_id: &str,
+        cache_key: &str,
+    ) -> Result<Option<CacheEntry>>;
     /// Find cache entries matching a key prefix (for restore_keys fallback).
-    async fn find_by_prefix(&self, tenant_id: &str, repo_id: &str, prefix: &str) -> Result<Vec<CacheEntry>>;
+    async fn find_by_prefix(
+        &self,
+        tenant_id: &str,
+        repo_id: &str,
+        prefix: &str,
+    ) -> Result<Vec<CacheEntry>>;
     /// Create or update a cache entry.
     async fn upsert_cache(&self, entry: &CacheEntry) -> Result<()>;
     /// Delete a specific cache entry.
@@ -109,7 +125,12 @@ pub trait PipelineSecretStore: Send + Sync {
     /// Set (create or update) a secret.
     async fn set_secret(&self, secret: &PipelineSecret) -> Result<()>;
     /// Get a secret by name.
-    async fn get_secret(&self, tenant_id: &str, repo_id: &str, name: &str) -> Result<Option<PipelineSecret>>;
+    async fn get_secret(
+        &self,
+        tenant_id: &str,
+        repo_id: &str,
+        name: &str,
+    ) -> Result<Option<PipelineSecret>>;
     /// List secret names for a repository (values are never returned in listings).
     async fn list_names(&self, tenant_id: &str, repo_id: &str) -> Result<Vec<String>>;
     /// Delete a secret.

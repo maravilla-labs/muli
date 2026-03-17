@@ -26,7 +26,12 @@ impl SqliteCacheStore {
 
 #[async_trait]
 impl CacheStore for SqliteCacheStore {
-    async fn get_cache(&self, tenant_id: &str, repo_id: &str, cache_key: &str) -> Result<Option<CacheEntry>> {
+    async fn get_cache(
+        &self,
+        tenant_id: &str,
+        repo_id: &str,
+        cache_key: &str,
+    ) -> Result<Option<CacheEntry>> {
         let conn = self.factory.tenant_conn(tenant_id).await?;
         let rid = repo_id.to_string();
         let ck = cache_key.to_string();
@@ -46,7 +51,12 @@ impl CacheStore for SqliteCacheStore {
         .map_err(store_err)
     }
 
-    async fn find_by_prefix(&self, tenant_id: &str, repo_id: &str, prefix: &str) -> Result<Vec<CacheEntry>> {
+    async fn find_by_prefix(
+        &self,
+        tenant_id: &str,
+        repo_id: &str,
+        prefix: &str,
+    ) -> Result<Vec<CacheEntry>> {
         let conn = self.factory.tenant_conn(tenant_id).await?;
         let rid = repo_id.to_string();
         let pattern = format!("{prefix}%");
@@ -145,8 +155,7 @@ impl CacheStore for SqliteCacheStore {
         let conn = self.factory.tenant_conn(tenant_id).await?;
         let rid = repo_id.to_string();
         conn.call(move |c| {
-            let mut stmt =
-                c.prepare("SELECT full_json FROM pipeline_cache WHERE repo_id = ?1")?;
+            let mut stmt = c.prepare("SELECT full_json FROM pipeline_cache WHERE repo_id = ?1")?;
             let mut rows = stmt.query(rusqlite::params![rid])?;
             let mut result = Vec::new();
             while let Some(row) = rows.next()? {
@@ -184,7 +193,11 @@ mod tests {
             "sha256abc".into(),
         );
         store.upsert_cache(&entry).await.unwrap();
-        let fetched = store.get_cache("t1", "repo-1", "cargo-lock").await.unwrap().unwrap();
+        let fetched = store
+            .get_cache("t1", "repo-1", "cargo-lock")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(fetched.cache_key, "cargo-lock");
         assert_eq!(fetched.size_bytes, 5000);
     }
@@ -193,20 +206,44 @@ mod tests {
     async fn test_cache_find_by_prefix() {
         let (factory, _dir) = make_factory().await;
         let store = SqliteCacheStore::new(factory);
-        let e1 = CacheEntry::new("t1".into(), "repo-1".into(), "cargo-lock-v1".into(), 100, "a".into());
-        let e2 = CacheEntry::new("t1".into(), "repo-1".into(), "cargo-lock-v2".into(), 200, "b".into());
-        let e3 = CacheEntry::new("t1".into(), "repo-1".into(), "npm-lock".into(), 300, "c".into());
+        let e1 = CacheEntry::new(
+            "t1".into(),
+            "repo-1".into(),
+            "cargo-lock-v1".into(),
+            100,
+            "a".into(),
+        );
+        let e2 = CacheEntry::new(
+            "t1".into(),
+            "repo-1".into(),
+            "cargo-lock-v2".into(),
+            200,
+            "b".into(),
+        );
+        let e3 = CacheEntry::new(
+            "t1".into(),
+            "repo-1".into(),
+            "npm-lock".into(),
+            300,
+            "c".into(),
+        );
         store.upsert_cache(&e1).await.unwrap();
         store.upsert_cache(&e2).await.unwrap();
         store.upsert_cache(&e3).await.unwrap();
 
-        let results = store.find_by_prefix("t1", "repo-1", "cargo-").await.unwrap();
+        let results = store
+            .find_by_prefix("t1", "repo-1", "cargo-")
+            .await
+            .unwrap();
         assert_eq!(results.len(), 2);
 
         let results = store.find_by_prefix("t1", "repo-1", "npm-").await.unwrap();
         assert_eq!(results.len(), 1);
 
-        let results = store.find_by_prefix("t1", "repo-1", "missing-").await.unwrap();
+        let results = store
+            .find_by_prefix("t1", "repo-1", "missing-")
+            .await
+            .unwrap();
         assert_eq!(results.len(), 0);
     }
 
@@ -217,7 +254,13 @@ mod tests {
         // Create entries with different last_used_at times
         let mut e1 = CacheEntry::new("t1".into(), "repo-1".into(), "old".into(), 1000, "a".into());
         e1.last_used_at = chrono::Utc::now() - chrono::Duration::hours(3);
-        let mut e2 = CacheEntry::new("t1".into(), "repo-1".into(), "medium".into(), 1000, "b".into());
+        let mut e2 = CacheEntry::new(
+            "t1".into(),
+            "repo-1".into(),
+            "medium".into(),
+            1000,
+            "b".into(),
+        );
         e2.last_used_at = chrono::Utc::now() - chrono::Duration::hours(2);
         let mut e3 = CacheEntry::new("t1".into(), "repo-1".into(), "new".into(), 1000, "c".into());
         e3.last_used_at = chrono::Utc::now() - chrono::Duration::hours(1);
@@ -238,9 +281,18 @@ mod tests {
     async fn test_cache_delete() {
         let (factory, _dir) = make_factory().await;
         let store = SqliteCacheStore::new(factory);
-        let entry = CacheEntry::new("t1".into(), "repo-1".into(), "cargo-lock".into(), 100, "a".into());
+        let entry = CacheEntry::new(
+            "t1".into(),
+            "repo-1".into(),
+            "cargo-lock".into(),
+            100,
+            "a".into(),
+        );
         store.upsert_cache(&entry).await.unwrap();
-        store.delete_cache("t1", "repo-1", "cargo-lock").await.unwrap();
+        store
+            .delete_cache("t1", "repo-1", "cargo-lock")
+            .await
+            .unwrap();
         let fetched = store.get_cache("t1", "repo-1", "cargo-lock").await.unwrap();
         assert!(fetched.is_none());
     }

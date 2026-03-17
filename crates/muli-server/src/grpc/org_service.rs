@@ -20,7 +20,7 @@ use muli_proto::{
 };
 
 use super::conversions::{domain_role_from_proto, proto_role_from_domain};
-use super::util::{datetime_to_proto, extract_tenant_id};
+use super::util::{datetime_to_proto, validate_tenant};
 
 pub struct OrgServiceImpl {
     pub org_store: Arc<dyn OrgStore>,
@@ -74,14 +74,8 @@ impl OrgService for OrgServiceImpl {
         &self,
         request: Request<CreateOrgRequest>,
     ) -> Result<Response<ProtoOrganization>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
+        let (_caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
         if req.tenant_id.is_empty() {
             return Err(Status::invalid_argument("tenant_id is required"));
         }
@@ -116,14 +110,8 @@ impl OrgService for OrgServiceImpl {
         &self,
         request: Request<GetOrgRequest>,
     ) -> Result<Response<ProtoOrganization>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
+        let (caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
         if req.org_id.is_empty() {
             return Err(Status::invalid_argument("org_id is required"));
         }
@@ -136,14 +124,8 @@ impl OrgService for OrgServiceImpl {
         &self,
         request: Request<DeleteOrgRequest>,
     ) -> Result<Response<DeleteOrgResponse>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
+        let (caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
         if req.org_id.is_empty() {
             return Err(Status::invalid_argument("org_id is required"));
         }
@@ -169,14 +151,7 @@ impl OrgService for OrgServiceImpl {
         &self,
         request: Request<ListOrgsRequest>,
     ) -> Result<Response<ListOrgsResponse>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
-
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
+        let (_caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
         let orgs = self
             .org_store
@@ -193,14 +168,8 @@ impl OrgService for OrgServiceImpl {
         &self,
         request: Request<AddMemberRequest>,
     ) -> Result<Response<ProtoOrgMember>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
+        let (caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
         if req.org_id.is_empty() {
             return Err(Status::invalid_argument("org_id is required"));
         }
@@ -233,14 +202,7 @@ impl OrgService for OrgServiceImpl {
         &self,
         request: Request<RemoveMemberRequest>,
     ) -> Result<Response<RemoveMemberResponse>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
-
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
+        let (caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
         self.get_verified_org(&req.org_id, &caller_tenant).await?;
 
@@ -264,14 +226,7 @@ impl OrgService for OrgServiceImpl {
         &self,
         request: Request<ListMembersRequest>,
     ) -> Result<Response<ListMembersResponse>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
-
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
+        let (caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
         self.get_verified_org(&req.org_id, &caller_tenant).await?;
 
@@ -290,14 +245,7 @@ impl OrgService for OrgServiceImpl {
         &self,
         request: Request<UpdateMemberRoleRequest>,
     ) -> Result<Response<ProtoOrgMember>, Status> {
-        let caller_tenant = extract_tenant_id(&request)?;
-        let req = request.into_inner();
-
-        if req.tenant_id != caller_tenant {
-            return Err(Status::permission_denied(
-                "tenant_id in request does not match authenticated tenant",
-            ));
-        }
+        let (caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
 
         self.get_verified_org(&req.org_id, &caller_tenant).await?;
 

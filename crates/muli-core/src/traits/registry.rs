@@ -45,8 +45,20 @@ pub trait TenantQuotaStore: Send + Sync {
     /// Set (create or update) the maximum storage for a tenant.
     async fn set_quota(&self, tenant_id: &str, max_storage_bytes: u64) -> Result<()>;
 
-    /// Update the current usage counter for a tenant.
+    /// Update the current usage counter for a tenant (absolute set, for reconciliation).
     async fn update_usage(&self, tenant_id: &str, current_usage_bytes: u64) -> Result<()>;
+
+    /// Atomically adjust the current usage by a signed delta (positive for writes,
+    /// negative for deletes). Floors at 0 to prevent underflow.
+    async fn adjust_usage(&self, tenant_id: &str, delta: i64) -> Result<()>;
+
+    /// Atomically check quota and reserve `additional_bytes` in a single operation.
+    ///
+    /// Returns `Ok(true)` if the reservation succeeded (usage incremented),
+    /// `Ok(false)` if it would exceed the quota (usage unchanged).
+    /// If no quota is configured for the tenant, the reservation always succeeds
+    /// without modifying the store (unlimited).
+    async fn try_reserve(&self, tenant_id: &str, additional_bytes: u64) -> Result<bool>;
 }
 
 /// Persistent storage for tenants (global, not scoped to a tenant DB).

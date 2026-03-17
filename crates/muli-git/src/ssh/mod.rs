@@ -5,6 +5,9 @@
 
 pub(crate) mod auth;
 pub(crate) mod lfs_auth;
+mod process;
+mod ref_tracking;
 mod server;
+mod session;
 
 pub use server::{SshConfig, SshServer, load_or_generate_host_key};

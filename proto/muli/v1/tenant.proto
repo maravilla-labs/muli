@@ -12,6 +12,11 @@ service TenantService {
   rpc GetTenant(GetTenantRequest)         returns (Tenant);
   rpc ListTenants(ListTenantsRequest)     returns (ListTenantsResponse);
   rpc DeleteTenant(DeleteTenantRequest)   returns (DeleteTenantResponse);
+  rpc SetTenantLimits(SetTenantLimitsRequest)   returns (SetTenantLimitsResponse);
+  rpc GetTenantLimits(GetTenantLimitsRequest)   returns (GetTenantLimitsResponse);
+  rpc SuspendTenant(SuspendTenantRequest)       returns (SuspendTenantResponse);
+  rpc UnsuspendTenant(UnsuspendTenantRequest)   returns (UnsuspendTenantResponse);
+  rpc GetTenantUsage(GetTenantUsageRequest)     returns (GetTenantUsageResponse);
 }
 
 message Tenant {
@@ -19,6 +24,18 @@ message Tenant {
   string name        = 2;
   string description = 3;
   Timestamp created_at = 4;
+  optional TenantLimits limits = 5;
+}
+
+message TenantLimits {
+  uint32 max_concurrent_jobs = 1;
+  uint32 max_concurrent_pipelines = 2;
+  uint32 max_pipeline_runs_per_day = 3;
+  uint32 max_repos = 4;
+  uint64 max_storage_bytes = 5;
+  PriorityTier priority_tier = 6;
+  bool suspended = 7;
+  string suspended_reason = 8;
 }
 
 message CreateTenantRequest {
@@ -32,3 +49,38 @@ message ListTenantsRequest  {}
 message ListTenantsResponse { repeated Tenant tenants = 1; }
 message DeleteTenantRequest { string id = 1; }
 message DeleteTenantResponse {}
+
+message SetTenantLimitsRequest {
+  string tenant_id = 1;
+  TenantLimits limits = 2;
+}
+message SetTenantLimitsResponse {}
+
+message GetTenantLimitsRequest {
+  string tenant_id = 1;
+}
+message GetTenantLimitsResponse {
+  TenantLimits limits = 1;
+}
+
+message SuspendTenantRequest {
+  string tenant_id = 1;
+  string reason = 2;
+}
+message SuspendTenantResponse {}
+
+message UnsuspendTenantRequest {
+  string tenant_id = 1;
+}
+message UnsuspendTenantResponse {}
+
+message GetTenantUsageRequest {
+  string tenant_id = 1;
+}
+message GetTenantUsageResponse {
+  uint64 storage_bytes = 1;
+  uint32 active_jobs = 2;
+  uint32 active_pipelines = 3;
+  uint32 pipeline_runs_today = 4;
+  uint32 repo_count = 5;
+}

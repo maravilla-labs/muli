@@ -371,12 +371,18 @@ impl RegistryStorage for FilesystemStorage {
     }
 
     async fn get_tenant_usage(&self, tenant_id: &str) -> StorageResult<u64> {
-        let blobs_dir = self.tenant_root(tenant_id).join("blobs");
-        if !blobs_dir.exists() {
+        let root = self.tenant_root(tenant_id);
+        if !root.exists() {
             return Ok(0);
         }
         let mut total: u64 = 0;
-        collect_dir_size(&blobs_dir, &mut total).await?;
+        // Count all registry storage: blobs, manifests, npm, cargo, maven.
+        for subdir in ["blobs", "manifests", "npm", "cargo", "maven"] {
+            let dir = root.join(subdir);
+            if dir.exists() {
+                collect_dir_size(&dir, &mut total).await?;
+            }
+        }
         Ok(total)
     }
 }

@@ -54,7 +54,7 @@ export function registerJobCommands(program) {
                 ],
                 resources: Object.keys(resources).length > 0 ? resources : undefined,
                 timeout_seconds: parseInt(opts.timeout, 10),
-                priority_tier: 'PRIORITY_TIER_STANDARD',
+                priority_tier: 'PRIORITY_TIER_UNSPECIFIED',
             }, clients.meta);
             const jobId = res.job_id ?? res.id ?? '';
             console.log(chalk.green('✓'), `Job submitted: ${chalk.bold(jobId)}`);

@@ -51,7 +51,7 @@ pub fn proto_tier_to_core(tier: i32) -> PriorityTier {
         2 => PriorityTier::Standard,
         3 => PriorityTier::Premium,
         4 => PriorityTier::Enterprise,
-        _ => PriorityTier::Free,
+        _ => PriorityTier::Standard,
     }
 }
 

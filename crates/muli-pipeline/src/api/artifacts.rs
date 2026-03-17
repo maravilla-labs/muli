@@ -3,10 +3,10 @@
 
 //! REST handlers for pipeline artifacts.
 
+use axum::Json;
 use axum::extract::Path;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 
 pub async fn list_artifacts(
     Path((_namespace, _repo, _run_number)): Path<(String, String, u64)>,

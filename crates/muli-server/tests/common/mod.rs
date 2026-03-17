@@ -76,6 +76,8 @@ impl TestGrpcServer {
             scheduler: scheduler.clone(),
             executor: dummy_executor().await,
             log_collectors: log_collectors.clone(),
+            tenant_limits_store: None,
+            max_jobs_per_tenant: 3,
         };
 
         let log_service = LogServiceImpl {

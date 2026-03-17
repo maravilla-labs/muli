@@ -7,6 +7,41 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-03-17
+
+### Added
+
+- **Per-tenant resource limits** — new `TenantLimits` model with configurable caps for concurrent jobs, concurrent pipelines, daily pipeline runs, repository count, and storage bytes. Zero values mean unlimited / use server default, so standalone deployments are unaffected.
+- **Priority tier system** — `PriorityTier` enum (Free/Standard/Premium/Enterprise) with weighted scheduling scores. Server-side `resolve_effective_tier` always uses the tenant's stored tier, ignoring client hints. Scoring formula `tier_weight * (10 + queue_minutes) / 10` prevents starvation for lower-tier jobs.
+- **Tenant enforcement** — centralized enforcement helpers (`check_not_suspended`, `check_job_limit`, `check_pipeline_limits`, `check_repo_limit`, `resolve_effective_tier`) applied at job submit, pipeline trigger, and repo create. All checks are fail-open: store errors allow the operation rather than blocking all tenants.
+- **Tenant suspension** — `SuspendTenant`/`UnsuspendTenant` gRPC RPCs to block all operations for a tenant with an optional reason string.
+- **`GetTenantUsage` RPC** — returns current storage bytes, active jobs, active pipelines, daily pipeline runs, and repo count for a tenant.
+- **`SetTenantLimits`/`GetTenantLimits` RPCs** — configure and read per-tenant limits including priority tier, concurrency caps, and suspension state.
+- **`TenantLimitsStore` trait** with 5 methods (`get_limits`, `set_limits`, `is_suspended`, `increment_daily_run_count`, `get_daily_run_count`) and both SQLite and in-memory implementations.
+- **Stale job watchdog** — background task that detects jobs stuck in Running/Scheduled for longer than a configurable grace period (default 5 min) and transitions them to Failed. Configured via `MULI_WATCHDOG_INTERVAL_SECS` and `MULI_WATCHDOG_GRACE_PERIOD_SECS`.
+- **Job retry with exponential backoff** — transient failures automatically retry up to `MULI_RETRY_MAX_RETRIES` (default 2) with configurable base delay and max delay cap.
+- **Shared auth module** — `muli-core::auth` consolidates Bearer, Basic, and raw token extraction with case-insensitive scheme matching per RFC 7235, eliminating duplicate auth code across muli-git and muli-registry. 13 unit tests.
+- **Repository domain service** — `muli-core::service::repository` encapsulates create, delete, fork, and transfer operations with transactional rollback safety (filesystem ↔ database consistency).
+- **Background cleanup tasks** — expired artifact cleanup, pipeline run retention (default 90 days), and hourly tenant quota reconciliation via full filesystem scan.
+- **Global git tokens table** — `global_git_tokens` in `_global.db` enables O(1) cross-tenant token lookups for HTTP auth without scanning all tenant databases. Backfill migration runs automatically on startup.
+
+### Changed
+
+- **SQLite connection pooling** — global database now uses a round-robin pool of 4 connections instead of a single connection, reducing contention under concurrent gRPC load.
+- **LRU tenant connection eviction** — tenant database connections are now capped at 256 with LRU eviction, preventing unbounded memory growth in large multi-tenant deployments.
+- **SQLite performance PRAGMAs** — all connections (global and tenant) now apply `synchronous=NORMAL`, `cache_size=-8000` (8 MB), `mmap_size=268435456` (256 MB), and `temp_store=MEMORY`.
+- **SSH server refactored into submodules** — monolithic `ssh/server.rs` split into `ssh/session.rs` (handler), `ssh/process.rs` (subprocess spawning), and `ssh/ref_tracking.rs` (pre/post-push ref diffing).
+- **Pipeline service refactored** — monolithic `pipeline_service.rs` (799 lines, deleted) split into `pipeline_service/` directory with `mod.rs`, `runs.rs`, `artifacts.rs`, `logs.rs`, `conversions.rs`, and `helpers.rs`.
+- **`tenant.proto` expanded** — added `TenantLimits` message, `SetTenantLimits`/`GetTenantLimits`/`SuspendTenant`/`UnsuspendTenant`/`GetTenantUsage` RPCs, and optional `limits` field on `Tenant`.
+- **Execution loop** now accepts `Scheduler` and `RetryPolicy` for automatic retry on transient failures.
+- **Server config** — 5 new configuration fields: `retry_max_retries`, `retry_base_delay_secs`, `retry_max_delay_secs`, `watchdog_interval_secs`, `watchdog_grace_period_secs`, `pipeline_run_retention_days`.
+
+### Security
+
+- Tenant suspension blocks all operations (job submit, pipeline trigger, repo create) with `PERMISSION_DENIED` status.
+- Priority tier is server-authoritative — client-provided tier hints are only used in standalone mode when no tenant limits are configured.
+- Tenant limits enforcement is additive: standalone deployments with no limits store configured experience zero overhead.
+
 ## [0.2.4] - 2026-03-16
 
 ### Fixed

@@ -18,9 +18,9 @@ use muli_core::job::state_machine::JobState;
 use muli_core::pipeline::*;
 use muli_core::traits::{JobStore, PipelineRunStore, PipelineStore, StepRunStore};
 use muli_pipeline::dag::executor::{DagExecutor, JobSubmitter};
+use muli_pipeline::dag::matrix::expand_matrix;
 use muli_pipeline::yaml::parser::parse_pipeline;
 use muli_pipeline::yaml::validation::validate_pipeline;
-use muli_pipeline::dag::matrix::expand_matrix;
 use muli_store::sqlite::SqliteStoreFactory;
 
 // ── Test JobSubmitter that creates jobs and immediately marks them succeeded ──
@@ -83,14 +83,15 @@ async fn make_stores() -> (
 ) {
     let dir = tempfile::tempdir().unwrap();
     let factory = SqliteStoreFactory::new(dir.path()).await.unwrap();
-    let ps: Arc<dyn PipelineStore> =
-        Arc::new(muli_store::sqlite::SqlitePipelineStore::new(factory.clone()));
-    let rs: Arc<dyn PipelineRunStore> =
-        Arc::new(muli_store::sqlite::SqlitePipelineRunStore::new(factory.clone()));
+    let ps: Arc<dyn PipelineStore> = Arc::new(muli_store::sqlite::SqlitePipelineStore::new(
+        factory.clone(),
+    ));
+    let rs: Arc<dyn PipelineRunStore> = Arc::new(muli_store::sqlite::SqlitePipelineRunStore::new(
+        factory.clone(),
+    ));
     let ss: Arc<dyn StepRunStore> =
         Arc::new(muli_store::sqlite::SqliteStepRunStore::new(factory.clone()));
-    let js: Arc<dyn JobStore> =
-        Arc::new(muli_store::sqlite::SqliteJobStore::new(factory.clone()));
+    let js: Arc<dyn JobStore> = Arc::new(muli_store::sqlite::SqliteJobStore::new(factory.clone()));
     (factory, ps, rs, ss, js, dir)
 }
 
@@ -182,12 +183,19 @@ steps:
     assert_eq!(steps.len(), 2);
     for step in &steps {
         assert_eq!(step.state, StepRunState::Succeeded);
-        assert!(step.job_id.is_some(), "step {} should have a job_id", step.step_name);
+        assert!(
+            step.job_id.is_some(),
+            "step {} should have a job_id",
+            step.step_name
+        );
     }
 
     // Verify Jobs were created in the store
     for step in &steps {
-        let job = job_store.get_job(step.job_id.as_ref().unwrap()).await.unwrap();
+        let job = job_store
+            .get_job(step.job_id.as_ref().unwrap())
+            .await
+            .unwrap();
         assert!(job.is_some());
         assert_eq!(job.unwrap().state, JobState::Succeeded);
     }
@@ -223,14 +231,22 @@ steps:
         1,
         "abc".into(),
         "refs/heads/main".into(),
-        PipelineTrigger::Push { ref_name: "refs/heads/main".into() },
+        PipelineTrigger::Push {
+            ref_name: "refs/heads/main".into(),
+        },
         yaml.into(),
     );
     run_store.create_run(&run).await.unwrap();
 
     let mut step_runs = Vec::new();
     for step_def in &pipeline_def.steps {
-        let sr = StepRun::new(run.id.clone(), "t1".into(), step_def.name.clone(), FailureStrategy::Stop, None);
+        let sr = StepRun::new(
+            run.id.clone(),
+            "t1".into(),
+            step_def.name.clone(),
+            FailureStrategy::Stop,
+            None,
+        );
         step_store.create_step(&sr).await.unwrap();
         step_runs.push(sr);
     }
@@ -238,9 +254,17 @@ steps:
     let submitter: Arc<dyn JobSubmitter> = Arc::new(FailingJobSubmitter {
         job_store: job_store.clone(),
     });
-    let executor = DagExecutor::new(run_store.clone(), step_store.clone(), job_store.clone(), submitter);
+    let executor = DagExecutor::new(
+        run_store.clone(),
+        step_store.clone(),
+        job_store.clone(),
+        submitter,
+    );
 
-    let result = executor.execute(&mut run, &pipeline_def, &step_runs, None).await.unwrap();
+    let result = executor
+        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .await
+        .unwrap();
     assert_eq!(result, PipelineRunState::Failed);
 
     // build step should be cancelled (dependency failed with Stop strategy)
@@ -273,9 +297,15 @@ steps:
     pipeline_store.upsert_pipeline(&pipeline).await.unwrap();
 
     let mut run = PipelineRun::new(
-        pipeline.id.clone(), "t1".into(), "repo1".into(), 1, "abc".into(),
+        pipeline.id.clone(),
+        "t1".into(),
+        "repo1".into(),
+        1,
+        "abc".into(),
         "refs/heads/main".into(),
-        PipelineTrigger::Push { ref_name: "refs/heads/main".into() },
+        PipelineTrigger::Push {
+            ref_name: "refs/heads/main".into(),
+        },
         yaml.into(),
     );
     run_store.create_run(&run).await.unwrap();
@@ -292,29 +322,53 @@ steps:
     }
 
     // lint fails, build succeeds
-    struct MixedSubmitter { job_store: Arc<dyn JobStore> }
+    struct MixedSubmitter {
+        job_store: Arc<dyn JobStore>,
+    }
     #[async_trait]
     impl JobSubmitter for MixedSubmitter {
         async fn submit(&self, job: Job) -> Result<String> {
             let id = job.id.clone();
             // Check PIPELINE_STEP_NAME env var to determine which step this is
-            let is_lint = job.spec.env_vars.iter().any(|e| e.name == "PIPELINE_STEP_NAME" && e.value == "lint");
+            let is_lint = job
+                .spec
+                .env_vars
+                .iter()
+                .any(|e| e.name == "PIPELINE_STEP_NAME" && e.value == "lint");
             self.job_store.create_job(&job).await?;
-            self.job_store.update_state(&id, JobState::Pending, JobState::Scheduled).await?;
-            self.job_store.update_state(&id, JobState::Scheduled, JobState::Running).await?;
+            self.job_store
+                .update_state(&id, JobState::Pending, JobState::Scheduled)
+                .await?;
+            self.job_store
+                .update_state(&id, JobState::Scheduled, JobState::Running)
+                .await?;
             if is_lint {
-                self.job_store.update_state(&id, JobState::Running, JobState::Failed).await?;
+                self.job_store
+                    .update_state(&id, JobState::Running, JobState::Failed)
+                    .await?;
             } else {
-                self.job_store.update_state(&id, JobState::Running, JobState::Succeeded).await?;
+                self.job_store
+                    .update_state(&id, JobState::Running, JobState::Succeeded)
+                    .await?;
             }
             Ok(id)
         }
     }
 
-    let submitter: Arc<dyn JobSubmitter> = Arc::new(MixedSubmitter { job_store: job_store.clone() });
-    let executor = DagExecutor::new(run_store.clone(), step_store.clone(), job_store.clone(), submitter);
+    let submitter: Arc<dyn JobSubmitter> = Arc::new(MixedSubmitter {
+        job_store: job_store.clone(),
+    });
+    let executor = DagExecutor::new(
+        run_store.clone(),
+        step_store.clone(),
+        job_store.clone(),
+        submitter,
+    );
 
-    let result = executor.execute(&mut run, &pipeline_def, &step_runs, None).await.unwrap();
+    let result = executor
+        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .await
+        .unwrap();
     assert_eq!(result, PipelineRunState::Degraded);
 }
 
@@ -344,30 +398,55 @@ steps:
 
     // Run on develop branch — deploy should be skipped
     let mut run = PipelineRun::new(
-        pipeline.id.clone(), "t1".into(), "repo1".into(), 1, "abc".into(),
+        pipeline.id.clone(),
+        "t1".into(),
+        "repo1".into(),
+        1,
+        "abc".into(),
         "refs/heads/develop".into(),
-        PipelineTrigger::Push { ref_name: "refs/heads/develop".into() },
+        PipelineTrigger::Push {
+            ref_name: "refs/heads/develop".into(),
+        },
         yaml.into(),
     );
     run_store.create_run(&run).await.unwrap();
 
     let mut step_runs = Vec::new();
     for step_def in &pipeline_def.steps {
-        let sr = StepRun::new(run.id.clone(), "t1".into(), step_def.name.clone(), FailureStrategy::Stop, None);
+        let sr = StepRun::new(
+            run.id.clone(),
+            "t1".into(),
+            step_def.name.clone(),
+            FailureStrategy::Stop,
+            None,
+        );
         step_store.create_step(&sr).await.unwrap();
         step_runs.push(sr);
     }
 
-    let submitter: Arc<dyn JobSubmitter> = Arc::new(MockJobSubmitter { job_store: job_store.clone() });
-    let executor = DagExecutor::new(run_store.clone(), step_store.clone(), job_store.clone(), submitter);
+    let submitter: Arc<dyn JobSubmitter> = Arc::new(MockJobSubmitter {
+        job_store: job_store.clone(),
+    });
+    let executor = DagExecutor::new(
+        run_store.clone(),
+        step_store.clone(),
+        job_store.clone(),
+        submitter,
+    );
 
-    let result = executor.execute(&mut run, &pipeline_def, &step_runs, None).await.unwrap();
+    let result = executor
+        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .await
+        .unwrap();
     assert_eq!(result, PipelineRunState::Succeeded);
 
     let steps = step_store.list_by_run("t1", &run.id).await.unwrap();
     let deploy = steps.iter().find(|s| s.step_name == "deploy").unwrap();
     assert_eq!(deploy.state, StepRunState::Skipped);
-    assert!(deploy.job_id.is_none(), "skipped step should have no job_id");
+    assert!(
+        deploy.job_id.is_none(),
+        "skipped step should have no job_id"
+    );
 }
 
 /// Test matrix expansion produces correct number of jobs.
@@ -391,9 +470,15 @@ steps:
     pipeline_store.upsert_pipeline(&pipeline).await.unwrap();
 
     let mut run = PipelineRun::new(
-        pipeline.id.clone(), "t1".into(), "repo1".into(), 1, "abc".into(),
+        pipeline.id.clone(),
+        "t1".into(),
+        "repo1".into(),
+        1,
+        "abc".into(),
         "refs/heads/main".into(),
-        PipelineTrigger::Push { ref_name: "refs/heads/main".into() },
+        PipelineTrigger::Push {
+            ref_name: "refs/heads/main".into(),
+        },
         yaml.into(),
     );
     run_store.create_run(&run).await.unwrap();
@@ -402,17 +487,33 @@ steps:
     let mut step_runs = Vec::new();
     for step_def in &pipeline_def.steps {
         for es in expand_matrix(step_def).unwrap() {
-            let sr = StepRun::new(run.id.clone(), "t1".into(), es.name.clone(), FailureStrategy::Stop, None);
+            let sr = StepRun::new(
+                run.id.clone(),
+                "t1".into(),
+                es.name.clone(),
+                FailureStrategy::Stop,
+                None,
+            );
             step_store.create_step(&sr).await.unwrap();
             step_runs.push(sr);
         }
     }
     assert_eq!(step_runs.len(), 2, "matrix should expand to 2 steps");
 
-    let submitter: Arc<dyn JobSubmitter> = Arc::new(MockJobSubmitter { job_store: job_store.clone() });
-    let executor = DagExecutor::new(run_store.clone(), step_store.clone(), job_store.clone(), submitter);
+    let submitter: Arc<dyn JobSubmitter> = Arc::new(MockJobSubmitter {
+        job_store: job_store.clone(),
+    });
+    let executor = DagExecutor::new(
+        run_store.clone(),
+        step_store.clone(),
+        job_store.clone(),
+        submitter,
+    );
 
-    let result = executor.execute(&mut run, &pipeline_def, &step_runs, None).await.unwrap();
+    let result = executor
+        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .await
+        .unwrap();
 
     assert_eq!(result, PipelineRunState::Succeeded);
 
@@ -449,27 +550,59 @@ steps:
     pipeline_store.upsert_pipeline(&pipeline).await.unwrap();
 
     let mut run = PipelineRun::new(
-        pipeline.id.clone(), "t1".into(), "repo1".into(), 1, "commit123".into(),
+        pipeline.id.clone(),
+        "t1".into(),
+        "repo1".into(),
+        1,
+        "commit123".into(),
         "refs/heads/main".into(),
-        PipelineTrigger::Push { ref_name: "refs/heads/main".into() },
+        PipelineTrigger::Push {
+            ref_name: "refs/heads/main".into(),
+        },
         yaml.into(),
     );
-    run.env_vars.insert("VAULT_SECRET".into(), "secret_value".into());
+    run.env_vars
+        .insert("VAULT_SECRET".into(), "secret_value".into());
     run_store.create_run(&run).await.unwrap();
 
-    let sr = StepRun::new(run.id.clone(), "t1".into(), "test".into(), FailureStrategy::Stop, None);
+    let sr = StepRun::new(
+        run.id.clone(),
+        "t1".into(),
+        "test".into(),
+        FailureStrategy::Stop,
+        None,
+    );
     step_store.create_step(&sr).await.unwrap();
 
-    let submitter: Arc<dyn JobSubmitter> = Arc::new(MockJobSubmitter { job_store: job_store.clone() });
-    let executor = DagExecutor::new(run_store.clone(), step_store.clone(), job_store.clone(), submitter);
+    let submitter: Arc<dyn JobSubmitter> = Arc::new(MockJobSubmitter {
+        job_store: job_store.clone(),
+    });
+    let executor = DagExecutor::new(
+        run_store.clone(),
+        step_store.clone(),
+        job_store.clone(),
+        submitter,
+    );
 
-    executor.execute(&mut run, &pipeline_def, &[sr.clone()], None).await.unwrap();
+    executor
+        .execute(&mut run, &pipeline_def, &[sr.clone()], None)
+        .await
+        .unwrap();
 
     // Check the Job's env vars
     let steps = step_store.list_by_run("t1", &run.id).await.unwrap();
-    let job = job_store.get_job(steps[0].job_id.as_ref().unwrap()).await.unwrap().unwrap();
+    let job = job_store
+        .get_job(steps[0].job_id.as_ref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
 
-    let env_map: HashMap<String, String> = job.spec.env_vars.iter().map(|e| (e.name.clone(), e.value.clone())).collect();
+    let env_map: HashMap<String, String> = job
+        .spec
+        .env_vars
+        .iter()
+        .map(|e| (e.name.clone(), e.value.clone()))
+        .collect();
 
     // Pipeline-level env
     assert_eq!(env_map.get("CI"), Some(&"true".to_string()));
@@ -477,7 +610,10 @@ steps:
     // Step-level env
     assert_eq!(env_map.get("STEP_VAR"), Some(&"hello".to_string()));
     // Run-level env (vault)
-    assert_eq!(env_map.get("VAULT_SECRET"), Some(&"secret_value".to_string()));
+    assert_eq!(
+        env_map.get("VAULT_SECRET"),
+        Some(&"secret_value".to_string())
+    );
     // Built-in pipeline env
     assert_eq!(env_map.get("PIPELINE_SHA"), Some(&"commit123".to_string()));
     assert_eq!(env_map.get("PIPELINE_BRANCH"), Some(&"main".to_string()));
@@ -519,30 +655,57 @@ steps:
     pipeline_store.upsert_pipeline(&pipeline).await.unwrap();
 
     let mut run = PipelineRun::new(
-        pipeline.id.clone(), "t1".into(), "repo1".into(), 1, "abc".into(),
+        pipeline.id.clone(),
+        "t1".into(),
+        "repo1".into(),
+        1,
+        "abc".into(),
         "refs/heads/main".into(),
-        PipelineTrigger::Push { ref_name: "refs/heads/main".into() },
+        PipelineTrigger::Push {
+            ref_name: "refs/heads/main".into(),
+        },
         yaml.into(),
     );
     run_store.create_run(&run).await.unwrap();
 
     let mut step_runs = Vec::new();
     for step_def in &pipeline_def.steps {
-        let sr = StepRun::new(run.id.clone(), "t1".into(), step_def.name.clone(), FailureStrategy::Stop, None);
+        let sr = StepRun::new(
+            run.id.clone(),
+            "t1".into(),
+            step_def.name.clone(),
+            FailureStrategy::Stop,
+            None,
+        );
         step_store.create_step(&sr).await.unwrap();
         step_runs.push(sr);
     }
 
-    let submitter: Arc<dyn JobSubmitter> = Arc::new(MockJobSubmitter { job_store: job_store.clone() });
-    let executor = DagExecutor::new(run_store.clone(), step_store.clone(), job_store.clone(), submitter);
+    let submitter: Arc<dyn JobSubmitter> = Arc::new(MockJobSubmitter {
+        job_store: job_store.clone(),
+    });
+    let executor = DagExecutor::new(
+        run_store.clone(),
+        step_store.clone(),
+        job_store.clone(),
+        submitter,
+    );
 
-    let result = executor.execute(&mut run, &pipeline_def, &step_runs, None).await.unwrap();
+    let result = executor
+        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .await
+        .unwrap();
     assert_eq!(result, PipelineRunState::Succeeded);
 
     // All 4 steps should succeed
     let steps = step_store.list_by_run("t1", &run.id).await.unwrap();
     assert_eq!(steps.len(), 4);
     for step in &steps {
-        assert_eq!(step.state, StepRunState::Succeeded, "step {} should succeed", step.step_name);
+        assert_eq!(
+            step.state,
+            StepRunState::Succeeded,
+            "step {} should succeed",
+            step.step_name
+        );
     }
 }

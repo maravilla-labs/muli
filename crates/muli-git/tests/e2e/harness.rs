@@ -17,7 +17,9 @@ use muli_git::auth::{hash_token, token_prefix};
 use muli_git::storage::FilesystemStorage;
 use muli_git::tenant::TenantConfig;
 use muli_git::{GitAuth, GitRouterConfig, SshServer, git_router};
-use muli_store::memory::{MemoryCollaboratorStore, MemoryOrgMemberStore, MemoryOrgStore};
+use muli_store::memory::{
+    MemoryCollaboratorStore, MemoryOrgMemberStore, MemoryOrgStore, MemoryWebhookStore,
+};
 use muli_store::sqlite::{
     SqliteGitTokenStore, SqlitePrCommentStore, SqlitePullRequestStore, SqliteRepositoryStore,
     SqliteSshKeyStore, SqliteStoreFactory, SqliteWebhookStore,
@@ -108,6 +110,11 @@ pub async fn start_server() -> TestServer {
             .expect("lfs storage"),
     ));
 
+    let repo_service = Arc::new(muli_core::service::RepositoryService::new(
+        repo_store.clone(),
+        storage.clone(),
+    ));
+
     let app = git_router(GitRouterConfig {
         storage: storage.clone(),
         repo_store: repo_store.clone(),
@@ -122,6 +129,8 @@ pub async fn start_server() -> TestServer {
         allow_localhost_webhooks: true,
         lfs_storage,
         pipeline_trigger: None,
+        repo_service,
+        quota_store: None,
     });
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -312,6 +321,16 @@ pub async fn start_server_with_ssh() -> TestServerWithSsh {
     let org_member_store: Arc<dyn OrgMemberStore> = Arc::new(MemoryOrgMemberStore::new());
     let collaborator_store: Arc<dyn CollaboratorStore> = Arc::new(MemoryCollaboratorStore::new());
 
+    let post_push_hooks = muli_git::hooks::PostPushHooks {
+        pipeline_trigger: None,
+        webhook_store: Arc::new(MemoryWebhookStore::new()),
+        http_client: Arc::new(muli_git::hooks::webhook_http_client()),
+        webhook_semaphore: Arc::new(tokio::sync::Semaphore::new(10)),
+        allow_localhost_webhooks: true,
+        cache_store: None,
+        quota_store: None,
+    };
+
     let ssh_server = SshServer {
         ssh_key_store: srv.ssh_key_store.clone(),
         // Share the same repo_store and storage as the HTTP server so that
@@ -324,6 +343,7 @@ pub async fn start_server_with_ssh() -> TestServerWithSsh {
         collaborator_store: collaborator_store.clone(),
         token_store: Some(srv.token_store.clone()),
         git_domain: Some("localhost".to_string()),
+        post_push_hooks,
     };
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -449,6 +469,11 @@ async fn start_server_with_acl_inner(anonymous_pull: bool) -> TestServerWithAcl 
             .expect("lfs storage"),
     ));
 
+    let repo_service = Arc::new(muli_core::service::RepositoryService::new(
+        repo_store.clone(),
+        storage.clone(),
+    ));
+
     let app = git_router(GitRouterConfig {
         storage: storage.clone(),
         repo_store: repo_store.clone(),
@@ -463,6 +488,8 @@ async fn start_server_with_acl_inner(anonymous_pull: bool) -> TestServerWithAcl 
         allow_localhost_webhooks: true,
         lfs_storage,
         pipeline_trigger: None,
+        repo_service,
+        quota_store: None,
     });
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

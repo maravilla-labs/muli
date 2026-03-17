@@ -18,7 +18,10 @@ use tokio::process::Command;
 const GIT_HTTP_BACKEND_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Handle `GET /{ns}/{repo}.git/info/refs?service=git-upload-pack`
-pub async fn info_refs_upload(repo_path: std::path::PathBuf, headers: &HeaderMap) -> Response<Body> {
+pub async fn info_refs_upload(
+    repo_path: std::path::PathBuf,
+    headers: &HeaderMap,
+) -> Response<Body> {
     run_git_http_backend(
         &repo_path,
         "GET",
@@ -143,7 +146,10 @@ async fn run_git_http_backend_inner(
     // Forward Git-Protocol header for protocol v2 support (shallow clone, etc.).
     // Modern git clients (2.26+) send `Git-Protocol: version=2` which must be
     // passed as HTTP_GIT_PROTOCOL to the CGI subprocess.
-    if let Some(proto) = request_headers.get("Git-Protocol").and_then(|v| v.to_str().ok()) {
+    if let Some(proto) = request_headers
+        .get("Git-Protocol")
+        .and_then(|v| v.to_str().ok())
+    {
         cmd.env("HTTP_GIT_PROTOCOL", proto);
     }
     cmd.env("SERVER_PROTOCOL", "HTTP/1.1");

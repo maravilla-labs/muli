@@ -98,12 +98,11 @@ pub async fn create_pr(
 
     match state.pr_store.create_pr(&pr).await {
         Ok(_) => {
-            fire_webhook(
-                &state,
-                &tenant.tenant_id,
-                &repo_id,
+            state.post_push_hooks.fire_webhook(
+                tenant.tenant_id.clone(),
+                repo_id.clone(),
                 WebhookEvent::PrOpened,
-                pr.number,
+                json!({ "number": pr.number }),
             );
             fire_pipeline_pr_event(&state, &tenant.tenant_id, &repo_id, pr.number, "opened");
             (StatusCode::CREATED, Json(PrResponse::from(pr))).into_response()
@@ -209,7 +208,12 @@ async fn handle_close(
     pr.updated_at = Utc::now();
     match state.pr_store.update_pr(pr).await {
         Ok(()) => {
-            fire_webhook(state, tenant_id, repo_id, WebhookEvent::PrClosed, pr.number);
+            state.post_push_hooks.fire_webhook(
+                tenant_id.to_string(),
+                repo_id.to_string(),
+                WebhookEvent::PrClosed,
+                json!({ "number": pr.number }),
+            );
             Json(PrResponse::from(pr.clone())).into_response()
         }
         Err(e) => {
@@ -239,7 +243,12 @@ async fn handle_merge(
             pr.updated_at = Utc::now();
             match state.pr_store.update_pr(pr).await {
                 Ok(()) => {
-                    fire_webhook(state, tenant_id, repo_id, WebhookEvent::PrMerged, pr.number);
+                    state.post_push_hooks.fire_webhook(
+                        tenant_id.to_string(),
+                        repo_id.to_string(),
+                        WebhookEvent::PrMerged,
+                        json!({ "number": pr.number }),
+                    );
                     Json(PrResponse::from(pr.clone())).into_response()
                 }
                 Err(e) => {
@@ -283,7 +292,7 @@ fn fire_pipeline_pr_event(
     pr_number: u64,
     event: &str,
 ) {
-    if let Some(trigger) = state.pipeline_trigger.as_ref() {
+    if let Some(trigger) = state.post_push_hooks.pipeline_trigger.as_ref() {
         let trigger = trigger.clone();
         let tid = tenant_id.to_string();
         let rid = repo_id.to_string();
@@ -292,35 +301,4 @@ fn fire_pipeline_pr_event(
             trigger.on_pr_event(&tid, &rid, pr_number, &ev).await;
         });
     }
-}
-
-fn fire_webhook(
-    state: &GitState,
-    tenant_id: &str,
-    repo_id: &str,
-    event: WebhookEvent,
-    pr_number: u64,
-) {
-    let webhook_store = state.webhook_store.clone();
-    let http_client = state.http_client.clone();
-    let semaphore = state.webhook_semaphore.clone();
-    let allow_localhost = state.allow_localhost_webhooks;
-    let tenant_id = tenant_id.to_string();
-    let repo_id = repo_id.to_string();
-    tokio::spawn(async move {
-        let _permit = semaphore.acquire().await;
-        crate::hooks::deliver_webhooks(
-            webhook_store,
-            http_client,
-            &tenant_id,
-            &repo_id,
-            &crate::hooks::HookDelivery {
-                repo_id: repo_id.clone(),
-                event,
-                payload: json!({ "number": pr_number }),
-            },
-            allow_localhost,
-        )
-        .await;
-    });
 }

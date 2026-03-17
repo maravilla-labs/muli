@@ -62,6 +62,40 @@ impl TenantQuotaStore for MemoryTenantQuotaStore {
         entry.value_mut().current_usage_bytes = current_usage_bytes;
         Ok(())
     }
+
+    async fn adjust_usage(&self, tenant_id: &str, delta: i64) -> Result<()> {
+        let mut entry = self
+            .quotas
+            .entry(tenant_id.to_string())
+            .or_insert_with(|| TenantQuota {
+                tenant_id: tenant_id.to_string(),
+                max_storage_bytes: 0,
+                current_usage_bytes: 0,
+            });
+        let current = entry.value().current_usage_bytes as i64;
+        entry.value_mut().current_usage_bytes = (current + delta).max(0) as u64;
+        Ok(())
+    }
+
+    async fn try_reserve(&self, tenant_id: &str, additional_bytes: u64) -> Result<bool> {
+        let mut entry = self
+            .quotas
+            .entry(tenant_id.to_string())
+            .or_insert_with(|| TenantQuota {
+                tenant_id: tenant_id.to_string(),
+                max_storage_bytes: 0,
+                current_usage_bytes: 0,
+            });
+        let q = entry.value();
+        if q.max_storage_bytes > 0
+            && q.current_usage_bytes.saturating_add(additional_bytes) > q.max_storage_bytes
+        {
+            return Ok(false);
+        }
+        entry.value_mut().current_usage_bytes =
+            q.current_usage_bytes.saturating_add(additional_bytes);
+        Ok(true)
+    }
 }
 
 #[cfg(test)]
@@ -123,5 +157,82 @@ mod tests {
         let quota = store.get_quota("tenant-1").await.unwrap().unwrap();
         assert!(!quota.would_exceed(100));
         assert!(quota.would_exceed(101));
+    }
+
+    #[tokio::test]
+    async fn test_adjust_usage_increment() {
+        let store = MemoryTenantQuotaStore::new();
+        store.set_quota("t1", 1_000_000).await.unwrap();
+        store.adjust_usage("t1", 100).await.unwrap();
+        store.adjust_usage("t1", 200).await.unwrap();
+        let q = store.get_quota("t1").await.unwrap().unwrap();
+        assert_eq!(q.current_usage_bytes, 300);
+    }
+
+    #[tokio::test]
+    async fn test_adjust_usage_decrement() {
+        let store = MemoryTenantQuotaStore::new();
+        store.set_quota("t1", 1_000_000).await.unwrap();
+        store.update_usage("t1", 500).await.unwrap();
+        store.adjust_usage("t1", -200).await.unwrap();
+        let q = store.get_quota("t1").await.unwrap().unwrap();
+        assert_eq!(q.current_usage_bytes, 300);
+    }
+
+    #[tokio::test]
+    async fn test_adjust_usage_floors_at_zero() {
+        let store = MemoryTenantQuotaStore::new();
+        store.set_quota("t1", 1_000_000).await.unwrap();
+        store.update_usage("t1", 100).await.unwrap();
+        store.adjust_usage("t1", -500).await.unwrap();
+        let q = store.get_quota("t1").await.unwrap().unwrap();
+        assert_eq!(q.current_usage_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn test_adjust_usage_upserts() {
+        let store = MemoryTenantQuotaStore::new();
+        store.adjust_usage("new-tenant", 250).await.unwrap();
+        let q = store.get_quota("new-tenant").await.unwrap().unwrap();
+        assert_eq!(q.current_usage_bytes, 250);
+        assert_eq!(q.max_storage_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn test_try_reserve_within_quota() {
+        let store = MemoryTenantQuotaStore::new();
+        store.set_quota("t1", 1000).await.unwrap();
+        assert!(store.try_reserve("t1", 500).await.unwrap());
+        let q = store.get_quota("t1").await.unwrap().unwrap();
+        assert_eq!(q.current_usage_bytes, 500);
+    }
+
+    #[tokio::test]
+    async fn test_try_reserve_exceeds_quota() {
+        let store = MemoryTenantQuotaStore::new();
+        store.set_quota("t1", 1000).await.unwrap();
+        store.update_usage("t1", 900).await.unwrap();
+        assert!(!store.try_reserve("t1", 200).await.unwrap());
+        let q = store.get_quota("t1").await.unwrap().unwrap();
+        assert_eq!(q.current_usage_bytes, 900);
+    }
+
+    #[tokio::test]
+    async fn test_try_reserve_no_quota_row() {
+        let store = MemoryTenantQuotaStore::new();
+        assert!(store.try_reserve("new", 500).await.unwrap());
+        let q = store.get_quota("new").await.unwrap().unwrap();
+        assert_eq!(q.current_usage_bytes, 500);
+    }
+
+    #[tokio::test]
+    async fn test_try_reserve_concurrent_serialized() {
+        let store = MemoryTenantQuotaStore::new();
+        store.set_quota("t1", 1000).await.unwrap();
+        assert!(store.try_reserve("t1", 600).await.unwrap());
+        assert!(!store.try_reserve("t1", 500).await.unwrap());
+        assert!(store.try_reserve("t1", 400).await.unwrap());
+        let q = store.get_quota("t1").await.unwrap().unwrap();
+        assert_eq!(q.current_usage_bytes, 1000);
     }
 }

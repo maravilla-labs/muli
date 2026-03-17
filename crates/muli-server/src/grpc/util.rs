@@ -4,6 +4,7 @@
 //! gRPC utility functions and auth helpers.
 
 use chrono::{DateTime, Utc};
+use muli_core::error::MuliError;
 use muli_core::token_hash;
 use tonic::{Request, Status};
 
@@ -19,6 +20,24 @@ pub fn extract_tenant_id<T>(request: &Request<T>) -> Result<String, Status> {
         .filter(|v| !v.is_empty())
         .map(|v| v.to_string())
         .ok_or_else(|| Status::unauthenticated("missing x-tenant-id metadata header"))
+}
+
+/// Extract the authenticated tenant from request metadata, consume the request,
+/// and verify that the `tenant_id` field in the message body matches.
+///
+/// Returns `(caller_tenant, inner_message)` on success.
+pub fn validate_tenant<T>(
+    request: Request<T>,
+    get_tenant_id: impl FnOnce(&T) -> &str,
+) -> Result<(String, T), Status> {
+    let caller_tenant = extract_tenant_id(&request)?;
+    let inner = request.into_inner();
+    if get_tenant_id(&inner) != caller_tenant {
+        return Err(Status::permission_denied(
+            "tenant_id in request does not match authenticated tenant",
+        ));
+    }
+    Ok((caller_tenant, inner))
 }
 
 /// Convert a `chrono::DateTime<Utc>` to a proto `Timestamp`.
@@ -55,4 +74,15 @@ pub async fn hash_token(plaintext: &str) -> String {
 /// Extract the lookup prefix from a plaintext token.
 pub fn token_prefix(plaintext: &str) -> String {
     token_hash::token_prefix(plaintext)
+}
+
+/// Convert a domain error to a gRPC status.
+pub fn domain_err_to_grpc(e: MuliError) -> Status {
+    match e {
+        MuliError::NotFound(msg) => Status::not_found(msg),
+        MuliError::Conflict(msg) => Status::already_exists(msg),
+        MuliError::Validation(msg) => Status::invalid_argument(msg),
+        MuliError::PermissionDenied(msg) => Status::permission_denied(msg),
+        other => Status::internal(other.to_string()),
+    }
 }

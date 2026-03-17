@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::*;
+use axum::http::HeaderMap;
+use muli_core::auth::{extract_basic_auth_token, extract_bearer_token};
 
 #[test]
 fn hash_token_is_argon2id() {

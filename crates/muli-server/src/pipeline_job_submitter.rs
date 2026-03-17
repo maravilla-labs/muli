@@ -10,7 +10,7 @@ use tracing::info;
 
 use muli_core::error::Result;
 use muli_core::job::model::Job;
-use muli_core::traits::JobStore;
+use muli_core::traits::{JobStore, TenantLimitsStore};
 use muli_pipeline::dag::executor::JobSubmitter;
 use muli_queue::Scheduler;
 
@@ -18,13 +18,22 @@ use muli_queue::Scheduler;
 pub struct SchedulerJobSubmitter {
     pub job_store: Arc<dyn JobStore>,
     pub scheduler: Arc<Scheduler>,
+    pub tenant_limits_store: Option<Arc<dyn TenantLimitsStore>>,
 }
 
 #[async_trait]
 impl JobSubmitter for SchedulerJobSubmitter {
-    async fn submit(&self, job: Job) -> Result<String> {
+    async fn submit(&self, mut job: Job) -> Result<String> {
         let job_id = job.id.clone();
         let tenant_id = job.spec.tenant_id.clone();
+
+        // Look up tenant's priority tier from limits, override job default
+        if let Some(ref limits_store) = self.tenant_limits_store {
+            if let Ok(Some(limits)) = limits_store.get_limits(&tenant_id).await {
+                job.spec.priority_tier = limits.priority_tier;
+            }
+        }
+
         let tier = job.spec.priority_tier;
 
         self.job_store.create_job(&job).await?;
