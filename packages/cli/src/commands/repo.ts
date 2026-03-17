@@ -1,11 +1,22 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { execSync } from 'child_process';
-import { loadConfig } from '../config.js';
+import { loadConfig, MuliConfig } from '../config.js';
 import { buildClients, callRpc } from '../grpc.js';
 import { render } from 'ink';
 import React from 'react';
 import { Table } from '../ui/table.js';
+
+function buildGitUrl(config: MuliConfig, namespace: string, name: string): string {
+  const { gitHost, gitPort } = config;
+  if (gitPort === 443) {
+    return `https://${gitHost}/${namespace}/${name}`;
+  }
+  if (gitPort === 80) {
+    return `http://${gitHost}/${namespace}/${name}`;
+  }
+  return `http://${gitHost}:${gitPort}/${namespace}/${name}`;
+}
 
 export function registerRepoCommands(program: Command): void {
   const repo = program
@@ -39,7 +50,7 @@ export function registerRepoCommands(program: Command): void {
           clients.meta,
         );
 
-        const repoUrl = `http://${config.gitHost}:${config.gitPort}/${namespace}/${name}`;
+        const repoUrl = buildGitUrl(config, namespace, name);
         console.log(chalk.green('✓'), `Repository created: ${chalk.bold(`${namespace}/${name}`)}`);
         console.log(`  ID:  ${res.id}`);
         console.log(`  URL: ${chalk.cyan(repoUrl)}`);
@@ -118,7 +129,7 @@ export function registerRepoCommands(program: Command): void {
         process.exit(1);
       }
       const [namespace, name] = parts as [string, string];
-      const repoUrl = `http://${config.gitHost}:${config.gitPort}/${namespace}/${name}`;
+      const repoUrl = buildGitUrl(config, namespace, name);
       console.log(chalk.dim(`Cloning ${repoUrl}…`));
       try {
         execSync(`git clone "${repoUrl}"`, { stdio: 'inherit' });

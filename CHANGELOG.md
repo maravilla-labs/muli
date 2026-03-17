@@ -7,6 +7,37 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-03-17
+
+### Added
+
+- **Periodic log flushing** — `LogCollector` gains `peek_unflushed()` for incremental drain without clearing the ring buffer. `execute_job` spawns a background task that flushes buffered lines to durable storage every 2 s, making step logs visible in the UI while jobs are running rather than only on completion.
+- **CI token for `RetryPipeline`** — `RetryPipeline` gRPC now generates a short-lived pull-only CI token and injects `PIPELINE_CLONE_URL` into the retry run, consistent with push-triggered runs. `PipelineServiceImpl` gains `token_store` and `git_base_url` fields wired through `start_grpc.rs` and `startup.rs`.
+
+### Fixed
+
+- **CI containers cannot reach host git service** — Docker containers now receive `extra_hosts: host.docker.internal:host-gateway` so they can resolve the host machine's services on Linux. The injected CI clone URL rewrites `localhost`/`127.0.0.1` in the host segment to `host.docker.internal`.
+- **`effective_git_base_url()` included `git_domain` in the fallback** — the default is now `http://localhost:{git_port}` instead of `http://{git_domain}:{git_port}`. Same-machine runners work out of the box; set `MULI_GIT_BASE_URL=https://git.example.com` when behind a reverse proxy.
+- **`GetPipelineConfig` now requires `commit_sha`** — returns `INVALID_ARGUMENT` if empty, removing the ambiguous default-branch fallback added in 0.3.2.
+- **CLI `gitHost`/`registryHost` defaults** — changed from `'local.localhost'` (does not resolve via DNS) to `'localhost'`.
+- **CLI git URL always used `http://` with an explicit port** — new `buildGitUrl()` helper emits `https://` without port for port 443, `http://` without port for port 80, and `http://host:port` otherwise.
+
+## [0.3.2] - 2026-03-17
+
+### Added
+
+- **`GetPipelineConfig` RPC** — reads `.maravilla/pipeline.yml` from a specific commit SHA (or falls back to the default branch HEAD) in the git repository and returns the raw YAML content, enabling clients to preview or validate pipeline configuration without triggering a run.
+
+## [0.3.1] - 2026-03-17
+
+### Added
+
+- **`run_id` UUID lookup for `GetPipelineRun`** — clients can now pass either `run_id` (UUID) or `run_number` (integer) to fetch a pipeline run; UUID lookup is preferred for O(1) access and avoids leaking sequential run numbers.
+
+### Security
+
+- **`repo_id` verification on pipeline RPCs** — `CancelPipeline`, `RetryPipeline`, and `GetStepLogs` now verify the run's `repo_id` matches the caller's `repo_id`, preventing cross-project access within a shared tenant.
+
 ## [0.3.0] - 2026-03-17
 
 ### Added

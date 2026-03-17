@@ -62,9 +62,13 @@ pub async fn create_container(
         cap_drop: Some(vec!["ALL".to_string()]),
         security_opt: Some(vec!["no-new-privileges:true".to_string()]),
         pids_limit: Some(256),
-        readonly_rootfs: Some(true),
+        readonly_rootfs: Some(false),
         privileged: Some(false),
         tmpfs: Some(tmpfs),
+        // Allow containers to reach the host machine's services (e.g. git HTTP on :7000).
+        // On Linux, `host-gateway` resolves to the Docker bridge IP.
+        // Docker Desktop (macOS/Windows) already provides host.docker.internal automatically.
+        extra_hosts: Some(vec!["host.docker.internal:host-gateway".to_string()]),
         ..Default::default()
     };
 

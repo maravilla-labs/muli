@@ -85,9 +85,10 @@ pub(crate) async fn start_grpc(
         git_storage.clone(),
     ));
 
+    let git_token_store = stores.git_token_store;
     let git_service = GitServiceImpl {
         repo_store: stores.repo_store.clone(),
-        token_store: stores.git_token_store,
+        token_store: git_token_store.clone(),
         ssh_key_store: stores.ssh_key_store,
         webhook_store: stores.webhook_store,
         collaborator_store: stores.collaborator_store,
@@ -127,6 +128,8 @@ pub(crate) async fn start_grpc(
         job_submitter: pipeline_job_submitter,
         repo_store: stores.repo_store.clone(),
         git_root: config.effective_git_root(),
+        token_store: git_token_store,
+        git_base_url: config.effective_git_base_url(),
     };
 
     // Auth interceptor (no-op when MULI_API_KEY is unset)

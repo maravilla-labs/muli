@@ -11,8 +11,8 @@ use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
 
 use muli_core::traits::{
-    ArtifactStore, CacheStore, JobLogStore, JobStore, PipelineRunStore, PipelineSecretStore,
-    PipelineStore, RepositoryStore, StepRunStore,
+    ArtifactStore, CacheStore, GitTokenStore, JobLogStore, JobStore, PipelineRunStore,
+    PipelineSecretStore, PipelineStore, RepositoryStore, StepRunStore,
 };
 use muli_pipeline::dag::executor::JobSubmitter;
 
@@ -45,6 +45,8 @@ pub struct PipelineServiceImpl {
     pub job_submitter: Arc<dyn JobSubmitter>,
     pub repo_store: Arc<dyn RepositoryStore>,
     pub git_root: PathBuf,
+    pub token_store: Arc<dyn GitTokenStore>,
+    pub git_base_url: String,
 }
 
 pub(crate) type BoxStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;

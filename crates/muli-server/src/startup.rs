@@ -171,6 +171,8 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
                 stores.job_store.clone(),
                 pipeline_job_submitter.clone(),
                 Some(stores.tenant_limits_store.clone()),
+                stores.git_token_store.clone(),
+                config.effective_git_base_url(),
             )))
         } else {
             None

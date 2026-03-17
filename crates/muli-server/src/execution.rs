@@ -65,10 +65,33 @@ pub async fn execute_job(
     crate::metrics::JOBS_RUNNING.inc();
     let started_at = chrono::Utc::now();
 
+    // Spawn a periodic log-flush task so that step logs are visible in the UI while the job runs.
+    // Every 2s, lines buffered since the last flush are drained and written to durable storage.
+    // The ring buffer is not cleared, so live `stream_logs` / `get_logs` still see all lines.
+    let flush_collector = log_collector.clone();
+    let flush_store = log_store.clone();
+    let flush_job_id = job_id.clone();
+    let flush_handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(2));
+        loop {
+            interval.tick().await;
+            let lines = flush_collector.peek_unflushed().await;
+            if !lines.is_empty() {
+                let stored = lines_to_stored(lines);
+                if let Err(e) = flush_store.append_logs(&flush_job_id, stored).await {
+                    tracing::warn!(job_id = %flush_job_id, error = %e, "Periodic log flush failed");
+                }
+            }
+        }
+    });
+
     // Execute the job (passes the shared log_collector)
     let exec_result = executor.execute_job(&job, log_collector.clone()).await;
 
-    // Persist logs before state transition so they're queryable when observers see terminal state.
+    // Stop the periodic flush task.
+    flush_handle.abort();
+
+    // Persist any lines produced after the last periodic flush tick.
     drain_and_persist_logs(&log_collector, &*log_store, &job_id).await;
 
     match exec_result {
@@ -239,17 +262,9 @@ fn record_completion_metrics(
         .observe(duration_secs);
 }
 
-/// Drain buffered log lines from the collector and persist them to durable storage.
-async fn drain_and_persist_logs(
-    collector: &LogCollector,
-    log_store: &dyn JobLogStore,
-    job_id: &str,
-) {
-    let lines = collector.drain().await;
-    if lines.is_empty() {
-        return;
-    }
-    let stored: Vec<_> = lines
+/// Convert engine log lines to the stored representation.
+fn lines_to_stored(lines: Vec<muli_engine::docker::logs::LogLine>) -> Vec<muli_core::job::model::StoredLogLine> {
+    lines
         .into_iter()
         .map(|l| muli_core::job::model::StoredLogLine {
             sequence: l.sequence,
@@ -260,7 +275,20 @@ async fn drain_and_persist_logs(
             },
             message: l.message,
         })
-        .collect();
+        .collect()
+}
+
+/// Drain remaining unflushed log lines and persist them to durable storage.
+async fn drain_and_persist_logs(
+    collector: &LogCollector,
+    log_store: &dyn JobLogStore,
+    job_id: &str,
+) {
+    let lines = collector.drain().await;
+    if lines.is_empty() {
+        return;
+    }
+    let stored = lines_to_stored(lines);
     if let Err(e) = log_store.append_logs(job_id, stored).await {
         tracing::warn!(job_id = %job_id, error = %e, "Failed to persist job logs");
     }

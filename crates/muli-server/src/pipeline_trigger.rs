@@ -11,10 +11,13 @@ use dashmap::DashMap;
 use sha2::{Digest, Sha256};
 use tracing::{error, info, warn};
 
+use chrono::Utc;
+use muli_core::git::{GitPermission, GitToken};
 use muli_core::pipeline::{FailureStrategy, Pipeline, PipelineRun, PipelineTrigger, StepRun};
+use muli_core::token_hash;
 use muli_core::traits::{
-    JobStore, PipelineRunStore, PipelineStore, PullRequestStore, RepositoryStore, StepRunStore,
-    TenantLimitsStore,
+    GitTokenStore, JobStore, PipelineRunStore, PipelineStore, PullRequestStore, RepositoryStore,
+    StepRunStore, TenantLimitsStore,
 };
 use muli_git::api::PipelineTriggerHook;
 use muli_git::storage::FilesystemStorage;
@@ -40,6 +43,9 @@ pub struct PipelineTriggerImpl {
     job_store: Arc<dyn JobStore>,
     job_submitter: Arc<dyn JobSubmitter>,
     tenant_limits_store: Option<Arc<dyn TenantLimitsStore>>,
+    token_store: Arc<dyn GitTokenStore>,
+    /// Base URL for the git HTTP service (e.g. "http://localhost:7000").
+    git_base_url: String,
     /// Per-repo last-trigger time for rate limiting.
     last_trigger: DashMap<String, Instant>,
 }
@@ -56,6 +62,8 @@ impl PipelineTriggerImpl {
         job_store: Arc<dyn JobStore>,
         job_submitter: Arc<dyn JobSubmitter>,
         tenant_limits_store: Option<Arc<dyn TenantLimitsStore>>,
+        token_store: Arc<dyn GitTokenStore>,
+        git_base_url: String,
     ) -> Self {
         Self {
             git_storage,
@@ -67,6 +75,8 @@ impl PipelineTriggerImpl {
             job_store,
             job_submitter,
             tenant_limits_store,
+            token_store,
+            git_base_url,
             last_trigger: DashMap::new(),
         }
     }
@@ -292,19 +302,73 @@ impl PipelineTriggerImpl {
             }
         }
 
-        // 9. Execute via DAG executor (submits Jobs, waits for completion)
+        // 9. Generate a short-lived pull-only CI token for auto-checkout, then execute.
+        let plaintext = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+        let token_hash_result = {
+            let pt = plaintext.clone();
+            tokio::task::spawn_blocking(move || token_hash::hash_token(&pt)).await
+        };
+        let (ci_token_id, clone_url) = match token_hash_result {
+            Ok(Ok(token_hash)) => {
+                let prefix = token_hash::token_prefix(&plaintext);
+                let ci_token = GitToken {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    tenant_id: tenant_id.to_string(),
+                    user_id: None,
+                    token_hash,
+                    token_prefix: prefix,
+                    permissions: vec![GitPermission::Pull],
+                    description: format!("CI run {}", run.id),
+                    created_at: Utc::now(),
+                    expires_at: Some(Utc::now() + chrono::Duration::minutes(10)),
+                    revoked: false,
+                };
+                let token_id = ci_token.id.clone();
+                match self.token_store.create_token(&ci_token).await {
+                    Ok(_) => {
+                        let clone_url = build_ci_clone_url(
+                            &self.git_base_url,
+                            &plaintext,
+                            &repo.namespace,
+                            &repo.name,
+                        );
+                        (Some(token_id), Some(clone_url))
+                    }
+                    Err(e) => {
+                        error!(error = %e, "pipeline trigger: failed to create CI token");
+                        (None, None)
+                    }
+                }
+            }
+            Ok(Err(e)) => {
+                error!(error = %e, "pipeline trigger: token hashing failed");
+                (None, None)
+            }
+            Err(e) => {
+                error!(error = %e, "pipeline trigger: spawn_blocking panicked during token hash");
+                (None, None)
+            }
+        };
+
+        // 10. Execute via DAG executor (submits Jobs, waits for completion)
         let executor = DagExecutor::new(
             self.run_store.clone(),
             self.step_store.clone(),
             self.job_store.clone(),
             self.job_submitter.clone(),
         );
-        // Build clone URL for auto-checkout
-        let clone_url: Option<String> = None; // TODO: construct from git_storage + repo info
-        match executor
+        let exec_result = executor
             .execute(&mut run, &pipeline_def, &all_steps, clone_url.as_deref())
-            .await
-        {
+            .await;
+
+        // Revoke the CI token regardless of execution outcome.
+        if let Some(ref id) = ci_token_id {
+            if let Err(e) = self.token_store.revoke_token(id).await {
+                warn!(token_id = %id, error = %e, "pipeline trigger: failed to revoke CI token");
+            }
+        }
+
+        match exec_result {
             Ok(state) => {
                 info!(
                     run_id = %run.id,
@@ -425,6 +489,32 @@ impl PipelineTriggerHook for PipelineTriggerImpl {
         )
         .await;
     }
+}
+
+/// Construct a git clone URL with embedded CI token credentials.
+///
+/// e.g. `http://x-pipeline-token:<token>@host.docker.internal:7000/<namespace>/<repo>.git`
+///
+/// `localhost`/`127.0.0.1` are rewritten to `host.docker.internal` so the URL is reachable
+/// from inside Docker containers on Linux (requires `extra_hosts: host.docker.internal:host-gateway`
+/// in HostConfig).  For multi-tenant production, set `MULI_GIT_BASE_URL` to a public hostname
+/// (e.g. `https://myorg.git.example.com`) — no substitution is applied in that case.
+fn build_ci_clone_url(git_base_url: &str, token: &str, namespace: &str, name: &str) -> String {
+    let base = git_base_url.trim_end_matches('/');
+    let (scheme, host) = if let Some(i) = base.find("://") {
+        (&base[..i], base[i + 3..].to_string())
+    } else {
+        ("http", base.to_string())
+    };
+    // Containers can't reach the host via localhost; use host.docker.internal instead.
+    let host = if host.starts_with("localhost") {
+        host.replacen("localhost", "host.docker.internal", 1)
+    } else if host.starts_with("127.0.0.1") {
+        host.replacen("127.0.0.1", "host.docker.internal", 1)
+    } else {
+        host
+    };
+    format!("{scheme}://x-pipeline-token:{token}@{host}/{namespace}/{name}.git")
 }
 
 /// Resolve the HEAD commit SHA for a branch in a bare repository.

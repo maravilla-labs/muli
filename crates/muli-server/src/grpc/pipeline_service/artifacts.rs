@@ -135,13 +135,10 @@ impl PipelineServiceImpl {
             .join(&repo.namespace)
             .join(format!("{}.git", &repo.name));
 
-        // Determine which commit to read from
-        let commit_ref = if !req.commit_sha.is_empty() {
-            req.commit_sha.clone()
-        } else {
-            // Fall back to HEAD of default branch
-            repo.default_branch.clone()
-        };
+        if req.commit_sha.is_empty() {
+            return Err(Status::invalid_argument("commit_sha is required"));
+        }
+        let commit_ref = req.commit_sha.clone();
 
         let yaml_content = tokio::task::spawn_blocking({
             let repo_path = repo_path.clone();

@@ -6,9 +6,9 @@ export const DEFAULT_CONFIG = {
     tenantId: 'local',
     apiKey: null,
     tlsCaCertPath: null,
-    registryHost: 'local.localhost',
+    registryHost: 'localhost',
     registryPort: 5000,
-    gitHost: 'local.localhost',
+    gitHost: 'localhost',
     gitPort: 7000,
 };
 export function getConfigPath() {

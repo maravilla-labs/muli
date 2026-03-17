@@ -38,6 +38,9 @@ pub struct LogCollector {
     buffer: Arc<RwLock<VecDeque<LogLine>>>,
     tx: broadcast::Sender<LogLine>,
     sequence: Arc<AtomicU64>,
+    /// Sequence number of the next line that has not yet been flushed to durable storage.
+    /// Lines with sequence < flush_offset have already been persisted via `peek_unflushed`.
+    flush_offset: Arc<AtomicU64>,
     max_lines: usize,
 }
 
@@ -58,6 +61,7 @@ impl LogCollector {
             buffer: Arc::new(RwLock::new(VecDeque::with_capacity(max_lines))),
             tx,
             sequence: Arc::new(AtomicU64::new(0)),
+            flush_offset: Arc::new(AtomicU64::new(0)),
             max_lines,
         }
     }
@@ -235,9 +239,26 @@ impl LogCollector {
         }
     }
 
-    /// Drain all lines from the buffer, clearing it. Used when persisting logs on job completion.
+    /// Return all lines buffered since the last call to `peek_unflushed`, without clearing the
+    /// ring buffer. Advances the flush offset so the same lines are not returned twice.
+    /// Safe to call concurrently with log streaming — does not remove lines from the buffer.
+    pub async fn peek_unflushed(&self) -> Vec<LogLine> {
+        let offset = self.flush_offset.load(Ordering::SeqCst);
+        let buf = self.buffer.read().await;
+        let new_lines: Vec<LogLine> = buf.iter().filter(|l| l.sequence >= offset).cloned().collect();
+        if let Some(last) = new_lines.last() {
+            self.flush_offset.store(last.sequence + 1, Ordering::SeqCst);
+        }
+        new_lines
+    }
+
+    /// Drain lines that have not yet been flushed via `peek_unflushed`, then clear the buffer.
+    /// Used on job completion to capture any remaining lines after the last periodic flush.
     pub async fn drain(&self) -> Vec<LogLine> {
+        let offset = self.flush_offset.load(Ordering::SeqCst);
         let mut buf = self.buffer.write().await;
-        buf.drain(..).collect()
+        let remaining: Vec<LogLine> = buf.iter().filter(|l| l.sequence >= offset).cloned().collect();
+        buf.clear();
+        remaining
     }
 }

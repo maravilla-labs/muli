@@ -18,9 +18,9 @@ export const DEFAULT_CONFIG: MuliConfig = {
   tenantId: 'local',
   apiKey: null,
   tlsCaCertPath: null,
-  registryHost: 'local.localhost',
+  registryHost: 'localhost',
   registryPort: 5000,
-  gitHost: 'local.localhost',
+  gitHost: 'localhost',
   gitPort: 7000,
 };
 

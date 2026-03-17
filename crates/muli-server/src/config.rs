@@ -55,6 +55,10 @@ pub struct ServerConfig {
     pub git_domain: String,
     /// Explicit git root path. When `None`, derived as `{data_dir}/git`.
     pub git_root: Option<String>,
+    /// Base URL for the git HTTP service, used to construct CI clone URLs.
+    /// Defaults to `http://localhost:{git_port}` so same-machine runners work out of the box.
+    /// Override when muli sits behind a reverse proxy (e.g. `MULI_GIT_BASE_URL=https://git.example.com`).
+    pub git_base_url: Option<String>,
     pub git_ssh_enabled: bool,
     pub git_ssh_port: u16,
     pub git_ssh_host_key_path: Option<String>,
@@ -137,6 +141,7 @@ impl std::fmt::Debug for ServerConfig {
             .field("git_port", &self.git_port)
             .field("git_domain", &self.git_domain)
             .field("git_root", &self.git_root)
+            .field("git_base_url", &self.git_base_url)
             .field("git_ssh_enabled", &self.git_ssh_enabled)
             .field("git_ssh_port", &self.git_ssh_port)
             .field(
@@ -215,6 +220,7 @@ impl Default for ServerConfig {
             git_port: 7000,
             git_domain: "localhost".to_string(),
             git_root: None,
+            git_base_url: None,
             git_ssh_enabled: false,
             git_ssh_port: 2222,
             git_ssh_host_key_path: None,
@@ -274,6 +280,14 @@ impl ServerConfig {
             .as_deref()
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(&self.data_dir).join("git"))
+    }
+
+    /// Returns the base URL for the git HTTP service, used when constructing CI clone URLs.
+    /// Uses `git_base_url` if explicitly set; otherwise defaults to `http://localhost:{git_port}`.
+    pub fn effective_git_base_url(&self) -> String {
+        self.git_base_url
+            .clone()
+            .unwrap_or_else(|| format!("http://localhost:{}", self.git_port))
     }
 }
 

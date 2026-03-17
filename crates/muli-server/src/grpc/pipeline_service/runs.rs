@@ -7,9 +7,11 @@ use chrono::Utc;
 use tonic::{Request, Response, Status};
 use tracing::info;
 
+use muli_core::git::{GitPermission, GitToken};
 use muli_core::pipeline::{
     Pipeline, PipelineRun as DomainRun, PipelineRunState as DomainRunState, PipelineTrigger,
 };
+use muli_core::token_hash;
 use muli_proto::{
     CancelPipelineRequest, CancelPipelineResponse, GetPipelineRunRequest, ListPipelineRunsRequest,
     ListPipelineRunsResponse, PipelineRunResponse, RetryPipelineRequest, TriggerPipelineRequest,
@@ -357,9 +359,27 @@ impl PipelineServiceImpl {
             let step_store = self.step_store.clone();
             let job_store = self.job_store.clone();
             let job_submitter = self.job_submitter.clone();
+            let repo_store = self.repo_store.clone();
+            let token_store = self.token_store.clone();
+            let git_base_url = self.git_base_url.clone();
+            let bg_repo_id = original.repo_id.clone();
+            let bg_tenant_id = caller_tenant.clone();
             let mut bg_run = new_run.clone();
             let bg_steps = steps.clone();
             tokio::spawn(async move {
+                // Generate a short-lived pull-only CI token for auto-checkout.
+                let clone_url = build_ci_clone_url_for_repo(
+                    repo_store.as_ref(),
+                    token_store.as_ref(),
+                    &git_base_url,
+                    &bg_tenant_id,
+                    &bg_repo_id,
+                    &bg_run.id,
+                )
+                .await;
+                let ci_token_id = clone_url.as_ref().and_then(|(_, id)| id.clone());
+                let clone_url_str = clone_url.map(|(url, _)| url);
+
                 let executor = muli_pipeline::dag::executor::DagExecutor::new(
                     run_store,
                     step_store,
@@ -371,11 +391,16 @@ impl PipelineServiceImpl {
                     muli_pipeline::yaml::parser::parse_pipeline(&bg_run.yaml_content)
                 {
                     if let Err(e) = executor
-                        .execute(&mut bg_run, &pipeline_def, &bg_steps, None)
+                        .execute(&mut bg_run, &pipeline_def, &bg_steps, clone_url_str.as_deref())
                         .await
                     {
                         tracing::warn!(error = %e, "DAG executor failed for retry run");
                     }
+                }
+
+                // Revoke the CI token regardless of execution outcome.
+                if let Some(id) = ci_token_id {
+                    let _ = token_store.revoke_token(&id).await;
                 }
             });
         }
@@ -398,4 +423,64 @@ impl PipelineServiceImpl {
             run: Some(run_to_proto(&new_run, &final_steps)),
         }))
     }
+}
+
+/// Generate a short-lived pull-only CI token and return `(clone_url, token_id)`.
+/// Returns `None` on any failure (non-fatal; execution continues without checkout).
+async fn build_ci_clone_url_for_repo(
+    repo_store: &dyn muli_core::traits::RepositoryStore,
+    token_store: &dyn muli_core::traits::GitTokenStore,
+    git_base_url: &str,
+    tenant_id: &str,
+    repo_id: &str,
+    run_id: &str,
+) -> Option<(String, Option<String>)> {
+    let repo = repo_store.get_repository(repo_id).await.ok()??;
+
+    let plaintext =
+        format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+    let token_hash = tokio::task::spawn_blocking({
+        let pt = plaintext.clone();
+        move || token_hash::hash_token(&pt)
+    })
+    .await
+    .ok()?
+    .ok()?;
+
+    let prefix = token_hash::token_prefix(&plaintext);
+    let ci_token = GitToken {
+        id: uuid::Uuid::new_v4().to_string(),
+        tenant_id: tenant_id.to_string(),
+        user_id: None,
+        token_hash,
+        token_prefix: prefix,
+        permissions: vec![GitPermission::Pull],
+        description: format!("CI run {run_id}"),
+        created_at: Utc::now(),
+        expires_at: Some(Utc::now() + chrono::Duration::minutes(10)),
+        revoked: false,
+    };
+    let token_id = ci_token.id.clone();
+    token_store.create_token(&ci_token).await.ok()?;
+
+    let base = git_base_url.trim_end_matches('/');
+    let (scheme, host) = if let Some(i) = base.find("://") {
+        (&base[..i], base[i + 3..].to_string())
+    } else {
+        ("http", base.to_string())
+    };
+    // Containers can't reach the host via localhost; use host.docker.internal instead.
+    let host = if host.starts_with("localhost") {
+        host.replacen("localhost", "host.docker.internal", 1)
+    } else if host.starts_with("127.0.0.1") {
+        host.replacen("127.0.0.1", "host.docker.internal", 1)
+    } else {
+        host
+    };
+    let clone_url = format!(
+        "{scheme}://x-pipeline-token:{plaintext}@{host}/{}/{}.git",
+        repo.namespace, repo.name
+    );
+
+    Some((clone_url, Some(token_id)))
 }
