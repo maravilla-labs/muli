@@ -7,6 +7,21 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-03-18
+
+### Added
+
+- **Pipeline names in run APIs** — `GetPipelineRun`, `ListPipelineRuns`, and manual trigger/retry responses now include the resolved pipeline name, allowing clients to label runs without reverse-looking up the pipeline definition.
+- **Changed-path aware monorepo job filters** — `jobs.<name>.paths` globs now evaluate against real changed files for push and pull request triggers, so only affected jobs run while unrelated jobs are marked skipped.
+- **Monorepo path-filter e2e coverage** — the Docker-backed server e2e suite now verifies that a repo with frontend/backend jobs only runs the matching job after a path-limited push.
+
+### Fixed
+
+- **Issue activity access in Flightdeck** — issue activity feeds are no longer incorrectly blocked when time tracking is disabled; the endpoint now follows normal issue access rules.
+- **Pipeline detail live completion state** — Flightdeck now refreshes the selected run when the live substep stream finishes, so the last running job settles to its terminal state without a manual reload.
+- **Code view pipeline linking and live status freshness** — the code view badge now links to the correct run detail path and refreshes on reconnect, while project overview pages revalidate on pipeline SSE events so the latest build state stays in sync.
+- **Issue readability and progress freshness** — issue comments/activity render with denser, higher-contrast styling, and milestone/sprint endpoints refresh aggregate counts before returning dashboard progress data.
+
 ## [0.4.4] - 2026-03-18
 
 ### Added

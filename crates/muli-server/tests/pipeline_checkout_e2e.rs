@@ -796,10 +796,8 @@ jobs:
 
     let substep_events = logs
         .iter()
-        .filter_map(|line| {
-            (line.event_type.as_deref() == Some("substep_finished"))
-                .then(|| (line.substep_name.clone(), line.exit_code))
-        })
+        .filter(|line| line.event_type.as_deref() == Some("substep_finished"))
+        .map(|line| (line.substep_name.clone(), line.exit_code))
         .collect::<Vec<_>>();
     assert_eq!(
         substep_events,
