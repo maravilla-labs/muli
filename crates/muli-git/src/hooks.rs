@@ -14,7 +14,14 @@ use crate::api::webhooks::sign_payload;
 /// Hook for triggering pipeline runs from git events (push, PR).
 #[async_trait::async_trait]
 pub trait PipelineTriggerHook: Send + Sync {
-    async fn on_push(&self, tenant_id: &str, repo_id: &str, commit_sha: &str, ref_name: &str);
+    async fn on_push(
+        &self,
+        tenant_id: &str,
+        repo_id: &str,
+        old_sha: &str,
+        new_sha: &str,
+        ref_name: &str,
+    );
     async fn on_pr_event(&self, tenant_id: &str, repo_id: &str, pr_number: u64, event: &str);
 }
 
@@ -59,10 +66,11 @@ impl PostPushHooks {
                     let trigger = trigger.clone();
                     let tid = tenant_id.clone();
                     let rid = repo_id.clone();
-                    let sha = update.new_sha.clone();
+                    let old_sha = update.old_sha.clone();
+                    let new_sha = update.new_sha.clone();
                     let rn = update.ref_name.clone();
                     tokio::spawn(async move {
-                        trigger.on_push(&tid, &rid, &sha, &rn).await;
+                        trigger.on_push(&tid, &rid, &old_sha, &new_sha, &rn).await;
                     });
                 }
             }

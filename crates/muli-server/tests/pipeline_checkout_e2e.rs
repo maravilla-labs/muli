@@ -53,7 +53,7 @@ use muli_store::sqlite::{
     SqliteStoreFactory, SqliteWebhookStore,
 };
 
-use muli_proto::{GetPipelineRunRequest, StreamStepLogsRequest};
+use muli_proto::{GetPipelineRunRequest, ListPipelineRunsRequest, StreamStepLogsRequest};
 
 use common::{dummy_executor, run_job, with_tenant};
 
@@ -1056,6 +1056,49 @@ jobs:
     assert!(first_pipeline_ids.contains_key("build-ci"));
     assert!(first_pipeline_ids.contains_key("lint-ci"));
 
+    let service = pipeline_service(&env);
+    let listed_runs = service
+        .list_pipeline_runs_impl(with_tenant(
+            ListPipelineRunsRequest {
+                tenant_id: TENANT.into(),
+                repo_id: repo.id.clone(),
+                state_filter: 0,
+                limit: 10,
+                offset: 0,
+            },
+            TENANT,
+        ))
+        .await
+        .expect("list_pipeline_runs")
+        .into_inner()
+        .runs;
+    assert!(
+        listed_runs
+            .iter()
+            .any(|run| run.pipeline_name == "build-ci" || run.pipeline_name == "lint-ci"),
+        "expected list_pipeline_runs to include pipeline_name"
+    );
+    let fetched_run = service
+        .get_pipeline_run_impl(with_tenant(
+            GetPipelineRunRequest {
+                tenant_id: TENANT.into(),
+                repo_id: repo.id.clone(),
+                run_number: 0,
+                run_id: first_runs[0].id.clone(),
+            },
+            TENANT,
+        ))
+        .await
+        .expect("get_pipeline_run")
+        .into_inner()
+        .run
+        .expect("run payload");
+    assert!(
+        fetched_run.pipeline_name == "build-ci" || fetched_run.pipeline_name == "lint-ci",
+        "expected get_pipeline_run to include pipeline_name, got: {}",
+        fetched_run.pipeline_name
+    );
+
     write_file(
         work_dir.path().join("README.md").as_path(),
         "hello multi again\n",
@@ -1088,6 +1131,117 @@ jobs:
             pipeline.name
         );
     }
+
+    muli_test::docker_helpers::cleanup_test_containers(&docker).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_push_trigger_filters_jobs_by_changed_paths_in_monorepo() {
+    if !muli_test::docker_helpers::docker_available().await {
+        eprintln!("SKIP: Docker not available");
+        return;
+    }
+    let git_available = Command::new("git")
+        .arg("--version")
+        .output()
+        .await
+        .map(|out| out.status.success())
+        .unwrap_or(false);
+    if !git_available {
+        eprintln!("SKIP: git binary not found");
+        return;
+    }
+
+    let docker = muli_test::docker_helpers::require_docker().await;
+    muli_test::docker_helpers::ensure_test_image(&docker, "alpine:latest").await;
+
+    let Some(env) = CheckoutE2eEnv::start().await else {
+        return;
+    };
+    let repo = env
+        .create_private_repo("pipeline-monorepo-job-filter")
+        .await;
+
+    let work_dir = TempDir::new().unwrap();
+    let url = env.git_url(&repo.name, OWNER_TOKEN);
+    git(work_dir.path(), &["clone", "--no-local", &url, "."]).await;
+    git(work_dir.path(), &["config", "user.email", "ci@muli.test"]).await;
+    git(work_dir.path(), &["config", "user.name", "Muli CI"]).await;
+
+    write_file(
+        work_dir.path().join("frontend/app.txt").as_path(),
+        "frontend-v1\n",
+    );
+    write_file(
+        work_dir.path().join("backend/app.txt").as_path(),
+        "backend-v1\n",
+    );
+    write_file(
+        work_dir.path().join(".maravilla/pipeline.yml").as_path(),
+        r#"
+name: monorepo-ci
+on:
+  push:
+    branches: [main]
+jobs:
+  frontend:
+    image: alpine:latest
+    paths: [frontend/**]
+    commands:
+      - test -f frontend/app.txt
+      - grep -q "frontend" frontend/app.txt
+  backend:
+    image: alpine:latest
+    paths: [backend/**]
+    commands:
+      - test -f backend/app.txt
+      - grep -q "backend" backend/app.txt
+"#,
+    );
+
+    git(work_dir.path(), &["add", "."]).await;
+    git(
+        work_dir.path(),
+        &["commit", "-m", "bootstrap monorepo pipeline"],
+    )
+    .await;
+    git(
+        work_dir.path(),
+        &["push", "--set-upstream", "origin", "main"],
+    )
+    .await;
+
+    let bootstrap_run = wait_for_terminal_run(&env, &repo.id, Duration::from_secs(120)).await;
+    assert_eq!(bootstrap_run.state, PipelineRunState::Succeeded);
+
+    write_file(
+        work_dir.path().join("frontend/app.txt").as_path(),
+        "frontend-v2\n",
+    );
+    git(work_dir.path(), &["add", "frontend/app.txt"]).await;
+    git(work_dir.path(), &["commit", "-m", "change frontend only"]).await;
+    git(work_dir.path(), &["push", "origin", "main"]).await;
+
+    let filtered_run = wait_for_terminal_run(&env, &repo.id, Duration::from_secs(120)).await;
+    assert_ne!(
+        filtered_run.id, bootstrap_run.id,
+        "expected a new pipeline run"
+    );
+    assert_eq!(filtered_run.state, PipelineRunState::Succeeded);
+
+    let steps = env
+        .step_store
+        .list_by_run(TENANT, &filtered_run.id)
+        .await
+        .unwrap();
+    assert_eq!(steps.len(), 2);
+
+    let step_states: std::collections::HashMap<String, StepRunState> = steps
+        .iter()
+        .map(|step| (step.step_name.clone(), step.state))
+        .collect();
+    assert_eq!(step_states.get("frontend"), Some(&StepRunState::Succeeded));
+    assert_eq!(step_states.get("backend"), Some(&StepRunState::Skipped));
 
     muli_test::docker_helpers::cleanup_test_containers(&docker).await;
 }

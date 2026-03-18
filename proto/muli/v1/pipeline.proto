@@ -66,6 +66,7 @@ enum FailureStrategy {
 message PipelineRun {
   string id = 1;
   string pipeline_id = 2;
+  string pipeline_name = 14;
   string tenant_id = 3;
   string repo_id = 4;
   uint64 run_number = 5;

@@ -43,11 +43,26 @@ impl Pipeline {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PipelineTrigger {
-    Push { ref_name: String },
-    PullRequest { pr_number: u64, event: String },
-    Manual { triggered_by: String },
-    Schedule { cron: String },
-    Retry { original_run_id: String },
+    Push {
+        ref_name: String,
+        #[serde(default)]
+        changed_paths: Vec<String>,
+    },
+    PullRequest {
+        pr_number: u64,
+        event: String,
+        #[serde(default)]
+        changed_paths: Vec<String>,
+    },
+    Manual {
+        triggered_by: String,
+    },
+    Schedule {
+        cron: String,
+    },
+    Retry {
+        original_run_id: String,
+    },
 }
 
 /// A single execution of a pipeline.

@@ -228,6 +228,7 @@ steps:
         "refs/heads/main".into(),
         PipelineTrigger::Push {
             ref_name: "refs/heads/main".into(),
+            changed_paths: vec![],
         },
         yaml.into(),
     );

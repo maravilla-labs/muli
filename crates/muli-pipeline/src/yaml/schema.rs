@@ -89,6 +89,8 @@ pub struct JobDef {
     pub steps: Vec<JobStepDef>,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    #[serde(default)]
+    pub paths: Vec<String>,
     pub cache: Option<CacheDef>,
     pub artifacts: Option<ArtifactsDef>,
     pub resources: Option<ResourceDef>,

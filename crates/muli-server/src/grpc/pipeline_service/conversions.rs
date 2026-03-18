@@ -101,10 +101,15 @@ pub fn step_to_proto(s: &DomainStep) -> StepRun {
     }
 }
 
-pub fn run_to_proto(r: &DomainRun, steps: &[DomainStep]) -> PipelineRun {
+pub fn run_to_proto(
+    r: &DomainRun,
+    pipeline_name: Option<&str>,
+    steps: &[DomainStep],
+) -> PipelineRun {
     PipelineRun {
         id: r.id.clone(),
         pipeline_id: r.pipeline_id.clone(),
+        pipeline_name: pipeline_name.unwrap_or_default().to_string(),
         tenant_id: r.tenant_id.clone(),
         repo_id: r.repo_id.clone(),
         run_number: r.run_number,

@@ -3,6 +3,8 @@
 
 //! Pipeline run RPCs: trigger, get, list, cancel, retry.
 
+use std::collections::HashMap;
+
 use chrono::Utc;
 use tonic::{Request, Response, Status};
 use tracing::info;
@@ -110,7 +112,7 @@ impl PipelineServiceImpl {
         );
 
         Ok(Response::new(PipelineRunResponse {
-            run: Some(run_to_proto(&run, &[])),
+            run: Some(run_to_proto(&run, Some(&pipeline.name), &[])),
         }))
     }
 
@@ -165,8 +167,15 @@ impl PipelineServiceImpl {
             .await
             .map_err(|e| Status::internal(format!("Failed to list steps: {e}")))?;
 
+        let pipeline_name = self
+            .pipeline_store
+            .get_pipeline(&caller_tenant, &run.pipeline_id)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to get pipeline: {e}")))?
+            .map(|pipeline| pipeline.name);
+
         Ok(Response::new(PipelineRunResponse {
-            run: Some(run_to_proto(run, &steps)),
+            run: Some(run_to_proto(run, pipeline_name.as_deref(), &steps)),
         }))
     }
 
@@ -196,8 +205,25 @@ impl PipelineServiceImpl {
 
         // For list operations, omit per-run steps to avoid N+1 queries.
         // Steps are only included on get_pipeline_run (single run lookup).
-        let proto_runs: Vec<muli_proto::PipelineRun> =
-            runs.iter().map(|run| run_to_proto(run, &[])).collect();
+        let pipeline_names: HashMap<String, String> = self
+            .pipeline_store
+            .get_by_repo(&caller_tenant, &req.repo_id)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to get pipelines: {e}")))?
+            .into_iter()
+            .map(|pipeline| (pipeline.id, pipeline.name))
+            .collect();
+
+        let proto_runs: Vec<muli_proto::PipelineRun> = runs
+            .iter()
+            .map(|run| {
+                run_to_proto(
+                    run,
+                    pipeline_names.get(&run.pipeline_id).map(String::as_str),
+                    &[],
+                )
+            })
+            .collect();
 
         Ok(Response::new(ListPipelineRunsResponse {
             total: proto_runs.len() as u32,
@@ -425,9 +451,20 @@ impl PipelineServiceImpl {
             .list_by_run(&caller_tenant, &new_run.id)
             .await
             .unwrap_or_default();
+        let pipeline_name = self
+            .pipeline_store
+            .get_pipeline(&caller_tenant, &new_run.pipeline_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|pipeline| pipeline.name);
 
         Ok(Response::new(PipelineRunResponse {
-            run: Some(run_to_proto(&new_run, &final_steps)),
+            run: Some(run_to_proto(
+                &new_run,
+                pipeline_name.as_deref(),
+                &final_steps,
+            )),
         }))
     }
 }

@@ -32,11 +32,8 @@ pub fn matches_trigger(trigger: &TriggerDef, event: &PipelineEvent) -> bool {
             if let Some(push) = &trigger.push {
                 let branch_match = push.branches.is_empty()
                     || push.branches.iter().any(|b| matches_glob(b, branch));
-                let path_match = push.paths.is_empty()
-                    || push
-                        .paths
-                        .iter()
-                        .any(|p| changed_paths.iter().any(|cp| matches_glob(p, cp)));
+                let path_match =
+                    push.paths.is_empty() || matches_any_path(&push.paths, changed_paths);
                 branch_match && path_match
             } else {
                 false
@@ -61,7 +58,7 @@ pub fn matches_trigger(trigger: &TriggerDef, event: &PipelineEvent) -> bool {
 }
 
 /// Simple glob matching: supports `*` as wildcard.
-fn matches_glob(pattern: &str, value: &str) -> bool {
+pub fn matches_glob(pattern: &str, value: &str) -> bool {
     if pattern == "*" {
         return true;
     }
@@ -72,6 +69,12 @@ fn matches_glob(pattern: &str, value: &str) -> bool {
         return value.starts_with(prefix);
     }
     pattern == value
+}
+
+pub fn matches_any_path(patterns: &[String], changed_paths: &[String]) -> bool {
+    patterns
+        .iter()
+        .any(|pattern| changed_paths.iter().any(|path| matches_glob(pattern, path)))
 }
 
 #[cfg(test)]

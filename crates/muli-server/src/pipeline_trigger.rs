@@ -116,6 +116,46 @@ impl PipelineTriggerImpl {
         .await;
     }
 
+    async fn resolve_push_changed_paths(
+        &self,
+        tenant_id: &str,
+        repo_id: &str,
+        old_sha: &str,
+        new_sha: &str,
+    ) -> Vec<String> {
+        let repo = match self.repo_store.get_repository(repo_id).await {
+            Ok(Some(repo)) => repo,
+            Ok(None) => return Vec::new(),
+            Err(e) => {
+                warn!(error = %e, "pipeline trigger: failed to look up repository for changed paths");
+                return Vec::new();
+            }
+        };
+
+        let repo_path = self
+            .git_storage
+            .repo_path(tenant_id, &repo.namespace, &repo.name);
+
+        match tokio::task::spawn_blocking({
+            let repo_path = repo_path.clone();
+            let old_sha = old_sha.to_string();
+            let new_sha = new_sha.to_string();
+            move || resolve_push_changed_paths(&repo_path, &old_sha, &new_sha)
+        })
+        .await
+        {
+            Ok(Ok(paths)) => paths,
+            Ok(Err(e)) => {
+                warn!(error = %e, "pipeline trigger: failed to diff changed paths for push");
+                Vec::new()
+            }
+            Err(e) => {
+                error!(error = %e, "pipeline trigger: spawn_blocking panicked during push diff");
+                Vec::new()
+            }
+        }
+    }
+
     async fn trigger_pipeline(
         &self,
         tenant_id: &str,
@@ -574,30 +614,41 @@ impl PipelineTriggerImpl {
 
 #[async_trait::async_trait]
 impl PipelineTriggerHook for PipelineTriggerImpl {
-    async fn on_push(&self, tenant_id: &str, repo_id: &str, commit_sha: &str, ref_name: &str) {
+    async fn on_push(
+        &self,
+        tenant_id: &str,
+        repo_id: &str,
+        old_sha: &str,
+        new_sha: &str,
+        ref_name: &str,
+    ) {
         let branch = ref_name
             .strip_prefix("refs/heads/")
             .unwrap_or(ref_name)
             .to_string();
+        let changed_paths = self
+            .resolve_push_changed_paths(tenant_id, repo_id, old_sha, new_sha)
+            .await;
 
         info!(
             tenant_id = %tenant_id,
             repo_id = %repo_id,
-            commit_sha = %commit_sha,
+            commit_sha = %new_sha,
             branch = %branch,
             "pipeline trigger: push event"
         );
 
         let event = PipelineEvent::Push {
             branch: branch.clone(),
-            changed_paths: vec![], // Path filtering requires diffing old..new (future enhancement)
+            changed_paths: changed_paths.clone(),
         };
 
         let trigger = PipelineTrigger::Push {
             ref_name: ref_name.to_string(),
+            changed_paths,
         };
 
-        self.trigger_pipeline(tenant_id, repo_id, commit_sha, ref_name, event, trigger)
+        self.trigger_pipeline(tenant_id, repo_id, new_sha, ref_name, event, trigger)
             .await;
     }
 
@@ -656,6 +707,24 @@ impl PipelineTriggerHook for PipelineTriggerImpl {
         };
 
         let ref_name = format!("refs/heads/{}", pr.source_branch);
+        let changed_paths = match tokio::task::spawn_blocking({
+            let repo_path = repo_path.clone();
+            let target_branch = pr.target_branch.clone();
+            let source_branch = pr.source_branch.clone();
+            move || resolve_pr_changed_paths(&repo_path, &target_branch, &source_branch)
+        })
+        .await
+        {
+            Ok(Ok(paths)) => paths,
+            Ok(Err(e)) => {
+                warn!(error = %e, "pipeline trigger: failed to diff changed paths for PR");
+                Vec::new()
+            }
+            Err(e) => {
+                error!(error = %e, "pipeline trigger: spawn_blocking panicked during PR diff");
+                Vec::new()
+            }
+        };
 
         let pipeline_event = PipelineEvent::PullRequest {
             target_branch: pr.target_branch.clone(),
@@ -665,6 +734,7 @@ impl PipelineTriggerHook for PipelineTriggerImpl {
         let trigger = PipelineTrigger::PullRequest {
             pr_number,
             event: event.to_string(),
+            changed_paths,
         };
 
         self.trigger_pipeline(
@@ -685,6 +755,101 @@ fn ci_clone_url_target(pipeline_def: &PipelineDef) -> CiCloneUrlTarget {
     } else {
         CiCloneUrlTarget::HostCheckout
     }
+}
+
+fn is_zero_sha(sha: &str) -> bool {
+    !sha.is_empty() && sha.chars().all(|c| c == '0')
+}
+
+fn collect_tree_paths(tree: &git2::Tree<'_>) -> muli_core::error::Result<Vec<String>> {
+    let mut paths = Vec::new();
+    tree.walk(git2::TreeWalkMode::PreOrder, |prefix, entry| {
+        if entry.kind() == Some(git2::ObjectType::Blob) {
+            if let Some(name) = entry.name() {
+                paths.push(format!("{prefix}{name}"));
+            }
+        }
+        git2::TreeWalkResult::Ok
+    })
+    .map_err(|e| MuliError::Pipeline(format!("cannot walk tree: {e}")))?;
+    Ok(paths)
+}
+
+fn diff_paths_between(
+    repo: &git2::Repository,
+    from: git2::Oid,
+    to: git2::Oid,
+) -> muli_core::error::Result<Vec<String>> {
+    let from_commit = repo
+        .find_commit(from)
+        .map_err(|e| MuliError::Pipeline(format!("cannot find base commit: {e}")))?;
+    let to_commit = repo
+        .find_commit(to)
+        .map_err(|e| MuliError::Pipeline(format!("cannot find head commit: {e}")))?;
+    let from_tree = from_commit
+        .tree()
+        .map_err(|e| MuliError::Pipeline(format!("cannot read base tree: {e}")))?;
+    let to_tree = to_commit
+        .tree()
+        .map_err(|e| MuliError::Pipeline(format!("cannot read head tree: {e}")))?;
+    let diff = repo
+        .diff_tree_to_tree(Some(&from_tree), Some(&to_tree), None)
+        .map_err(|e| MuliError::Pipeline(format!("cannot diff trees: {e}")))?;
+
+    let mut paths = HashSet::new();
+    for delta in diff.deltas() {
+        if let Some(path) = delta.new_file().path().or(delta.old_file().path()) {
+            paths.insert(path.to_string_lossy().into_owned());
+        }
+    }
+    Ok(paths.into_iter().collect())
+}
+
+fn resolve_push_changed_paths(
+    repo_path: &Path,
+    old_sha: &str,
+    new_sha: &str,
+) -> muli_core::error::Result<Vec<String>> {
+    if is_zero_sha(new_sha) {
+        return Ok(Vec::new());
+    }
+
+    let repo = git2::Repository::open(repo_path)
+        .map_err(|e| MuliError::Pipeline(format!("cannot open repo: {e}")))?;
+    let new_oid = git2::Oid::from_str(new_sha)
+        .map_err(|e| MuliError::Pipeline(format!("bad new sha: {e}")))?;
+
+    if is_zero_sha(old_sha) {
+        let new_commit = repo
+            .find_commit(new_oid)
+            .map_err(|e| MuliError::Pipeline(format!("cannot find new commit: {e}")))?;
+        let new_tree = new_commit
+            .tree()
+            .map_err(|e| MuliError::Pipeline(format!("cannot read new tree: {e}")))?;
+        return collect_tree_paths(&new_tree);
+    }
+
+    let old_oid = git2::Oid::from_str(old_sha)
+        .map_err(|e| MuliError::Pipeline(format!("bad old sha: {e}")))?;
+    diff_paths_between(&repo, old_oid, new_oid)
+}
+
+fn resolve_pr_changed_paths(
+    repo_path: &Path,
+    target_branch: &str,
+    source_branch: &str,
+) -> muli_core::error::Result<Vec<String>> {
+    let repo = git2::Repository::open(repo_path)
+        .map_err(|e| MuliError::Pipeline(format!("cannot open repo: {e}")))?;
+    let target_oid = git2::Oid::from_str(&resolve_branch_head(repo_path, target_branch)?)
+        .map_err(|e| MuliError::Pipeline(format!("bad target sha: {e}")))?;
+    let source_oid = git2::Oid::from_str(&resolve_branch_head(repo_path, source_branch)?)
+        .map_err(|e| MuliError::Pipeline(format!("bad source sha: {e}")))?;
+
+    let base_oid = repo
+        .merge_base(target_oid, source_oid)
+        .unwrap_or(target_oid);
+    diff_paths_between(&repo, base_oid, source_oid)
 }
 
 /// Resolve the HEAD commit SHA for a branch in a bare repository.

@@ -24,6 +24,7 @@ use muli_core::resource::limits::ResourceSpec;
 use muli_core::traits::{JobStore, PipelineRunStore, StepRunStore};
 
 use crate::dag::graph::DagGraph;
+use crate::trigger::matcher::matches_any_path;
 use crate::yaml::expression::{ExpressionContext, evaluate_condition};
 use crate::yaml::schema::{JobDef, PipelineDef, ResourceDef, StepDef};
 
@@ -101,6 +102,14 @@ impl DagExecutor {
                 .get(n)
                 .and_then(|d| d.condition.as_deref())
                 .map(|s| s.to_string())
+        })
+        .await?;
+        self.evaluate_job_paths(&run.tenant_id, run, step_runs, &original_names, |n| {
+            pipeline_def
+                .jobs
+                .get(n)
+                .map(|d| d.paths.clone())
+                .unwrap_or_default()
         })
         .await?;
 
@@ -455,6 +464,33 @@ impl DagExecutor {
         Ok(())
     }
 
+    async fn evaluate_job_paths(
+        &self,
+        tenant_id: &str,
+        run: &PipelineRun,
+        step_runs: &[StepRun],
+        original_names: &[&str],
+        paths_for: impl Fn(&str) -> Vec<String>,
+    ) -> Result<()> {
+        let Some(changed_paths) = changed_paths_for_trigger(&run.trigger) else {
+            return Ok(());
+        };
+
+        for sr in step_runs {
+            if let Some(orig) = find_original_name(&sr.step_name, original_names) {
+                let job_paths = paths_for(orig);
+                if !job_paths.is_empty() && !matches_any_path(&job_paths, changed_paths) {
+                    self.step_store
+                        .update_step_state(tenant_id, &sr.id, StepRunState::Skipped)
+                        .await?;
+                    info!(step = %sr.step_name, "skipped (changed paths do not match job filter)");
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     async fn mark_run_started(&self, run: &mut PipelineRun) -> Result<()> {
         run.state = PipelineRunState::Running;
         run.started_at = Some(Utc::now());
@@ -786,5 +822,15 @@ fn trigger_event_str(trigger: &PipelineTrigger) -> String {
         PipelineTrigger::Manual { .. } => "manual".into(),
         PipelineTrigger::Schedule { .. } => "schedule".into(),
         PipelineTrigger::Retry { .. } => "retry".into(),
+    }
+}
+
+fn changed_paths_for_trigger(trigger: &PipelineTrigger) -> Option<&[String]> {
+    match trigger {
+        PipelineTrigger::Push { changed_paths, .. }
+        | PipelineTrigger::PullRequest { changed_paths, .. } => Some(changed_paths.as_slice()),
+        PipelineTrigger::Manual { .. }
+        | PipelineTrigger::Schedule { .. }
+        | PipelineTrigger::Retry { .. } => None,
     }
 }

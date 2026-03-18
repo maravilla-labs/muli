@@ -33,6 +33,7 @@ fn make_run(tenant_id: &str, pipeline_id: &str, repo_id: &str, run_number: u64) 
         "refs/heads/main".into(),
         PipelineTrigger::Push {
             ref_name: "refs/heads/main".into(),
+            changed_paths: vec![],
         },
         "name: ci\nsteps:\n  - name: test\n    image: rust:1.82".into(),
     )
