@@ -2919,7 +2919,7 @@ dependencies = [
 
 [[package]]
 name = "muli-agent"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2939,7 +2939,7 @@ dependencies = [
 
 [[package]]
 name = "muli-core"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "argon2",
  "async-trait",
@@ -2957,7 +2957,7 @@ dependencies = [
 
 [[package]]
 name = "muli-engine"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "async-trait",
  "backoff",
@@ -2978,7 +2978,7 @@ dependencies = [
 
 [[package]]
 name = "muli-git"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3012,7 +3012,7 @@ dependencies = [
 
 [[package]]
 name = "muli-pipeline"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "async-trait",
  "axum",
@@ -3038,7 +3038,7 @@ dependencies = [
 
 [[package]]
 name = "muli-proto"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "prost",
  "prost-types",
@@ -3050,7 +3050,7 @@ dependencies = [
 
 [[package]]
 name = "muli-queue"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "chrono",
  "dashmap",
@@ -3062,7 +3062,7 @@ dependencies = [
 
 [[package]]
 name = "muli-registry"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "async-trait",
  "axum",
@@ -3093,7 +3093,7 @@ dependencies = [
 
 [[package]]
 name = "muli-server"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3140,7 +3140,7 @@ dependencies = [
 
 [[package]]
 name = "muli-store"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3160,7 +3160,7 @@ dependencies = [
 
 [[package]]
 name = "muli-test"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "anyhow",
  "bollard",
