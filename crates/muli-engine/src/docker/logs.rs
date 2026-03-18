@@ -153,6 +153,11 @@ impl LogCollector {
         self.tx.subscribe()
     }
 
+    /// Return the next sequence number that would be assigned to a new line.
+    pub fn next_sequence(&self) -> u64 {
+        self.sequence.load(Ordering::SeqCst)
+    }
+
     /// Get the last N lines from the ring buffer.
     pub async fn get_historical(&self, tail: usize) -> Vec<LogLine> {
         let buf = self.buffer.read().await;
@@ -174,14 +179,9 @@ impl LogCollector {
     }
 
     /// One-shot fetch of all container logs (non-follow). Called as a safety net
-    /// after the follow stream ends — only actually fetches if the buffer is empty,
-    /// meaning the follow stream missed all output.
+    /// after the follow stream ends.
     pub async fn fetch_remaining_logs(&self, docker: &DockerClient, container_id: &str) {
-        if !self.buffer.read().await.is_empty() {
-            return;
-        }
-
-        debug!(container_id = %container_id, "Follow stream captured 0 lines — fetching logs with one-shot request");
+        debug!(container_id = %container_id, "Fetching container logs with one-shot request");
 
         let options = LogsOptions::<String> {
             follow: false,

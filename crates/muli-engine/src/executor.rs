@@ -142,6 +142,7 @@ impl DockerExecutor {
         .await?;
 
         // 6. Start log collector using the provided (externally-owned) collector
+        let container_log_start_seq = log_collector.next_sequence();
         let log_handle = log_collector.start_log_stream(self.docker.clone(), container_id.clone());
 
         // 7. Start container
@@ -163,10 +164,15 @@ impl DockerExecutor {
             }
         }
 
-        // Safety net: if the follow stream captured zero lines, do a one-shot fetch
-        log_collector
-            .fetch_remaining_logs(&self.docker, &container_id)
-            .await;
+        // Safety net: if the follow stream captured no container output, do a one-shot fetch.
+        // Checkout logs may already exist in the shared collector, so we must compare against
+        // the sequence position where the container log stream started instead of checking
+        // whether the collector is globally empty.
+        if log_collector.next_sequence() == container_log_start_seq {
+            log_collector
+                .fetch_remaining_logs(&self.docker, &container_id)
+                .await;
+        }
 
         match wait_result {
             Ok(Ok(exit_code)) => {

@@ -50,7 +50,14 @@ pub async fn perform_checkout(
     .await?;
 
     run_git(
-        &["-C", &workspace_str, "checkout", &checkout.sha],
+        &[
+            "-c",
+            "advice.detachedHead=false",
+            "-C",
+            &workspace_str,
+            "checkout",
+            &checkout.sha,
+        ],
         log_collector,
         &seq,
     )

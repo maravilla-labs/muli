@@ -104,7 +104,8 @@ impl PipelineRunStore for SqlitePipelineRunStore {
                 Some(state_s) => {
                     let mut stmt = c.prepare(
                         "SELECT full_json FROM pipeline_runs WHERE repo_id = ?1 AND state = ?2
-                         ORDER BY run_number DESC LIMIT ?3 OFFSET ?4",
+                         ORDER BY json_extract(full_json, '$.created_at') DESC, run_number DESC
+                         LIMIT ?3 OFFSET ?4",
                     )?;
                     let mut rows = stmt.query(rusqlite::params![rid, state_s, lim, off])?;
                     let mut result = Vec::new();
@@ -117,7 +118,8 @@ impl PipelineRunStore for SqlitePipelineRunStore {
                 None => {
                     let mut stmt = c.prepare(
                         "SELECT full_json FROM pipeline_runs WHERE repo_id = ?1
-                         ORDER BY run_number DESC LIMIT ?2 OFFSET ?3",
+                         ORDER BY json_extract(full_json, '$.created_at') DESC, run_number DESC
+                         LIMIT ?2 OFFSET ?3",
                     )?;
                     let mut rows = stmt.query(rusqlite::params![rid, lim, off])?;
                     let mut result = Vec::new();
@@ -334,6 +336,32 @@ mod tests {
         assert_eq!(page2.len(), 2);
         assert_eq!(page2[0].run_number, 3);
         assert_eq!(page2[1].run_number, 2);
+    }
+
+    #[tokio::test]
+    async fn test_run_list_by_repo_orders_by_created_at_across_pipelines() {
+        let (factory, _dir) = make_factory().await;
+        let store = SqlitePipelineRunStore::new(factory);
+
+        let mut older = make_run("t1", "pipe-1", "repo-1", 9);
+        older.created_at = chrono::Utc::now() - chrono::Duration::minutes(2);
+        older.updated_at = older.created_at;
+
+        let mut newer = make_run("t1", "pipe-2", "repo-1", 1);
+        newer.created_at = chrono::Utc::now() - chrono::Duration::minutes(1);
+        newer.updated_at = newer.created_at;
+
+        store.create_run(&older).await.unwrap();
+        store.create_run(&newer).await.unwrap();
+
+        let runs = store
+            .list_by_repo("t1", "repo-1", None, 10, 0)
+            .await
+            .unwrap();
+
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].pipeline_id, "pipe-2");
+        assert_eq!(runs[1].pipeline_id, "pipe-1");
     }
 
     #[tokio::test]
