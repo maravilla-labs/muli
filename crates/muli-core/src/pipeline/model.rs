@@ -118,6 +118,8 @@ pub struct StepRun {
     pub state: StepRunState,
     /// Matrix variable values for this specific expansion (e.g. {"rust_version": "1.82"}).
     pub matrix_values: Option<serde_json::Value>,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
     pub failure_strategy: FailureStrategy,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
@@ -142,6 +144,7 @@ impl StepRun {
             job_id: None,
             state: StepRunState::Pending,
             matrix_values,
+            depends_on: Vec::new(),
             failure_strategy,
             started_at: None,
             finished_at: None,

@@ -5,7 +5,7 @@
 
 use muli_core::error::{MuliError, Result};
 
-use crate::yaml::schema::StepDef;
+use crate::yaml::schema::{JobDef, StepDef};
 
 const MAX_MATRIX_COMBINATIONS: usize = 25;
 
@@ -56,6 +56,59 @@ pub fn expand_matrix(step: &StepDef) -> Result<Vec<StepDef>> {
         }
         expanded_step.matrix = None;
         expanded.push(expanded_step);
+    }
+
+    Ok(expanded)
+}
+
+/// Expand a job with a matrix into `(step_name, matrix_values_json)` pairs.
+/// Returns a single `(job_name, None)` pair if the job has no matrix.
+pub fn expand_job_matrix(
+    job_name: &str,
+    job_def: &JobDef,
+) -> Result<Vec<(String, Option<serde_json::Value>)>> {
+    let matrix = match &job_def.matrix {
+        Some(m) if !m.is_empty() => m,
+        _ => return Ok(vec![(job_name.to_string(), None)]),
+    };
+
+    let keys: Vec<&String> = matrix.keys().collect();
+    let values: Vec<&Vec<String>> = keys.iter().map(|k| &matrix[*k]).collect();
+
+    let mut combinations = vec![vec![]];
+    for vals in &values {
+        let mut new_combos = Vec::new();
+        for combo in &combinations {
+            for v in *vals {
+                let mut c = combo.clone();
+                c.push(v.clone());
+                new_combos.push(c);
+            }
+        }
+        combinations = new_combos;
+    }
+
+    if combinations.len() > MAX_MATRIX_COMBINATIONS {
+        return Err(MuliError::PipelineYamlError(format!(
+            "job '{}' matrix produces {} combinations (max {MAX_MATRIX_COMBINATIONS})",
+            job_name,
+            combinations.len()
+        )));
+    }
+
+    let mut expanded = Vec::new();
+    for combo in &combinations {
+        let suffix: Vec<String> = keys
+            .iter()
+            .zip(combo.iter())
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        let name = format!("{} ({})", job_name, suffix.join(", "));
+        let mut mv = serde_json::Map::new();
+        for (key, val) in keys.iter().zip(combo.iter()) {
+            mv.insert((*key).clone(), serde_json::Value::String(val.clone()));
+        }
+        expanded.push((name, Some(serde_json::Value::Object(mv))));
     }
 
     Ok(expanded)

@@ -89,6 +89,7 @@ message StepRun {
   FailureStrategy failure_strategy = 7;
   Timestamp started_at = 8;
   Timestamp finished_at = 9;
+  repeated string depends_on = 10; // dependency job/step names
 }
 
 message PipelineArtifact {

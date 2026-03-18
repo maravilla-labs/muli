@@ -21,6 +21,10 @@ fn make_job_spec(tenant_id: &str) -> JobSpec {
         idempotency_key: None,
         registry_credentials: None,
         commands: vec![],
+        checkout: None,
+        artifact_downloads: vec![],
+        artifact_upload_paths: vec![],
+        artifact_upload_key: None,
     }
 }
 
