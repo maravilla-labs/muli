@@ -19,6 +19,20 @@ use muli_core::resource::limits::DockerResourceLimits;
 
 use super::client::DockerClient;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerWaitOutcome {
+    pub exit_code: Option<i64>,
+    pub wait_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ContainerStateSnapshot {
+    pub status: Option<String>,
+    pub exit_code: Option<i64>,
+    pub oom_killed: Option<bool>,
+    pub runtime_error: Option<String>,
+}
+
 /// Create a container for a job.
 pub async fn create_container(
     docker: &DockerClient,
@@ -165,8 +179,27 @@ pub async fn remove_container(docker: &DockerClient, container_id: &str) -> Resu
     Ok(())
 }
 
-/// Wait for a container to exit and return the exit code.
-pub async fn wait_container(docker: &DockerClient, container_id: &str) -> Result<i64> {
+pub async fn inspect_container(
+    docker: &DockerClient,
+    container_id: &str,
+) -> Result<ContainerStateSnapshot> {
+    let response = docker
+        .inner()
+        .inspect_container(container_id, None)
+        .await
+        .map_err(|e| MuliError::Docker(format!("Failed to inspect container: {e}")))?;
+
+    let state = response.state.unwrap_or_default();
+    Ok(ContainerStateSnapshot {
+        status: state.status.map(|status| status.to_string()),
+        exit_code: state.exit_code,
+        oom_killed: state.oom_killed,
+        runtime_error: state.error,
+    })
+}
+
+/// Wait for a container to exit and return either the exit code or the Docker wait error.
+pub async fn wait_container(docker: &DockerClient, container_id: &str) -> ContainerWaitOutcome {
     let options = WaitContainerOptions {
         condition: "not-running",
     };
@@ -182,26 +215,28 @@ pub async fn wait_container(docker: &DockerClient, container_id: &str) -> Result
                     exit_code = exit_code,
                     "Container exited"
                 );
-                return Ok(exit_code);
+                return ContainerWaitOutcome {
+                    exit_code: Some(exit_code),
+                    wait_error: None,
+                };
             }
-            Err(bollard::errors::Error::DockerContainerWaitError { code, .. }) => {
-                // Bollard converts non-zero exit codes into errors; extract the code.
-                info!(
-                    container_id = %container_id,
-                    exit_code = code,
-                    "Container exited (non-zero)"
-                );
-                return Ok(code);
+            Err(bollard::errors::Error::DockerContainerWaitError { code, error, .. }) => {
+                return ContainerWaitOutcome {
+                    exit_code: None,
+                    wait_error: Some(format!("docker wait error code={code}: {error}")),
+                };
             }
             Err(e) => {
-                return Err(MuliError::Docker(format!(
-                    "Error waiting for container: {e}"
-                )));
+                return ContainerWaitOutcome {
+                    exit_code: None,
+                    wait_error: Some(format!("Error waiting for container: {e}")),
+                };
             }
         }
     }
 
-    Err(MuliError::Docker(
-        "Container wait stream ended unexpectedly".to_string(),
-    ))
+    ContainerWaitOutcome {
+        exit_code: None,
+        wait_error: Some("Container wait stream ended unexpectedly".to_string()),
+    }
 }

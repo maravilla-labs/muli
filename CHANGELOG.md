@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-03-18
+
+### Added
+
+- **Exact fast-failing Node pipeline e2e coverage** — Muli's server e2e suite now exercises the real private-repo checkout path with a `node:22-alpine` pipeline using `jobs.<name>.commands` plus named `steps`, and verifies that a fast failing build preserves the actual container output and exit code.
+
+### Fixed
+
+- **Bogus Docker wait exit codes** — job execution no longer treats Docker wait API error codes as authoritative container exit codes. Muli now inspects the container state after wait and uses the inspected exit code when available, avoiding misleading failures such as `exit code 243`.
+- **Missing final container logs on failed jobs** — failed jobs now always perform a best-effort final container log fetch before cleanup, even when a follow stream already started, so fast failures keep their real runtime output instead of only checkout logs.
+- **Docker runtime diagnostics in step failures** — when container execution fails before a trustworthy exit code is available, step failure messages now include structured Docker wait/inspect diagnostics instead of collapsing into an incorrect numeric exit code.
+
 ## [0.4.2] - 2026-03-18
 
 ### Fixed

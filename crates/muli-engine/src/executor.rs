@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use tracing::{error, info};
 
-use muli_core::error::Result;
+use muli_core::error::{MuliError, Result};
 use muli_core::job::artifact_handler::ArtifactHandler;
 use muli_core::job::model::{Job, JobResult};
 use muli_core::resource::limits::parse_cpu_millicores;
@@ -164,27 +164,90 @@ impl DockerExecutor {
             }
         }
 
-        // Safety net: if the follow stream captured no container output, do a one-shot fetch.
-        // Checkout logs may already exist in the shared collector, so we must compare against
-        // the sequence position where the container log stream started instead of checking
-        // whether the collector is globally empty.
-        if log_collector.next_sequence() == container_log_start_seq {
-            log_collector
-                .fetch_remaining_logs(&self.docker, &container_id)
-                .await;
-        }
-
         match wait_result {
-            Ok(Ok(exit_code)) => {
-                let exit_code_i32 = exit_code as i32;
-                let message = if exit_code == 0 {
-                    "Job completed successfully".to_string()
-                } else {
-                    format!("Job failed with exit code {exit_code}")
+            Ok(wait_outcome) => {
+                let inspect_snapshot = match container::inspect_container(
+                    &self.docker,
+                    &container_id,
+                )
+                .await
+                {
+                    Ok(snapshot) => Some(snapshot),
+                    Err(e) => {
+                        error!(job_id = %job_id, container_id = %container_id, error = %e, "Failed to inspect container after wait");
+                        None
+                    }
                 };
 
+                let should_fetch_remaining_logs = log_collector.next_sequence()
+                    == container_log_start_seq
+                    || wait_outcome.wait_error.is_some()
+                    || wait_outcome.exit_code != Some(0)
+                    || inspect_snapshot
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.exit_code)
+                        .unwrap_or(0)
+                        != 0;
+                let log_fetch_error = if should_fetch_remaining_logs {
+                    match log_collector
+                        .fetch_remaining_logs(&self.docker, &container_id, container_log_start_seq)
+                        .await
+                    {
+                        Ok(_) => None,
+                        Err(e) => {
+                            error!(
+                                job_id = %job_id,
+                                container_id = %container_id,
+                                error = %e,
+                                "Failed to fetch final container logs"
+                            );
+                            Some(e)
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(wait_error) = wait_outcome.wait_error.as_deref()
+                    && let Some(snapshot) = inspect_snapshot.as_ref()
+                    && snapshot.exit_code.is_some()
+                {
+                    error!(
+                        job_id = %job_id,
+                        container_id = %container_id,
+                        wait_error,
+                        inspected_exit_code = snapshot.exit_code,
+                        inspected_status = snapshot.status.as_deref().unwrap_or("unknown"),
+                        oom_killed = snapshot.oom_killed.unwrap_or(false),
+                        "Docker wait returned an error but inspect reported a concrete exit code"
+                    );
+                }
+                if let (Some(wait_exit), Some(snapshot)) =
+                    (wait_outcome.exit_code, inspect_snapshot.as_ref())
+                    && let Some(inspected_exit) = snapshot.exit_code
+                    && wait_exit != inspected_exit
+                {
+                    error!(
+                        job_id = %job_id,
+                        container_id = %container_id,
+                        wait_exit_code = wait_exit,
+                        inspected_exit_code = inspected_exit,
+                        inspected_status = snapshot.status.as_deref().unwrap_or("unknown"),
+                        oom_killed = snapshot.oom_killed.unwrap_or(false),
+                        "Docker wait/inspect exit code mismatch"
+                    );
+                }
+
+                let resolved = resolve_container_outcome(
+                    &wait_outcome,
+                    inspect_snapshot.as_ref(),
+                    log_fetch_error.as_deref(),
+                )?;
+                let exit_code_i32 = resolved.exit_code.unwrap_or(0);
+                let message = resolved.message;
+
                 // 9. Upload artifacts if exit 0 and paths configured
-                if exit_code == 0 && !spec.artifact_upload_paths.is_empty() {
+                if exit_code_i32 == 0 && !spec.artifact_upload_paths.is_empty() {
                     if let (Some(handler), Some(key)) =
                         (&self.artifact_handler, &spec.artifact_upload_key)
                     {
@@ -219,10 +282,6 @@ impl DockerExecutor {
                     container_id: Some(container_id),
                 })
             }
-            Ok(Err(e)) => {
-                error!(job_id = %job_id, error = %e, "Error waiting for container");
-                Err(e)
-            }
             Err(_) => {
                 // Timeout - enforce stop then return the timeout error
                 enforce_timeout(&self.docker, &container_id, timeout_duration).await?;
@@ -249,5 +308,161 @@ impl DockerExecutor {
         if let Err(e) = volume::cleanup_temp_dir(job_id) {
             tracing::debug!(job_id = %job_id, error = %e, "Cleanup: temp dir removal failed");
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedContainerOutcome {
+    exit_code: Option<i32>,
+    message: String,
+}
+
+fn resolve_container_outcome(
+    wait_outcome: &container::ContainerWaitOutcome,
+    inspect_snapshot: Option<&container::ContainerStateSnapshot>,
+    log_fetch_error: Option<&str>,
+) -> Result<ResolvedContainerOutcome> {
+    let inspected_exit_code = inspect_snapshot.and_then(|snapshot| snapshot.exit_code);
+    let effective_exit_code = inspected_exit_code.or(wait_outcome.exit_code);
+
+    if let Some(exit_code) = effective_exit_code {
+        let exit_code_i32 = exit_code as i32;
+        if exit_code_i32 == 0 {
+            return Ok(ResolvedContainerOutcome {
+                exit_code: Some(0),
+                message: "Job completed successfully".to_string(),
+            });
+        }
+
+        return Ok(ResolvedContainerOutcome {
+            exit_code: Some(exit_code_i32),
+            message: format_failure_message(
+                Some(exit_code_i32),
+                wait_outcome.wait_error.as_deref(),
+                inspect_snapshot,
+                log_fetch_error,
+            ),
+        });
+    }
+
+    Err(MuliError::Docker(format_failure_message(
+        None,
+        wait_outcome.wait_error.as_deref(),
+        inspect_snapshot,
+        log_fetch_error,
+    )))
+}
+
+fn format_failure_message(
+    exit_code: Option<i32>,
+    wait_error: Option<&str>,
+    inspect_snapshot: Option<&container::ContainerStateSnapshot>,
+    log_fetch_error: Option<&str>,
+) -> String {
+    let mut details = Vec::new();
+    if let Some(wait_error) = wait_error {
+        details.push(format!("docker_wait_error={wait_error}"));
+    }
+    if let Some(snapshot) = inspect_snapshot {
+        if let Some(status) = snapshot.status.as_deref() {
+            details.push(format!("container_status={status}"));
+        }
+        if let Some(inspected_exit_code) = snapshot.exit_code {
+            details.push(format!("container_exit_code={inspected_exit_code}"));
+        }
+        if let Some(oom_killed) = snapshot.oom_killed {
+            details.push(format!("oom_killed={oom_killed}"));
+        }
+        if let Some(runtime_error) = snapshot.runtime_error.as_deref()
+            && !runtime_error.is_empty()
+        {
+            details.push(format!("container_error={runtime_error}"));
+        }
+    }
+    if let Some(log_fetch_error) = log_fetch_error {
+        details.push(format!("log_fetch_error={log_fetch_error}"));
+    }
+
+    match exit_code {
+        Some(code) if details.is_empty() => format!("Job failed with exit code {code}"),
+        Some(code) => format!("Job failed with exit code {code} ({})", details.join(", ")),
+        None if details.is_empty() => "Container execution failed".to_string(),
+        None => format!("Container execution failed ({})", details.join(", ")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{format_failure_message, resolve_container_outcome};
+    use crate::docker::container::{ContainerStateSnapshot, ContainerWaitOutcome};
+
+    #[test]
+    fn wait_error_uses_inspected_exit_code_when_available() {
+        let wait_outcome = ContainerWaitOutcome {
+            exit_code: None,
+            wait_error: Some("docker wait error code=243: transport failure".to_string()),
+        };
+        let inspect_snapshot = ContainerStateSnapshot {
+            status: Some("exited".to_string()),
+            exit_code: Some(2),
+            oom_killed: Some(false),
+            runtime_error: None,
+        };
+
+        let resolved =
+            resolve_container_outcome(&wait_outcome, Some(&inspect_snapshot), None).unwrap();
+
+        assert_eq!(resolved.exit_code, Some(2));
+        assert!(
+            resolved
+                .message
+                .contains("docker_wait_error=docker wait error code=243"),
+            "{}",
+            resolved.message
+        );
+        assert!(resolved.message.contains("container_exit_code=2"));
+    }
+
+    #[test]
+    fn wait_error_without_inspected_exit_code_is_docker_error() {
+        let wait_outcome = ContainerWaitOutcome {
+            exit_code: None,
+            wait_error: Some("docker wait error code=243: transport failure".to_string()),
+        };
+        let inspect_snapshot = ContainerStateSnapshot {
+            status: Some("dead".to_string()),
+            exit_code: None,
+            oom_killed: Some(false),
+            runtime_error: Some("shim disconnected".to_string()),
+        };
+
+        let err = resolve_container_outcome(&wait_outcome, Some(&inspect_snapshot), None)
+            .expect_err("expected docker execution error");
+        let message = err.to_string();
+        assert!(message.contains("docker wait error code=243"), "{message}");
+        assert!(message.contains("container_status=dead"), "{message}");
+        assert!(
+            message.contains("container_error=shim disconnected"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn failure_message_includes_log_fetch_error() {
+        let message = format_failure_message(
+            Some(2),
+            None,
+            Some(&ContainerStateSnapshot {
+                status: Some("exited".to_string()),
+                exit_code: Some(2),
+                oom_killed: Some(false),
+                runtime_error: None,
+            }),
+            Some("docker logs failed"),
+        );
+        assert!(
+            message.contains("log_fetch_error=docker logs failed"),
+            "{message}"
+        );
     }
 }

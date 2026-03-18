@@ -11,7 +11,7 @@ use bollard::container::LogsOptions;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, broadcast};
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use super::client::DockerClient;
 
@@ -180,7 +180,12 @@ impl LogCollector {
 
     /// One-shot fetch of all container logs (non-follow). Called as a safety net
     /// after the follow stream ends.
-    pub async fn fetch_remaining_logs(&self, docker: &DockerClient, container_id: &str) {
+    pub async fn fetch_remaining_logs(
+        &self,
+        docker: &DockerClient,
+        container_id: &str,
+        container_log_start_seq: u64,
+    ) -> Result<usize, String> {
         debug!(container_id = %container_id, "Fetching container logs with one-shot request");
 
         let options = LogsOptions::<String> {
@@ -193,6 +198,7 @@ impl LogCollector {
         };
 
         let mut stream = docker.inner().logs(container_id, Some(options));
+        let mut fetched = Vec::new();
 
         while let Some(result) = stream.next().await {
             match result {
@@ -207,36 +213,47 @@ impl LogCollector {
                         _ => continue,
                     };
 
-                    let text = String::from_utf8_lossy(&message).to_string();
-
-                    let line = LogLine {
-                        sequence: self.sequence.fetch_add(1, Ordering::SeqCst),
-                        timestamp: chrono::Utc::now(),
-                        stream: stream_type,
-                        message: text,
-                    };
-
-                    match line.stream {
-                        LogStream::Stderr => {
-                            warn!(job_id = %container_id, "[container:stderr] {}", line.message)
-                        }
-                        LogStream::Stdout => {
-                            debug!(job_id = %container_id, "[container:stdout] {}", line.message)
-                        }
-                    }
-
-                    self.push_line(line).await;
+                    fetched.push((stream_type, String::from_utf8_lossy(&message).to_string()));
                 }
                 Err(e) => {
-                    warn!(
+                    error!(
                         container_id = %container_id,
                         error = %e,
                         "Error reading container logs (one-shot fallback)"
                     );
-                    break;
+                    return Err(format!(
+                        "Error reading container logs (one-shot fallback): {e}"
+                    ));
                 }
             }
         }
+
+        let existing = self.snapshot_from(container_log_start_seq).await;
+        let overlap = overlap_len(&existing, &fetched);
+        let mut appended = 0usize;
+
+        for (stream, message) in fetched.into_iter().skip(overlap) {
+            let line = LogLine {
+                sequence: self.sequence.fetch_add(1, Ordering::SeqCst),
+                timestamp: chrono::Utc::now(),
+                stream,
+                message,
+            };
+
+            match line.stream {
+                LogStream::Stderr => {
+                    warn!(job_id = %container_id, "[container:stderr] {}", line.message)
+                }
+                LogStream::Stdout => {
+                    debug!(job_id = %container_id, "[container:stdout] {}", line.message)
+                }
+            }
+
+            self.push_line(line).await;
+            appended += 1;
+        }
+
+        Ok(appended)
     }
 
     /// Return all lines buffered since the last call to `peek_unflushed`, without clearing the
@@ -268,5 +285,59 @@ impl LogCollector {
             .collect();
         buf.clear();
         remaining
+    }
+
+    async fn snapshot_from(&self, start_sequence: u64) -> Vec<(LogStream, String)> {
+        let buf = self.buffer.read().await;
+        buf.iter()
+            .filter(|line| line.sequence >= start_sequence)
+            .map(|line| (line.stream, line.message.clone()))
+            .collect()
+    }
+}
+
+fn overlap_len(existing: &[(LogStream, String)], fetched: &[(LogStream, String)]) -> usize {
+    let max_overlap = existing.len().min(fetched.len());
+    for overlap in (0..=max_overlap).rev() {
+        if existing[existing.len().saturating_sub(overlap)..] == fetched[..overlap] {
+            return overlap;
+        }
+    }
+    0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LogStream, overlap_len};
+
+    #[test]
+    fn overlap_detects_full_duplicate_fetch() {
+        let lines = vec![
+            (LogStream::Stdout, "one".to_string()),
+            (LogStream::Stderr, "two".to_string()),
+        ];
+        assert_eq!(overlap_len(&lines, &lines), 2);
+    }
+
+    #[test]
+    fn overlap_detects_suffix_prefix_match() {
+        let existing = vec![
+            (LogStream::Stdout, "one".to_string()),
+            (LogStream::Stdout, "two".to_string()),
+            (LogStream::Stdout, "three".to_string()),
+        ];
+        let fetched = vec![
+            (LogStream::Stdout, "two".to_string()),
+            (LogStream::Stdout, "three".to_string()),
+            (LogStream::Stdout, "four".to_string()),
+        ];
+        assert_eq!(overlap_len(&existing, &fetched), 2);
+    }
+
+    #[test]
+    fn overlap_returns_zero_without_match() {
+        let existing = vec![(LogStream::Stdout, "one".to_string())];
+        let fetched = vec![(LogStream::Stdout, "two".to_string())];
+        assert_eq!(overlap_len(&existing, &fetched), 0);
     }
 }

@@ -501,6 +501,180 @@ jobs:
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_push_trigger_checkout_preserves_real_exit_code_and_logs_for_fast_failing_node_job() {
+    if !muli_test::docker_helpers::docker_available().await {
+        eprintln!("SKIP: Docker not available");
+        return;
+    }
+    let git_available = Command::new("git")
+        .arg("--version")
+        .output()
+        .await
+        .map(|out| out.status.success())
+        .unwrap_or(false);
+    if !git_available {
+        eprintln!("SKIP: git binary not found");
+        return;
+    }
+
+    let docker = muli_test::docker_helpers::require_docker().await;
+    muli_test::docker_helpers::ensure_test_image(&docker, "node:22-alpine").await;
+
+    let Some(env) = CheckoutE2eEnv::start().await else {
+        return;
+    };
+    let repo = env
+        .create_private_repo("pipeline-checkout-node-failure")
+        .await;
+
+    let work_dir = TempDir::new().unwrap();
+    let url = env.git_url(&repo.name, OWNER_TOKEN);
+    git(work_dir.path(), &["clone", "--no-local", &url, "."]).await;
+    git(work_dir.path(), &["config", "user.email", "ci@muli.test"]).await;
+    git(work_dir.path(), &["config", "user.name", "Muli CI"]).await;
+
+    write_file(
+        work_dir.path().join("package.json").as_path(),
+        r#"{
+  "name": "checkout-node-failure",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "npx -y -p typescript@5.9.2 tsc --pretty false --noEmit"
+  }
+}
+"#,
+    );
+    write_file(
+        work_dir.path().join("package-lock.json").as_path(),
+        r#"{
+  "name": "checkout-node-failure",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "checkout-node-failure",
+      "version": "1.0.0"
+    }
+  }
+}
+"#,
+    );
+    write_file(
+        work_dir.path().join("tsconfig.json").as_path(),
+        r#"{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "strict": true,
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts"]
+}
+"#,
+    );
+    write_file(
+        work_dir.path().join("src/index.ts").as_path(),
+        "const answer: string = 42;\nconsole.log(answer);\n",
+    );
+    write_file(
+        work_dir.path().join(".maravilla/pipeline.yml").as_path(),
+        r#"
+name: fullstack-ci
+on:
+  push:
+    branches: [main]
+jobs:
+  install:
+    image: node:22-alpine
+    commands:
+      - pwd
+      - ls -lh
+      - npm ci
+    steps:
+      - name: Lint and Type Check
+        commands:
+          - npx eslint src/ --max-warnings 0 || true
+      - name: Format
+        commands:
+          - npx prettier --check src/ || true
+      - name: Build Node Project
+        commands:
+          - npm run build
+"#,
+    );
+
+    git(work_dir.path(), &["add", "."]).await;
+    git(
+        work_dir.path(),
+        &["commit", "-m", "add node pipeline that fails in build"],
+    )
+    .await;
+    git(
+        work_dir.path(),
+        &["push", "--set-upstream", "origin", "main"],
+    )
+    .await;
+
+    let run = wait_for_terminal_run(&env, &repo.id, Duration::from_secs(180)).await;
+    assert_eq!(run.state, PipelineRunState::Failed);
+
+    let steps = env.step_store.list_by_run(TENANT, &run.id).await.unwrap();
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].state, StepRunState::Failed);
+    let step_error = steps[0]
+        .error_message
+        .clone()
+        .expect("step error message should be present");
+    assert!(
+        step_error.contains("exit code 2"),
+        "expected real build exit code in step error, got: {step_error}"
+    );
+    assert!(
+        !step_error.contains("exit code 243"),
+        "unexpected bogus wait error exit code in step error: {step_error}"
+    );
+
+    let job_id = steps[0].job_id.as_ref().expect("job id");
+    let job = env
+        .job_store
+        .get_job(job_id)
+        .await
+        .unwrap()
+        .expect("job record");
+    let result = job.result.as_ref().expect("job result");
+    assert_eq!(
+        result.exit_code,
+        Some(2),
+        "expected real container exit code"
+    );
+    assert!(
+        !result.message.contains("exit code 243"),
+        "unexpected bogus wait error exit code in job result: {}",
+        result.message
+    );
+
+    let logs = env.job_log_store.get_logs(job_id, 500).await.unwrap();
+    let log_text = logs
+        .iter()
+        .map(|line| line.message.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        log_text.contains("==> Build Node Project")
+            && (log_text.contains("src") || log_text.contains("tsconfig.json")),
+        "expected prep and named step output in logs, got: {log_text}"
+    );
+    assert!(
+        log_text.contains("src/index.ts") || log_text.contains("TS2322"),
+        "expected TypeScript build failure output in logs, got: {log_text}"
+    );
+
+    muli_test::docker_helpers::cleanup_test_containers(&docker).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_pipeline_checkout_auth_failure_sets_step_error_and_api_returns_it() {
     if !muli_test::docker_helpers::docker_available().await {
         eprintln!("SKIP: Docker not available");
