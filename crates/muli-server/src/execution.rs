@@ -263,7 +263,9 @@ fn record_completion_metrics(
 }
 
 /// Convert engine log lines to the stored representation.
-fn lines_to_stored(lines: Vec<muli_engine::docker::logs::LogLine>) -> Vec<muli_core::job::model::StoredLogLine> {
+fn lines_to_stored(
+    lines: Vec<muli_engine::docker::logs::LogLine>,
+) -> Vec<muli_core::job::model::StoredLogLine> {
     lines
         .into_iter()
         .map(|l| muli_core::job::model::StoredLogLine {

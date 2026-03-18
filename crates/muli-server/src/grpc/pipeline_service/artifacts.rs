@@ -6,6 +6,7 @@
 use tonic::{Request, Response, Status};
 use tracing::info;
 
+use muli_pipeline::trigger::reader::read_pipeline_files;
 use muli_proto::{
     ArtifactChunk, DeleteCacheRequest, DeleteCacheResponse, DownloadArtifactRequest,
     GetPipelineConfigRequest, GetPipelineConfigResponse, ListArtifactsRequest,
@@ -193,31 +194,18 @@ impl PipelineServiceImpl {
                     commit_ref.clone()
                 };
 
-                let obj = git_repo
-                    .revparse_single(&resolved)
-                    .map_err(|e| Status::not_found(format!("Cannot resolve ref '{resolved}': {e}")))?;
+                let obj = git_repo.revparse_single(&resolved).map_err(|e| {
+                    Status::not_found(format!("Cannot resolve ref '{resolved}': {e}"))
+                })?;
 
                 let commit = obj
                     .peel_to_commit()
                     .map_err(|e| Status::internal(format!("Cannot peel to commit: {e}")))?;
 
-                let tree = commit
-                    .tree()
-                    .map_err(|e| Status::internal(format!("Cannot read tree: {e}")))?;
+                let files = read_pipeline_files(&repo_path, &commit.id().to_string())
+                    .map_err(|e| Status::internal(format!("Cannot read pipeline config: {e}")))?;
 
-                let entry = match tree.get_path(std::path::Path::new(".maravilla/pipeline.yml")) {
-                    Ok(e) => e,
-                    Err(_) => return Ok(None),
-                };
-
-                let blob = git_repo
-                    .find_blob(entry.id())
-                    .map_err(|e| Status::internal(format!("Cannot read blob: {e}")))?;
-
-                let content = std::str::from_utf8(blob.content())
-                    .map_err(|e| Status::internal(format!("pipeline.yml is not valid UTF-8: {e}")))?;
-
-                Ok(Some(content.to_string()))
+                Ok(files.into_iter().next().map(|file| file.content))
             }
         })
         .await

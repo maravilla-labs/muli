@@ -90,6 +90,7 @@ message StepRun {
   Timestamp started_at = 8;
   Timestamp finished_at = 9;
   repeated string depends_on = 10; // dependency job/step names
+  string error_message = 11;
 }
 
 message PipelineArtifact {

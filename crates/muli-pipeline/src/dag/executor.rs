@@ -50,7 +50,12 @@ impl DagExecutor {
         job_store: Arc<dyn JobStore>,
         job_submitter: Arc<dyn JobSubmitter>,
     ) -> Self {
-        Self { run_store, step_store, job_store, job_submitter }
+        Self {
+            run_store,
+            step_store,
+            job_store,
+            job_submitter,
+        }
     }
 
     /// Execute a pipeline run end-to-end.
@@ -62,9 +67,11 @@ impl DagExecutor {
         clone_url: Option<&str>,
     ) -> Result<PipelineRunState> {
         if !pipeline_def.jobs.is_empty() {
-            self.execute_jobs(run, pipeline_def, step_runs, clone_url).await
+            self.execute_jobs(run, pipeline_def, step_runs, clone_url)
+                .await
         } else {
-            self.execute_steps(run, pipeline_def, step_runs, clone_url).await
+            self.execute_steps(run, pipeline_def, step_runs, clone_url)
+                .await
         }
     }
 
@@ -83,22 +90,15 @@ impl DagExecutor {
         let job_names: Vec<String> = pipeline_def.jobs.keys().cloned().collect();
         let original_names: Vec<&str> = job_names.iter().map(String::as_str).collect();
 
-        let (step_run_map, original_to_runs) =
-            build_run_maps(step_runs, &original_names);
+        let (step_run_map, original_to_runs) = build_run_maps(step_runs, &original_names);
 
-        self.evaluate_conditions(
-            &run.tenant_id,
-            step_runs,
-            &original_names,
-            &expr_ctx,
-            |n| {
-                pipeline_def
-                    .jobs
-                    .get(n)
-                    .and_then(|d| d.condition.as_deref())
-                    .map(|s| s.to_string())
-            },
-        )
+        self.evaluate_conditions(&run.tenant_id, step_runs, &original_names, &expr_ctx, |n| {
+            pipeline_def
+                .jobs
+                .get(n)
+                .and_then(|d| d.condition.as_deref())
+                .map(|s| s.to_string())
+        })
         .await?;
 
         let deps: Vec<(String, Vec<String>)> = pipeline_def
@@ -110,8 +110,7 @@ impl DagExecutor {
 
         info!(run_id = %run.id, levels = levels.len(), "executing pipeline DAG (jobs mode)");
 
-        let deadline =
-            Utc::now() + chrono::Duration::from_std(MAX_PIPELINE_DURATION).unwrap();
+        let deadline = Utc::now() + chrono::Duration::from_std(MAX_PIPELINE_DURATION).unwrap();
 
         let build_fn = |orig: &str, _sr: &str| -> Option<Job> {
             let def = pipeline_def.jobs.get(orig)?;
@@ -153,21 +152,14 @@ impl DagExecutor {
             .map(|s| (s.name.as_str(), s))
             .collect();
 
-        let (step_run_map, original_to_runs) =
-            build_run_maps(step_runs, &original_names);
+        let (step_run_map, original_to_runs) = build_run_maps(step_runs, &original_names);
 
-        self.evaluate_conditions(
-            &run.tenant_id,
-            step_runs,
-            &original_names,
-            &expr_ctx,
-            |n| {
-                step_def_map
-                    .get(n)
-                    .and_then(|d| d.condition.as_deref())
-                    .map(|s| s.to_string())
-            },
-        )
+        self.evaluate_conditions(&run.tenant_id, step_runs, &original_names, &expr_ctx, |n| {
+            step_def_map
+                .get(n)
+                .and_then(|d| d.condition.as_deref())
+                .map(|s| s.to_string())
+        })
         .await?;
 
         let deps: Vec<(String, Vec<String>)> = pipeline_def
@@ -179,8 +171,7 @@ impl DagExecutor {
 
         info!(run_id = %run.id, levels = levels.len(), "executing pipeline DAG (steps mode)");
 
-        let deadline =
-            Utc::now() + chrono::Duration::from_std(MAX_PIPELINE_DURATION).unwrap();
+        let deadline = Utc::now() + chrono::Duration::from_std(MAX_PIPELINE_DURATION).unwrap();
 
         let build_fn = |orig: &str, _sr: &str| -> Option<Job> {
             let def = *step_def_map.get(orig)?;
@@ -287,7 +278,10 @@ impl DagExecutor {
             // Skip if already in a terminal state (e.g. condition-skipped)
             let current = self.step_store.get_step(tenant_id, &sr.id).await?;
             let state = current.as_ref().map(|s| s.state);
-            if matches!(state, Some(StepRunState::Skipped) | Some(StepRunState::Cancelled)) {
+            if matches!(
+                state,
+                Some(StepRunState::Skipped) | Some(StepRunState::Cancelled)
+            ) {
                 continue;
             }
 
@@ -302,11 +296,10 @@ impl DagExecutor {
 
             match self.job_submitter.submit(job).await {
                 Ok(job_id) => {
-                    if let Some(mut step) =
-                        self.step_store.get_step(tenant_id, &sr.id).await?
-                    {
+                    if let Some(mut step) = self.step_store.get_step(tenant_id, &sr.id).await? {
                         step.job_id = Some(job_id.clone());
                         step.started_at = Some(Utc::now());
+                        step.error_message = None;
                         step.updated_at = Utc::now();
                         self.step_store.update_step(&step).await?;
                     }
@@ -315,9 +308,17 @@ impl DagExecutor {
                 }
                 Err(e) => {
                     error!(job = %sr_name, error = %e, "failed to submit job");
-                    self.step_store
-                        .update_step_state(tenant_id, &sr.id, StepRunState::Failed)
-                        .await?;
+                    if let Some(mut step) = self.step_store.get_step(tenant_id, &sr.id).await? {
+                        step.state = StepRunState::Failed;
+                        step.finished_at = Some(Utc::now());
+                        step.error_message = Some(format!("Job submission failed: {e}"));
+                        step.updated_at = Utc::now();
+                        self.step_store.update_step(&step).await?;
+                    } else {
+                        self.step_store
+                            .update_step_state(tenant_id, &sr.id, StepRunState::Failed)
+                            .await?;
+                    }
                     had_failure = true;
                     if sr.failure_strategy == FailureStrategy::Stop {
                         had_stop = true;
@@ -352,10 +353,24 @@ impl DagExecutor {
                 Some(JobState::Cancelled) => StepRunState::Cancelled,
                 _ => StepRunState::Failed,
             };
+            let error_message = if step_state == StepRunState::Failed {
+                self.job_store.get_job(job_id).await?.and_then(|job| {
+                    job.result.and_then(|result| {
+                        if result.message.trim().is_empty() {
+                            None
+                        } else {
+                            Some(result.message)
+                        }
+                    })
+                })
+            } else {
+                None
+            };
 
             if let Some(mut step) = self.step_store.get_step(tenant_id, &sr.id).await? {
                 step.state = step_state;
                 step.finished_at = Some(Utc::now());
+                step.error_message = error_message;
                 step.updated_at = Utc::now();
                 self.step_store.update_step(&step).await?;
             }
@@ -382,7 +397,11 @@ impl DagExecutor {
         step_run_map: &HashMap<&str, &StepRun>,
     ) -> Result<()> {
         for &orig_name in level {
-            for &rn in original_to_runs.get(orig_name).map(Vec::as_slice).unwrap_or(&[]) {
+            for &rn in original_to_runs
+                .get(orig_name)
+                .map(Vec::as_slice)
+                .unwrap_or(&[])
+            {
                 if let Some(sr) = step_run_map.get(rn) {
                     let current = self.step_store.get_step(tenant_id, &sr.id).await?;
                     if let Some(s) = current {
@@ -477,13 +496,15 @@ impl DagExecutor {
                 if needed_def.artifact_upload_paths().is_empty() {
                     return None;
                 }
-                Some(ArtifactDownload { run_id: run.id.clone(), job_name: needed.clone() })
+                Some(ArtifactDownload {
+                    run_id: run.id.clone(),
+                    job_name: needed.clone(),
+                })
             })
             .collect();
 
         let artifact_upload_paths = job_def.artifact_upload_paths();
-        let artifact_upload_key =
-            (!artifact_upload_paths.is_empty()).then(|| job_name.to_string());
+        let artifact_upload_key = (!artifact_upload_paths.is_empty()).then(|| job_name.to_string());
 
         let (cpu, memory, timeout) = resolve_resources(job_def.resources.as_ref(), job_def.timeout);
         let runner_image = job_def
@@ -503,7 +524,7 @@ impl DagExecutor {
             framework: "pipeline".to_string(),
             idempotency_key: None,
             registry_credentials: None,
-            commands: job_def.commands.clone(),
+            commands: job_def.execution_commands(),
             checkout,
             artifact_downloads,
             artifact_upload_paths,
@@ -535,7 +556,8 @@ impl DagExecutor {
         }
         commands.extend(step_def.commands.clone());
 
-        let (cpu, memory, timeout) = resolve_resources(step_def.resources.as_ref(), step_def.timeout);
+        let (cpu, memory, timeout) =
+            resolve_resources(step_def.resources.as_ref(), step_def.timeout);
 
         Job::new(JobSpec {
             deployment_id: run.id.clone(),
@@ -603,17 +625,26 @@ fn build_env_vars(
 
     // 1. Pipeline-level
     for (k, v) in pipeline_env {
-        env.push(EnvVar { name: k.clone(), value: v.clone() });
+        env.push(EnvVar {
+            name: k.clone(),
+            value: v.clone(),
+        });
     }
     // 2. Item-level (overrides pipeline)
     for (k, v) in item_env {
         env.retain(|e| e.name != *k);
-        env.push(EnvVar { name: k.clone(), value: v.clone() });
+        env.push(EnvVar {
+            name: k.clone(),
+            value: v.clone(),
+        });
     }
     // 3. Run-level env_vars (vault secrets + caller — overrides everything)
     for (k, v) in &run.env_vars {
         env.retain(|e| e.name != *k);
-        env.push(EnvVar { name: k.clone(), value: v.clone() });
+        env.push(EnvVar {
+            name: k.clone(),
+            value: v.clone(),
+        });
     }
     // 4. Built-in vars (always highest priority)
     let event = trigger_event_str(&run.trigger);
@@ -627,19 +658,29 @@ fn build_env_vars(
     ];
     for (k, v) in builtins {
         env.retain(|e| e.name != *k);
-        env.push(EnvVar { name: k.to_string(), value: v.to_string() });
+        env.push(EnvVar {
+            name: k.to_string(),
+            value: v.to_string(),
+        });
     }
     if let Some(url) = clone_url {
         env.retain(|e| e.name != "PIPELINE_CLONE_URL");
-        env.push(EnvVar { name: "PIPELINE_CLONE_URL".into(), value: url.to_string() });
+        env.push(EnvVar {
+            name: "PIPELINE_CLONE_URL".into(),
+            value: url.to_string(),
+        });
     }
     env
 }
 
 /// Parse CPU/memory/timeout from an optional ResourceDef, applying defaults.
 fn resolve_resources(res: Option<&ResourceDef>, timeout: Option<u64>) -> (String, String, u64) {
-    let cpu = res.and_then(|r| r.cpu.clone()).unwrap_or_else(|| "1000m".into());
-    let memory = res.and_then(|r| r.memory.clone()).unwrap_or_else(|| "512Mi".into());
+    let cpu = res
+        .and_then(|r| r.cpu.clone())
+        .unwrap_or_else(|| "1000m".into());
+    let memory = res
+        .and_then(|r| r.memory.clone())
+        .unwrap_or_else(|| "512Mi".into());
     (cpu, memory, timeout.unwrap_or(1800))
 }
 
@@ -678,13 +719,18 @@ fn build_run_maps<'a>(
     step_runs: &'a [StepRun],
     original_names: &[&str],
 ) -> (HashMap<&'a str, &'a StepRun>, HashMap<String, Vec<&'a str>>) {
-    let step_run_map: HashMap<&'a str, &'a StepRun> =
-        step_runs.iter().map(|s| (s.step_name.as_str(), s)).collect();
+    let step_run_map: HashMap<&'a str, &'a StepRun> = step_runs
+        .iter()
+        .map(|s| (s.step_name.as_str(), s))
+        .collect();
 
     let mut original_to_runs: HashMap<String, Vec<&'a str>> = HashMap::new();
     for sr in step_runs {
         if let Some(orig) = find_original_name(&sr.step_name, original_names) {
-            original_to_runs.entry(orig.to_string()).or_default().push(&sr.step_name);
+            original_to_runs
+                .entry(orig.to_string())
+                .or_default()
+                .push(&sr.step_name);
         }
     }
 

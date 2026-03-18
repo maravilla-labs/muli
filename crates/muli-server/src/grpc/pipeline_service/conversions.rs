@@ -84,6 +84,7 @@ pub fn step_to_proto(s: &DomainStep) -> StepRun {
         started_at: s.started_at.map(datetime_to_proto),
         finished_at: s.finished_at.map(datetime_to_proto),
         depends_on: s.depends_on.clone(),
+        error_message: s.error_message.clone().unwrap_or_default(),
     }
 }
 

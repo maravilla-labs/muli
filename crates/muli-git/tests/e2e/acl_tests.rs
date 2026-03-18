@@ -8,7 +8,8 @@
 //! into `GitAuth`.
 
 use super::harness::*;
-use muli_core::git::{GitPermission, RepositoryCollaborator};
+use muli_core::git::{GitPermission, GitToken, RepositoryCollaborator};
+use muli_git::auth::{hash_token, token_prefix};
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -98,6 +99,39 @@ async fn create_http_repo(
         .remove_collaborator(&repo.id, "user-1")
         .await
         .expect("remove setup collaborator");
+}
+
+async fn create_repo_scoped_token(
+    srv: &TestServerWithAcl,
+    repo_name: &str,
+    permissions: Vec<GitPermission>,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> (String, String) {
+    let repo = srv
+        .http
+        .repo_store
+        .get_repository_by_name(TENANT, NAMESPACE, repo_name)
+        .await
+        .expect("repo lookup")
+        .expect("repo must exist");
+
+    let plaintext = format!("repo-scope-{}", uuid::Uuid::new_v4().simple());
+    let mut token = GitToken::new(
+        TENANT.into(),
+        hash_token(&plaintext),
+        token_prefix(&plaintext),
+        permissions,
+        format!("repo-scoped token for {repo_name}"),
+        expires_at,
+    );
+    token.repo_id = Some(repo.id.clone());
+    let token_id = token.id.clone();
+    srv.http
+        .token_store
+        .create_token(&token)
+        .await
+        .expect("create repo-scoped token");
+    (plaintext, token_id)
 }
 
 // ---------------------------------------------------------------------------
@@ -286,5 +320,163 @@ async fn test_http_private_repo_push_allowed_for_owner() {
     assert!(
         push_st.success(),
         "owner should be able to push to their private repo: {push_st}"
+    );
+}
+
+/// Private repo: a repo-scoped pull token without a user_id can clone the matching repo.
+#[tokio::test]
+async fn test_http_private_repo_read_allowed_for_matching_repo_scoped_token() {
+    if !git_available() {
+        eprintln!("SKIP: git binary not found");
+        return;
+    }
+
+    let srv = start_server_with_acl().await;
+    let repo_name = "priv-repo-scoped-read";
+
+    create_http_repo(&srv, repo_name, true, Some("user-1")).await;
+
+    let (token, _) =
+        create_repo_scoped_token(&srv, repo_name, vec![GitPermission::Pull], None).await;
+
+    let url = git_url_with_token(&srv.http, NAMESPACE, repo_name, &token);
+    let clone_dir = TempDir::new().unwrap();
+    let status = git_status(clone_dir.path(), &["clone", "--no-local", &url, "."]).await;
+    assert!(
+        status.success(),
+        "clone of matching private repo should succeed for repo-scoped token: {status}"
+    );
+}
+
+/// Private repo: a repo-scoped token cannot be reused to read a different private repo.
+#[tokio::test]
+async fn test_http_private_repo_read_denied_for_wrong_repo_scoped_token() {
+    if !git_available() {
+        eprintln!("SKIP: git binary not found");
+        return;
+    }
+
+    let srv = start_server_with_acl().await;
+    let source_repo = "priv-repo-scoped-source";
+    let other_repo = "priv-repo-scoped-other";
+
+    create_http_repo(&srv, source_repo, true, Some("user-1")).await;
+    create_http_repo(&srv, other_repo, true, Some("user-1")).await;
+
+    let (token, _) =
+        create_repo_scoped_token(&srv, source_repo, vec![GitPermission::Pull], None).await;
+
+    let url = git_url_with_token(&srv.http, NAMESPACE, other_repo, &token);
+    let clone_dir = TempDir::new().unwrap();
+    let status = git_status(clone_dir.path(), &["clone", "--no-local", &url, "."]).await;
+    assert!(
+        !status.success(),
+        "clone of different private repo should fail for repo-scoped token"
+    );
+}
+
+/// Private repo: a repo-scoped token must not bypass write ACL even if the token carries Push.
+#[tokio::test]
+async fn test_http_private_repo_push_denied_for_repo_scoped_token_without_user() {
+    if !git_available() {
+        eprintln!("SKIP: git binary not found");
+        return;
+    }
+
+    let srv = start_server_with_acl().await;
+    let repo_name = "priv-repo-scoped-push";
+
+    create_http_repo(&srv, repo_name, true, Some("user-1")).await;
+
+    let (token, _) = create_repo_scoped_token(
+        &srv,
+        repo_name,
+        vec![GitPermission::Pull, GitPermission::Push],
+        None,
+    )
+    .await;
+
+    let url = git_url_with_token(&srv.http, NAMESPACE, repo_name, &token);
+    let clone_dir = TempDir::new().unwrap();
+    let clone_status = git_status(clone_dir.path(), &["clone", "--no-local", &url, "."]).await;
+    assert!(
+        clone_status.success(),
+        "clone should succeed before push is denied: {clone_status}"
+    );
+
+    git(clone_dir.path(), &["config", "user.email", "ci@muli.test"]).await;
+    git(clone_dir.path(), &["config", "user.name", "Repo Scoped"]).await;
+    std::fs::write(clone_dir.path().join("deny.txt"), "no push\n").unwrap();
+    git(clone_dir.path(), &["add", "deny.txt"]).await;
+    git(clone_dir.path(), &["commit", "-m", "attempt push"]).await;
+
+    let push_status = git_status(
+        clone_dir.path(),
+        &["push", "--set-upstream", "origin", "main"],
+    )
+    .await;
+    assert!(
+        !push_status.success(),
+        "push should fail for repo-scoped token without user identity"
+    );
+}
+
+/// Private repo: a revoked repo-scoped token must be denied for clone.
+#[tokio::test]
+async fn test_http_private_repo_read_denied_for_revoked_repo_scoped_token() {
+    if !git_available() {
+        eprintln!("SKIP: git binary not found");
+        return;
+    }
+
+    let srv = start_server_with_acl().await;
+    let repo_name = "priv-repo-scoped-revoked";
+
+    create_http_repo(&srv, repo_name, true, Some("user-1")).await;
+
+    let (token, token_id) =
+        create_repo_scoped_token(&srv, repo_name, vec![GitPermission::Pull], None).await;
+    srv.http
+        .token_store
+        .revoke_token(&token_id)
+        .await
+        .expect("revoke token");
+
+    let url = git_url_with_token(&srv.http, NAMESPACE, repo_name, &token);
+    let clone_dir = TempDir::new().unwrap();
+    let status = git_status(clone_dir.path(), &["clone", "--no-local", &url, "."]).await;
+    assert!(
+        !status.success(),
+        "clone should fail for revoked repo-scoped token"
+    );
+}
+
+/// Private repo: an expired repo-scoped token must be denied for clone.
+#[tokio::test]
+async fn test_http_private_repo_read_denied_for_expired_repo_scoped_token() {
+    if !git_available() {
+        eprintln!("SKIP: git binary not found");
+        return;
+    }
+
+    let srv = start_server_with_acl().await;
+    let repo_name = "priv-repo-scoped-expired";
+
+    create_http_repo(&srv, repo_name, true, Some("user-1")).await;
+
+    let (token, _) = create_repo_scoped_token(
+        &srv,
+        repo_name,
+        vec![GitPermission::Pull],
+        Some(chrono::Utc::now() - chrono::Duration::minutes(1)),
+    )
+    .await;
+
+    let url = git_url_with_token(&srv.http, NAMESPACE, repo_name, &token);
+    let clone_dir = TempDir::new().unwrap();
+    let status = git_status(clone_dir.path(), &["clone", "--no-local", &url, "."]).await;
+    assert!(
+        !status.success(),
+        "clone should fail for expired repo-scoped token"
     );
 }

@@ -20,6 +20,9 @@ pub fn validate_pipeline(def: &PipelineDef) -> Result<()> {
 }
 
 fn validate_unique_names(def: &PipelineDef) -> Result<()> {
+    if !def.jobs.is_empty() {
+        return Ok(());
+    }
     let mut seen = HashSet::new();
     for step in &def.steps {
         if !seen.insert(&step.name) {
@@ -33,6 +36,43 @@ fn validate_unique_names(def: &PipelineDef) -> Result<()> {
 }
 
 fn validate_dag(def: &PipelineDef) -> Result<()> {
+    if !def.jobs.is_empty() {
+        let names: HashSet<&str> = def.jobs.keys().map(|s| s.as_str()).collect();
+        for (job_name, job) in &def.jobs {
+            for dep in &job.needs {
+                if !names.contains(dep.as_str()) {
+                    return Err(MuliError::PipelineYamlError(format!(
+                        "job '{job_name}' depends on unknown job '{dep}'",
+                    )));
+                }
+            }
+        }
+
+        let adj: HashMap<&str, Vec<&str>> = def
+            .jobs
+            .iter()
+            .map(|(name, job)| {
+                (
+                    name.as_str(),
+                    job.needs.iter().map(|n| n.as_str()).collect(),
+                )
+            })
+            .collect();
+
+        let mut visited = HashSet::new();
+        let mut in_stack = HashSet::new();
+        for job_name in def.jobs.keys() {
+            if !visited.contains(job_name.as_str())
+                && has_cycle(&adj, job_name.as_str(), &mut visited, &mut in_stack)
+            {
+                return Err(MuliError::PipelineDagCycle(format!(
+                    "cycle detected involving job '{job_name}'"
+                )));
+            }
+        }
+        return Ok(());
+    }
+
     let names: HashSet<&str> = def.steps.iter().map(|s| s.name.as_str()).collect();
     for step in &def.steps {
         for dep in &step.needs {
@@ -95,6 +135,20 @@ fn has_cycle<'a>(
 }
 
 fn validate_matrix_sizes(def: &PipelineDef) -> Result<()> {
+    if !def.jobs.is_empty() {
+        for (job_name, job) in &def.jobs {
+            if let Some(matrix) = &job.matrix {
+                let combinations: usize = matrix.values().map(|v| v.len().max(1)).product();
+                if combinations > MAX_MATRIX_SIZE {
+                    return Err(MuliError::PipelineYamlError(format!(
+                        "job '{job_name}' matrix produces {combinations} combinations (max {MAX_MATRIX_SIZE})",
+                    )));
+                }
+            }
+        }
+        return Ok(());
+    }
+
     for step in &def.steps {
         if let Some(matrix) = &step.matrix {
             let combinations: usize = matrix.values().map(|v| v.len().max(1)).product();
@@ -110,6 +164,29 @@ fn validate_matrix_sizes(def: &PipelineDef) -> Result<()> {
 }
 
 fn validate_artifact_names(def: &PipelineDef) -> Result<()> {
+    if !def.jobs.is_empty() {
+        for (job_name, job) in &def.jobs {
+            if let Some(arts) = &job.artifacts {
+                if let Some(upload) = &arts.upload
+                    && let Some(name) = &upload.name
+                {
+                    validate_path_component(name, "artifact name")?;
+                }
+            }
+            if let Some(cache) = &job.cache {
+                validate_path_component(&cache.key, "cache key")?;
+            }
+            for step in &job.steps {
+                if step.name.trim().is_empty() {
+                    return Err(MuliError::PipelineYamlError(format!(
+                        "job '{job_name}' contains a step with an empty name"
+                    )));
+                }
+            }
+        }
+        return Ok(());
+    }
+
     for step in &def.steps {
         if let Some(arts) = &step.artifacts {
             if let Some(upload) = &arts.upload {

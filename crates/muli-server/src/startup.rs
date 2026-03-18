@@ -180,6 +180,8 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
                 pipeline_job_submitter.clone(),
                 Some(stores.tenant_limits_store.clone()),
                 stores.git_token_store.clone(),
+                stores.webhook_store.clone(),
+                config.git_allow_localhost_webhooks,
                 config.effective_git_base_url(),
             )))
         } else {

@@ -245,7 +245,11 @@ impl LogCollector {
     pub async fn peek_unflushed(&self) -> Vec<LogLine> {
         let offset = self.flush_offset.load(Ordering::SeqCst);
         let buf = self.buffer.read().await;
-        let new_lines: Vec<LogLine> = buf.iter().filter(|l| l.sequence >= offset).cloned().collect();
+        let new_lines: Vec<LogLine> = buf
+            .iter()
+            .filter(|l| l.sequence >= offset)
+            .cloned()
+            .collect();
         if let Some(last) = new_lines.last() {
             self.flush_offset.store(last.sequence + 1, Ordering::SeqCst);
         }
@@ -257,7 +261,11 @@ impl LogCollector {
     pub async fn drain(&self) -> Vec<LogLine> {
         let offset = self.flush_offset.load(Ordering::SeqCst);
         let mut buf = self.buffer.write().await;
-        let remaining: Vec<LogLine> = buf.iter().filter(|l| l.sequence >= offset).cloned().collect();
+        let remaining: Vec<LogLine> = buf
+            .iter()
+            .filter(|l| l.sequence >= offset)
+            .cloned()
+            .collect();
         buf.clear();
         remaining
     }

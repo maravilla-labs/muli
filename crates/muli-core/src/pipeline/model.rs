@@ -120,6 +120,8 @@ pub struct StepRun {
     pub matrix_values: Option<serde_json::Value>,
     #[serde(default)]
     pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub error_message: Option<String>,
     pub failure_strategy: FailureStrategy,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
@@ -145,6 +147,7 @@ impl StepRun {
             state: StepRunState::Pending,
             matrix_values,
             depends_on: Vec::new(),
+            error_message: None,
             failure_strategy,
             started_at: None,
             finished_at: None,

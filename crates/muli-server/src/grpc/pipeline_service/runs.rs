@@ -153,9 +153,7 @@ impl PipelineServiceImpl {
                 .get_run_by_number(&caller_tenant, &pipeline.id, req.run_number)
                 .await
                 .map_err(|e| Status::internal(format!("Failed to get run: {e}")))?
-                .ok_or_else(|| {
-                    Status::not_found(format!("run #{} not found", req.run_number))
-                })?
+                .ok_or_else(|| Status::not_found(format!("run #{} not found", req.run_number)))?
         };
 
         let run = &run;
@@ -391,7 +389,12 @@ impl PipelineServiceImpl {
                     muli_pipeline::yaml::parser::parse_pipeline(&bg_run.yaml_content)
                 {
                     if let Err(e) = executor
-                        .execute(&mut bg_run, &pipeline_def, &bg_steps, clone_url_str.as_deref())
+                        .execute(
+                            &mut bg_run,
+                            &pipeline_def,
+                            &bg_steps,
+                            clone_url_str.as_deref(),
+                        )
                         .await
                     {
                         tracing::warn!(error = %e, "DAG executor failed for retry run");
@@ -437,8 +440,11 @@ async fn build_ci_clone_url_for_repo(
 ) -> Option<(String, Option<String>)> {
     let repo = repo_store.get_repository(repo_id).await.ok()??;
 
-    let plaintext =
-        format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+    let plaintext = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
     let token_hash = tokio::task::spawn_blocking({
         let pt = plaintext.clone();
         move || token_hash::hash_token(&pt)
@@ -452,6 +458,7 @@ async fn build_ci_clone_url_for_repo(
         id: uuid::Uuid::new_v4().to_string(),
         tenant_id: tenant_id.to_string(),
         user_id: None,
+        repo_id: Some(repo.id.clone()),
         token_hash,
         token_prefix: prefix,
         permissions: vec![GitPermission::Pull],

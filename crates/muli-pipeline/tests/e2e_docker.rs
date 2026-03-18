@@ -721,9 +721,18 @@ struct CapturingJobSubmitter {
 impl CapturingJobSubmitter {
     fn new(
         job_store: Arc<dyn JobStore>,
-    ) -> (Self, Arc<tokio::sync::Mutex<Vec<muli_core::job::model::Job>>>) {
+    ) -> (
+        Self,
+        Arc<tokio::sync::Mutex<Vec<muli_core::job::model::Job>>>,
+    ) {
         let captured = Arc::new(tokio::sync::Mutex::new(Vec::new()));
-        (Self { job_store, captured: captured.clone() }, captured)
+        (
+            Self {
+                job_store,
+                captured: captured.clone(),
+            },
+            captured,
+        )
     }
 }
 
@@ -793,23 +802,104 @@ jobs:
         1,
         "abc123".into(),
         "refs/heads/main".into(),
-        PipelineTrigger::Push { ref_name: "refs/heads/main".into() },
+        PipelineTrigger::Push {
+            ref_name: "refs/heads/main".into(),
+        },
         yaml.into(),
     );
     run_store.create_run(&run).await.unwrap();
 
     let step_runs = create_job_step_runs(&run, &pipeline_def, &step_store).await;
 
-    let submitter: Arc<dyn JobSubmitter> = Arc::new(MockJobSubmitter { job_store: job_store.clone() });
-    let executor = DagExecutor::new(run_store.clone(), step_store.clone(), job_store.clone(), submitter);
+    let submitter: Arc<dyn JobSubmitter> = Arc::new(MockJobSubmitter {
+        job_store: job_store.clone(),
+    });
+    let executor = DagExecutor::new(
+        run_store.clone(),
+        step_store.clone(),
+        job_store.clone(),
+        submitter,
+    );
 
-    let result = executor.execute(&mut run, &pipeline_def, &step_runs, None).await.unwrap();
+    let result = executor
+        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .await
+        .unwrap();
     assert_eq!(result, PipelineRunState::Succeeded);
 
     let steps = step_store.list_by_run("t1", &run.id).await.unwrap();
     assert_eq!(steps.len(), 1);
     assert_eq!(steps[0].state, StepRunState::Succeeded);
     assert!(steps[0].job_id.is_some());
+}
+
+/// jobs: prep commands run before named steps, and named steps are flattened with visible markers.
+#[tokio::test]
+async fn test_jobs_named_steps_flatten_into_job_commands() {
+    let (_factory, pipeline_store, run_store, step_store, job_store, _dir) = make_stores().await;
+
+    let yaml = r#"
+name: ci
+image: node:22-alpine
+jobs:
+  install:
+    commands:
+      - pwd
+      - npm ci
+    steps:
+      - name: Lint and Type Check
+        commands:
+          - npx eslint src/ --max-warnings 0 || true
+      - name: Build Node Project
+        commands:
+          - npm run build
+"#;
+
+    let pipeline_def = parse_pipeline(yaml).unwrap();
+    let pipeline = Pipeline::new("t1".into(), "repo1".into(), "ci".into(), "sha".into());
+    pipeline_store.upsert_pipeline(&pipeline).await.unwrap();
+
+    let mut run = PipelineRun::new(
+        pipeline.id.clone(),
+        "t1".into(),
+        "repo1".into(),
+        1,
+        "abc123".into(),
+        "refs/heads/main".into(),
+        PipelineTrigger::Push {
+            ref_name: "refs/heads/main".into(),
+        },
+        yaml.into(),
+    );
+    run_store.create_run(&run).await.unwrap();
+
+    let step_runs = create_job_step_runs(&run, &pipeline_def, &step_store).await;
+    let (submitter, captured) = CapturingJobSubmitter::new(job_store.clone());
+    let executor = DagExecutor::new(
+        run_store.clone(),
+        step_store.clone(),
+        job_store.clone(),
+        Arc::new(submitter),
+    );
+
+    executor
+        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .await
+        .unwrap();
+
+    let jobs = captured.lock().await;
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(
+        jobs[0].spec.commands,
+        vec![
+            "pwd".to_string(),
+            "npm ci".to_string(),
+            "printf '%s\\n' '==> Lint and Type Check'".to_string(),
+            "npx eslint src/ --max-warnings 0 || true".to_string(),
+            "printf '%s\\n' '==> Build Node Project'".to_string(),
+            "npm run build".to_string(),
+        ]
+    );
 }
 
 /// jobs: with needs: — DAG ordering respected across multiple levels.
@@ -845,24 +935,41 @@ jobs:
         1,
         "deadbeef".into(),
         "refs/heads/main".into(),
-        PipelineTrigger::Push { ref_name: "refs/heads/main".into() },
+        PipelineTrigger::Push {
+            ref_name: "refs/heads/main".into(),
+        },
         yaml.into(),
     );
     run_store.create_run(&run).await.unwrap();
 
     let step_runs = create_job_step_runs(&run, &pipeline_def, &step_store).await;
 
-    let submitter: Arc<dyn JobSubmitter> = Arc::new(MockJobSubmitter { job_store: job_store.clone() });
-    let executor = DagExecutor::new(run_store.clone(), step_store.clone(), job_store.clone(), submitter);
+    let submitter: Arc<dyn JobSubmitter> = Arc::new(MockJobSubmitter {
+        job_store: job_store.clone(),
+    });
+    let executor = DagExecutor::new(
+        run_store.clone(),
+        step_store.clone(),
+        job_store.clone(),
+        submitter,
+    );
 
-    let result = executor.execute(&mut run, &pipeline_def, &step_runs, None).await.unwrap();
+    let result = executor
+        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .await
+        .unwrap();
     assert_eq!(result, PipelineRunState::Succeeded);
 
     // All 4 jobs succeeded
     let steps = step_store.list_by_run("t1", &run.id).await.unwrap();
     assert_eq!(steps.len(), 4);
     for s in &steps {
-        assert_eq!(s.state, StepRunState::Succeeded, "job {} should succeed", s.step_name);
+        assert_eq!(
+            s.state,
+            StepRunState::Succeeded,
+            "job {} should succeed",
+            s.step_name
+        );
         assert!(s.job_id.is_some(), "job {} should have job_id", s.step_name);
     }
 }
@@ -893,7 +1000,9 @@ jobs:
         1,
         "abc".into(),
         "refs/heads/main".into(),
-        PipelineTrigger::Push { ref_name: "refs/heads/main".into() },
+        PipelineTrigger::Push {
+            ref_name: "refs/heads/main".into(),
+        },
         yaml.into(),
     );
     run_store.create_run(&run).await.unwrap();
@@ -907,14 +1016,23 @@ jobs:
         Arc::new(submitter),
     );
 
-    let result = executor.execute(&mut run, &pipeline_def, &step_runs, None).await.unwrap();
+    let result = executor
+        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .await
+        .unwrap();
     assert_eq!(result, PipelineRunState::Succeeded);
 
     let jobs = captured.lock().await;
     assert_eq!(jobs.len(), 1);
     let build_job = &jobs[0];
-    assert_eq!(build_job.spec.artifact_upload_paths, vec!["dist/", "coverage/"]);
-    assert_eq!(build_job.spec.artifact_upload_key, Some("build".to_string()));
+    assert_eq!(
+        build_job.spec.artifact_upload_paths,
+        vec!["dist/", "coverage/"]
+    );
+    assert_eq!(
+        build_job.spec.artifact_upload_key,
+        Some("build".to_string())
+    );
     // No downloads (no needs:)
     assert!(build_job.spec.artifact_downloads.is_empty());
 }
@@ -953,7 +1071,9 @@ jobs:
         1,
         "abc".into(),
         "refs/heads/main".into(),
-        PipelineTrigger::Push { ref_name: "refs/heads/main".into() },
+        PipelineTrigger::Push {
+            ref_name: "refs/heads/main".into(),
+        },
         yaml.into(),
     );
     run_store.create_run(&run).await.unwrap();
@@ -967,21 +1087,35 @@ jobs:
         Arc::new(submitter),
     );
 
-    executor.execute(&mut run, &pipeline_def, &step_runs, None).await.unwrap();
+    executor
+        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .await
+        .unwrap();
 
     let jobs = captured.lock().await;
-    let by_name: HashMap<&str, &muli_core::job::model::Job> =
-        jobs.iter().map(|j| (j.spec.env_vars.iter()
-            .find(|e| e.name == "PIPELINE_JOB_NAME")
-            .map(|e| e.value.as_str())
-            .unwrap_or(""), j))
+    let by_name: HashMap<&str, &muli_core::job::model::Job> = jobs
+        .iter()
+        .map(|j| {
+            (
+                j.spec
+                    .env_vars
+                    .iter()
+                    .find(|e| e.name == "PIPELINE_JOB_NAME")
+                    .map(|e| e.value.as_str())
+                    .unwrap_or(""),
+                j,
+            )
+        })
         .collect();
 
     // install: no downloads, uploads node_modules/
     let install = by_name["install"];
     assert!(install.spec.artifact_downloads.is_empty());
     assert_eq!(install.spec.artifact_upload_paths, vec!["node_modules/"]);
-    assert_eq!(install.spec.artifact_upload_key, Some("install".to_string()));
+    assert_eq!(
+        install.spec.artifact_upload_key,
+        Some("install".to_string())
+    );
 
     // test: needs install (which has artifacts) → downloads install
     let test = by_name["test"];
@@ -1026,7 +1160,9 @@ jobs:
         1,
         "abc".into(),
         "refs/heads/main".into(),
-        PipelineTrigger::Push { ref_name: "refs/heads/main".into() },
+        PipelineTrigger::Push {
+            ref_name: "refs/heads/main".into(),
+        },
         yaml.into(),
     );
     run_store.create_run(&run).await.unwrap();
@@ -1040,13 +1176,25 @@ jobs:
         Arc::new(submitter),
     );
 
-    executor.execute(&mut run, &pipeline_def, &step_runs, None).await.unwrap();
+    executor
+        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .await
+        .unwrap();
 
     let jobs = captured.lock().await;
-    let by_image: HashMap<&str, &str> =
-        jobs.iter().map(|j| (j.spec.runner_image.as_str(),
-            j.spec.env_vars.iter().find(|e| e.name == "PIPELINE_JOB_NAME")
-                .map(|e| e.value.as_str()).unwrap_or("")))
+    let by_image: HashMap<&str, &str> = jobs
+        .iter()
+        .map(|j| {
+            (
+                j.spec.runner_image.as_str(),
+                j.spec
+                    .env_vars
+                    .iter()
+                    .find(|e| e.name == "PIPELINE_JOB_NAME")
+                    .map(|e| e.value.as_str())
+                    .unwrap_or(""),
+            )
+        })
         .map(|(img, name)| (name, img))
         .collect();
 
@@ -1080,7 +1228,9 @@ jobs:
         1,
         "sha1".into(),
         "refs/heads/main".into(),
-        PipelineTrigger::Push { ref_name: "refs/heads/main".into() },
+        PipelineTrigger::Push {
+            ref_name: "refs/heads/main".into(),
+        },
         yaml.into(),
     );
     run_store.create_run(&run).await.unwrap();
@@ -1094,15 +1244,28 @@ jobs:
         Arc::new(submitter),
     );
 
-    executor.execute(&mut run, &pipeline_def, &step_runs, None).await.unwrap();
+    executor
+        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .await
+        .unwrap();
 
     let jobs = captured.lock().await;
-    let env: HashMap<&str, &str> = jobs[0].spec.env_vars.iter()
+    let env: HashMap<&str, &str> = jobs[0]
+        .spec
+        .env_vars
+        .iter()
         .map(|e| (e.name.as_str(), e.value.as_str()))
         .collect();
 
-    assert_eq!(env.get("PIPELINE_JOB_NAME"), Some(&"my-job"), "PIPELINE_JOB_NAME must be set");
-    assert!(env.get("PIPELINE_STEP_NAME").is_none(), "PIPELINE_STEP_NAME must not be set in jobs mode");
+    assert_eq!(
+        env.get("PIPELINE_JOB_NAME"),
+        Some(&"my-job"),
+        "PIPELINE_JOB_NAME must be set"
+    );
+    assert!(
+        !env.contains_key("PIPELINE_STEP_NAME"),
+        "PIPELINE_STEP_NAME must not be set in jobs mode"
+    );
     assert!(env.contains_key("PIPELINE_RUN_ID"));
     assert_eq!(env.get("PIPELINE_SHA"), Some(&"sha1"));
 }
@@ -1133,7 +1296,9 @@ jobs:
         1,
         "cafebabe".into(),
         "refs/heads/main".into(),
-        PipelineTrigger::Push { ref_name: "refs/heads/main".into() },
+        PipelineTrigger::Push {
+            ref_name: "refs/heads/main".into(),
+        },
         yaml.into(),
     );
     run_store.create_run(&run).await.unwrap();
@@ -1148,13 +1313,23 @@ jobs:
     );
 
     let clone_url = "https://x-token:secret@git.example.com/t1/ns/repo.git";
-    executor.execute(&mut run, &pipeline_def, &step_runs, Some(clone_url)).await.unwrap();
+    executor
+        .execute(&mut run, &pipeline_def, &step_runs, Some(clone_url))
+        .await
+        .unwrap();
 
     let jobs = captured.lock().await;
-    let checkout = jobs[0].spec.checkout.as_ref().expect("checkout should be set");
+    let checkout = jobs[0]
+        .spec
+        .checkout
+        .as_ref()
+        .expect("checkout should be set");
     assert_eq!(checkout.clone_url, clone_url);
     assert_eq!(checkout.sha, "cafebabe");
-    assert!(checkout.submodules, "submodules flag should be passed through");
+    assert!(
+        checkout.submodules,
+        "submodules flag should be passed through"
+    );
 }
 
 /// jobs: a failing job propagates failure to the run.
@@ -1181,16 +1356,28 @@ jobs:
         1,
         "abc".into(),
         "refs/heads/main".into(),
-        PipelineTrigger::Push { ref_name: "refs/heads/main".into() },
+        PipelineTrigger::Push {
+            ref_name: "refs/heads/main".into(),
+        },
         yaml.into(),
     );
     run_store.create_run(&run).await.unwrap();
 
     let step_runs = create_job_step_runs(&run, &pipeline_def, &step_store).await;
-    let submitter: Arc<dyn JobSubmitter> = Arc::new(FailingJobSubmitter { job_store: job_store.clone() });
-    let executor = DagExecutor::new(run_store.clone(), step_store.clone(), job_store.clone(), submitter);
+    let submitter: Arc<dyn JobSubmitter> = Arc::new(FailingJobSubmitter {
+        job_store: job_store.clone(),
+    });
+    let executor = DagExecutor::new(
+        run_store.clone(),
+        step_store.clone(),
+        job_store.clone(),
+        submitter,
+    );
 
-    let result = executor.execute(&mut run, &pipeline_def, &step_runs, None).await.unwrap();
+    let result = executor
+        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .await
+        .unwrap();
     assert_eq!(result, PipelineRunState::Failed);
 
     let steps = step_store.list_by_run("t1", &run.id).await.unwrap();

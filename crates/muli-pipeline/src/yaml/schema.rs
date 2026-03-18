@@ -86,6 +86,8 @@ pub struct JobDef {
     #[serde(default)]
     pub commands: Vec<String>,
     #[serde(default)]
+    pub steps: Vec<JobStepDef>,
+    #[serde(default)]
     pub env: HashMap<String, String>,
     pub cache: Option<CacheDef>,
     pub artifacts: Option<ArtifactsDef>,
@@ -118,6 +120,31 @@ impl JobDef {
             }
         }
     }
+
+    /// Return the full command list for this job: pre-commands followed by
+    /// named step commands with log-visible headers.
+    pub fn execution_commands(&self) -> Vec<String> {
+        let mut commands = self.commands.clone();
+        for step in &self.steps {
+            commands.push(format!(
+                "printf '%s\\n' {}",
+                shell_single_quote(&format!("==> {}", step.name))
+            ));
+            commands.extend(step.commands.clone());
+        }
+        commands
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobStepDef {
+    pub name: String,
+    #[serde(default)]
+    pub commands: Vec<String>,
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 /// `needs:` accepts either a single string or an array of strings.

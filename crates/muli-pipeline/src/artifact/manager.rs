@@ -59,9 +59,9 @@ impl ArtifactHandler for ArtifactManager {
                     continue;
                 }
                 if full_path.is_dir() {
-                    builder
-                        .append_dir_all(rel_path, &full_path)
-                        .map_err(|e| MuliError::Storage(format!("tar directory '{rel_path}': {e}")))?;
+                    builder.append_dir_all(rel_path, &full_path).map_err(|e| {
+                        MuliError::Storage(format!("tar directory '{rel_path}': {e}"))
+                    })?;
                 } else {
                     let mut f = std::fs::File::open(&full_path)
                         .map_err(|e| MuliError::Storage(format!("open '{rel_path}': {e}")))?;
@@ -159,7 +159,13 @@ mod tests {
         std::fs::write(workspace.path().join("output.txt"), b"hello artifact").unwrap();
 
         manager
-            .upload_artifacts("t1", "run-1", "build", workspace.path(), &["output.txt".to_string()])
+            .upload_artifacts(
+                "t1",
+                "run-1",
+                "build",
+                workspace.path(),
+                &["output.txt".to_string()],
+            )
             .await
             .unwrap();
 
@@ -187,7 +193,13 @@ mod tests {
         std::fs::write(workspace.path().join("dist").join("index.html"), b"<html/>").unwrap();
 
         manager
-            .upload_artifacts("t1", "run-2", "build", workspace.path(), &["dist/".to_string()])
+            .upload_artifacts(
+                "t1",
+                "run-2",
+                "build",
+                workspace.path(),
+                &["dist/".to_string()],
+            )
             .await
             .unwrap();
 
@@ -258,8 +270,14 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(std::fs::read(restore_ws.path().join("a.txt")).unwrap(), b"from-a");
-        assert_eq!(std::fs::read(restore_ws.path().join("b.txt")).unwrap(), b"from-b");
+        assert_eq!(
+            std::fs::read(restore_ws.path().join("a.txt")).unwrap(),
+            b"from-a"
+        );
+        assert_eq!(
+            std::fs::read(restore_ws.path().join("b.txt")).unwrap(),
+            b"from-b"
+        );
     }
 
     /// Non-existent path in upload list is skipped with a warning, rest still uploaded.

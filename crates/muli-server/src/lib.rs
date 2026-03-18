@@ -19,4 +19,5 @@ pub mod startup;
 pub(crate) mod stores;
 pub mod watchdog;
 
+pub use pipeline_trigger::PipelineTriggerImpl;
 pub use startup::run;

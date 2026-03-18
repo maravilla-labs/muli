@@ -56,6 +56,7 @@ pub enum WebhookEvent {
     PrOpened,
     PrMerged,
     PrClosed,
+    PipelineStarted,
     PipelineCompleted,
 }
 

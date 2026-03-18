@@ -131,7 +131,11 @@ pub struct GitToken {
     pub id: String,
     pub tenant_id: String,
     /// The user this token belongs to, if scoped to a specific user.
+    #[serde(default)]
     pub user_id: Option<String>,
+    /// If set, this token is restricted to a single repository.
+    #[serde(default)]
+    pub repo_id: Option<String>,
     /// Argon2id PHC hash of the plaintext token.
     pub token_hash: String,
     /// Short prefix of the plaintext token for O(1) DB lookup.
@@ -157,6 +161,7 @@ impl GitToken {
             id: Uuid::new_v4().to_string(),
             tenant_id,
             user_id: None,
+            repo_id: None,
             token_hash,
             token_prefix,
             permissions,

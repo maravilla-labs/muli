@@ -257,6 +257,20 @@ pub async fn auth_middleware(mut request: Request, next: Next) -> Response {
                 .await
         {
             let required = required_permission(&method, &path, query.as_deref());
+            if let Some(token) = token.as_ref()
+                && required == GitPermission::Pull
+                && token.repo_id.as_deref() == Some(repo.id.as_str())
+            {
+                if let Some(uid) = token.user_id.as_ref()
+                    && !uid.is_empty()
+                {
+                    request.extensions_mut().insert(AuthenticatedUser {
+                        user_id: uid.clone(),
+                    });
+                }
+                return next.run(request).await;
+            }
+
             let user_id = token.as_ref().and_then(|t| t.user_id.as_deref());
 
             let verdict = check_repo_access_with_org_lookup(

@@ -96,7 +96,7 @@ jobs:
 
   release:
     name: Publish GitHub release
-    needs: build-binaries
+    needs: build-binaries 
     runs-on: ubuntu-latest
 
     steps:

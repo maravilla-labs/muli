@@ -7,6 +7,28 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-03-18
+
+### Added
+
+- **Repo-scoped CI checkout tokens for private repositories** — push-triggered, manual, and retry pipeline runs now generate short-lived pull tokens scoped to the target repository. Private repository checkout no longer depends on a user-bound token identity.
+- **Named job steps inside `jobs:` pipelines** — `jobs.<name>.steps[]` now groups commands under explicit step names while keeping `jobs.<name>.commands` as the prep phase. This gives clients and logs a clearer execution structure without reviving the legacy top-level unnamed step format.
+- **Multi-file pipeline discovery** — Muli now discovers pipelines from both `.maravilla/pipeline.yml` and `.maravilla/pipeline/*.yml|yaml`, allowing more than one pipeline definition per repository commit.
+- **Pipeline lifecycle webhooks** — repositories can now receive `pipeline.started` and `pipeline.completed` webhook events in addition to the existing git events.
+- **End-to-end checkout coverage for private repositories** — new Muli-side e2e tests cover repo-scoped private clone auth, token denial for the wrong repo or wrong permission, checkout success for generated CI tokens, checkout failure surfacing, and multi-pipeline discovery.
+
+### Fixed
+
+- **Private-repo pipeline checkout auth** — temporary CI tokens used for checkout are now accepted for the matching private repository without requiring an owner/collaborator `user_id`, while remaining denied for other repositories and write operations.
+- **Structured pipeline failure surfacing** — `StepRun` now carries `error_message` so checkout/setup failures are preserved even when no useful container logs exist.
+- **Stable pipeline identity across multi-file configs** — push-triggered runs now keep consistent pipeline IDs keyed by repository and pipeline name, even when multiple pipeline files exist under `.maravilla/pipeline/`.
+- **Proto rebuild drift** — pipeline and webhook proto updates now reliably trigger code generation again in downstream consumers.
+
+### Changed
+
+- **Pipeline config loading** — `GetPipelineConfig` now reads from the same multi-file pipeline discovery path used by trigger execution, so config inspection matches what actually runs.
+- **Checkout flow diagnostics** — checkout failures now fail the run with explicit structured reasons instead of collapsing into an unhelpful generic clone failure.
+
 ## [0.4.0] - 2026-03-18
 
 ### Added

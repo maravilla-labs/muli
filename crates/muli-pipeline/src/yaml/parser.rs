@@ -44,6 +44,31 @@ pub fn parse_pipeline(yaml_str: &str) -> Result<PipelineDef> {
                     )));
                 }
             }
+            if job_def.commands.is_empty() && job_def.steps.is_empty() {
+                return Err(MuliError::PipelineYamlError(format!(
+                    "job '{job_name}' must define commands or steps"
+                )));
+            }
+            let mut step_names = std::collections::HashSet::new();
+            for step in &job_def.steps {
+                if step.name.trim().is_empty() {
+                    return Err(MuliError::PipelineYamlError(format!(
+                        "job '{job_name}' contains a step with an empty name"
+                    )));
+                }
+                if step.commands.is_empty() {
+                    return Err(MuliError::PipelineYamlError(format!(
+                        "job '{job_name}' step '{}' must define at least one command",
+                        step.name
+                    )));
+                }
+                if !step_names.insert(step.name.as_str()) {
+                    return Err(MuliError::PipelineYamlError(format!(
+                        "job '{job_name}' contains duplicate step name '{}'",
+                        step.name
+                    )));
+                }
+            }
         }
     } else {
         // Legacy steps-based format validation
@@ -280,6 +305,34 @@ jobs:
     }
 
     #[test]
+    fn test_parse_jobs_with_named_steps_and_prep_commands() {
+        let yaml = r#"
+name: fullstack-ci
+jobs:
+  install:
+    image: node:22-alpine
+    commands:
+      - pwd
+      - npm ci
+    steps:
+      - name: Lint
+        commands:
+          - npm run lint
+      - name: Build
+        commands:
+          - npm run build
+"#;
+        let def = parse_pipeline(yaml).unwrap();
+        let install = def.jobs.get("install").unwrap();
+        assert_eq!(install.commands, vec!["pwd", "npm ci"]);
+        assert_eq!(install.steps.len(), 2);
+        assert_eq!(install.steps[0].name, "Lint");
+        assert_eq!(install.steps[0].commands, vec!["npm run lint"]);
+        assert_eq!(install.steps[1].name, "Build");
+        assert_eq!(install.steps[1].commands, vec!["npm run build"]);
+    }
+
+    #[test]
     fn test_jobs_missing_image_rejected() {
         let yaml = "name: test\njobs:\n  build:\n    commands: [echo hi]\n";
         assert!(parse_pipeline(yaml).is_err());
@@ -287,8 +340,7 @@ jobs:
 
     #[test]
     fn test_jobs_pipeline_level_image_ok() {
-        let yaml =
-            "name: test\nimage: node:18\njobs:\n  build:\n    commands: [npm run build]\n";
+        let yaml = "name: test\nimage: node:18\njobs:\n  build:\n    commands: [npm run build]\n";
         assert!(parse_pipeline(yaml).is_ok());
     }
 
@@ -301,6 +353,34 @@ jobs:
   build:
     needs: nonexistent
     commands: [echo hi]
+"#;
+        assert!(parse_pipeline(yaml).is_err());
+    }
+
+    #[test]
+    fn test_jobs_step_missing_name_rejected() {
+        let yaml = r#"
+name: test
+image: node:18
+jobs:
+  build:
+    steps:
+      - name: ""
+        commands: [npm run build]
+"#;
+        assert!(parse_pipeline(yaml).is_err());
+    }
+
+    #[test]
+    fn test_jobs_step_missing_commands_rejected() {
+        let yaml = r#"
+name: test
+image: node:18
+jobs:
+  build:
+    steps:
+      - name: Build
+        commands: []
 "#;
         assert!(parse_pipeline(yaml).is_err());
     }
