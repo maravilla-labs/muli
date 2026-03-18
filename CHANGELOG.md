@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-03-18
+
+### Added
+
+- **Structured job substeps in pipeline runs** — `jobs.<name>.commands` are now surfaced as a synthetic `Preparation` substep, named `jobs.<name>.steps[]` are preserved as first-class substeps, and `StepRun` now returns live substep progress with timestamps, exit codes, and per-substep log sequence ranges.
+- **Structured pipeline step log events** — pipeline log APIs now include substep-aware metadata (`substep_name`, `event_type`, `exit_code`) for both historical log fetches and live streaming, enabling clients to render collapsible step explorers without guessing from raw output.
+- **Substep runtime regression coverage** — Muli’s log streaming tests now verify hidden substep lifecycle markers are consumed into structured events, and step-log streaming still replays backlog plus live lines without duplicates.
+
+### Changed
+
+- **Jobs-mode execution model** — the Docker shell wrapper now emits internal substep lifecycle markers around structured job substeps while keeping those control markers out of user-visible logs.
+
 ## [0.4.3] - 2026-03-18
 
 ### Added

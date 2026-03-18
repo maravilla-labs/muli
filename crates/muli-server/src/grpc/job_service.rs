@@ -193,10 +193,12 @@ impl JobServiceImpl {
             },
             registry_credentials,
             commands: vec![],
+            substeps: vec![],
             checkout: None,
             artifact_downloads: vec![],
             artifact_upload_paths: vec![],
             artifact_upload_key: None,
+            pipeline_step_run_id: None,
         };
 
         let job = Job::new(spec);

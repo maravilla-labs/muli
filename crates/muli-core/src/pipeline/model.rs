@@ -122,6 +122,8 @@ pub struct StepRun {
     pub depends_on: Vec<String>,
     #[serde(default)]
     pub error_message: Option<String>,
+    #[serde(default)]
+    pub substeps: Vec<JobSubstepRun>,
     pub failure_strategy: FailureStrategy,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
@@ -148,11 +150,39 @@ impl StepRun {
             matrix_values,
             depends_on: Vec::new(),
             error_message: None,
+            substeps: Vec::new(),
             failure_strategy,
             started_at: None,
             finished_at: None,
             created_at: now,
             updated_at: now,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobSubstepRun {
+    pub name: String,
+    pub state: StepRunState,
+    pub started_at: Option<DateTime<Utc>>,
+    pub finished_at: Option<DateTime<Utc>>,
+    pub exit_code: Option<i32>,
+    #[serde(default)]
+    pub log_start_sequence: Option<u64>,
+    #[serde(default)]
+    pub log_end_sequence: Option<u64>,
+}
+
+impl JobSubstepRun {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            state: StepRunState::Pending,
+            started_at: None,
+            finished_at: None,
+            exit_code: None,
+            log_start_sequence: None,
+            log_end_sequence: None,
         }
     }
 }

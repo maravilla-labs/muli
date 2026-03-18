@@ -889,16 +889,22 @@ jobs:
 
     let jobs = captured.lock().await;
     assert_eq!(jobs.len(), 1);
+    assert!(jobs[0].spec.commands.is_empty());
+    assert_eq!(jobs[0].spec.substeps.len(), 3);
+    assert_eq!(jobs[0].spec.substeps[0].name, "Preparation");
     assert_eq!(
-        jobs[0].spec.commands,
-        vec![
-            "pwd".to_string(),
-            "npm ci".to_string(),
-            "printf '%s\\n' '==> Lint and Type Check'".to_string(),
-            "npx eslint src/ --max-warnings 0 || true".to_string(),
-            "printf '%s\\n' '==> Build Node Project'".to_string(),
-            "npm run build".to_string(),
-        ]
+        jobs[0].spec.substeps[0].commands,
+        vec!["pwd".to_string(), "npm ci".to_string()]
+    );
+    assert_eq!(jobs[0].spec.substeps[1].name, "Lint and Type Check");
+    assert_eq!(
+        jobs[0].spec.substeps[1].commands,
+        vec!["npx eslint src/ --max-warnings 0 || true".to_string()]
+    );
+    assert_eq!(jobs[0].spec.substeps[2].name, "Build Node Project");
+    assert_eq!(
+        jobs[0].spec.substeps[2].commands,
+        vec!["npm run build".to_string()]
     );
 }
 

@@ -330,6 +330,9 @@ impl AgentService for AgentServiceImpl {
                     timestamp,
                     stream: stream_type,
                     message: entry.line,
+                    substep_name: None,
+                    event_type: "line".to_string(),
+                    exit_code: None,
                 })
                 .await;
         }
@@ -347,6 +350,9 @@ impl AgentService for AgentServiceImpl {
                             EngineLogStream::Stderr => "stderr".to_string(),
                         },
                         message: l.message.clone(),
+                        substep_name: l.substep_name.clone(),
+                        event_type: Some(l.event_type.clone()),
+                        exit_code: l.exit_code,
                     })
                     .collect();
                 if let Err(e) = job_log_store.append_logs(jid, stored).await {

@@ -192,6 +192,9 @@ fn spawn_pipe<R>(
                         timestamp: chrono::Utc::now(),
                         stream,
                         message: line,
+                        substep_name: None,
+                        event_type: "line".to_string(),
+                        exit_code: None,
                     })
                     .await;
             }

@@ -44,6 +44,9 @@ impl JobLogStore for MongoJobLogStore {
                     "stream": l.stream,
                     "line": l.message,
                     "ts_ms": l.timestamp.timestamp_millis(),
+                    "substep_name": l.substep_name,
+                    "event_type": l.event_type,
+                    "exit_code": l.exit_code,
                 }
             })
             .collect();
@@ -77,12 +80,18 @@ impl JobLogStore for MongoJobLogStore {
                 let stream = d.get_str("stream").unwrap_or("stdout").to_string();
                 let message = d.get_str("line").unwrap_or("").to_string();
                 let ts_ms = d.get_i64("ts_ms").unwrap_or(0);
+                let substep_name = d.get_str("substep_name").ok().map(ToString::to_string);
+                let event_type = d.get_str("event_type").ok().map(ToString::to_string);
+                let exit_code = d.get_i32("exit_code").ok();
                 Ok(StoredLogLine {
                     sequence: seq,
                     stream,
                     message,
                     timestamp: chrono::DateTime::from_timestamp_millis(ts_ms)
                         .unwrap_or_else(chrono::Utc::now),
+                    substep_name,
+                    event_type,
+                    exit_code,
                 })
             })
             .collect()

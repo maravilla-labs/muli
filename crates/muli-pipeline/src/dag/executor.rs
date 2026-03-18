@@ -12,10 +12,13 @@ use chrono::Utc;
 use tracing::{error, info, warn};
 
 use muli_core::error::Result;
-use muli_core::job::model::{ArtifactDownload, CheckoutSpec, EnvVar, Job, JobSpec, PriorityTier};
+use muli_core::job::model::{
+    ArtifactDownload, CheckoutSpec, EnvVar, Job, JobSpec, JobSubstepSpec, PriorityTier,
+};
 use muli_core::job::state_machine::JobState;
 use muli_core::pipeline::{
-    FailureStrategy, PipelineRun, PipelineRunState, PipelineTrigger, StepRun, StepRunState,
+    FailureStrategy, JobSubstepRun, PipelineRun, PipelineRunState, PipelineTrigger, StepRun,
+    StepRunState,
 };
 use muli_core::resource::limits::ResourceSpec;
 use muli_core::traits::{JobStore, PipelineRunStore, StepRunStore};
@@ -112,9 +115,10 @@ impl DagExecutor {
 
         let deadline = Utc::now() + chrono::Duration::from_std(MAX_PIPELINE_DURATION).unwrap();
 
-        let build_fn = |orig: &str, _sr: &str| -> Option<Job> {
+        let build_fn = |orig: &str, sr_name: &str| -> Option<Job> {
             let def = pipeline_def.jobs.get(orig)?;
-            Some(self.build_job_from_jobdef(run, pipeline_def, orig, def, clone_url))
+            let sr = *step_run_map.get(sr_name)?;
+            Some(self.build_job_from_jobdef(run, pipeline_def, orig, def, clone_url, sr))
         };
 
         let (had_failure, had_stop_failure) = self
@@ -173,9 +177,10 @@ impl DagExecutor {
 
         let deadline = Utc::now() + chrono::Duration::from_std(MAX_PIPELINE_DURATION).unwrap();
 
-        let build_fn = |orig: &str, _sr: &str| -> Option<Job> {
+        let build_fn = |orig: &str, sr_name: &str| -> Option<Job> {
             let def = *step_def_map.get(orig)?;
-            Some(self.build_job(run, pipeline_def, def, clone_url))
+            let sr = *step_run_map.get(sr_name)?;
+            Some(self.build_job(run, pipeline_def, def, clone_url, sr))
         };
 
         let (had_failure, had_stop_failure) = self
@@ -289,6 +294,12 @@ impl DagExecutor {
                 Some(j) => j,
                 None => continue,
             };
+            let initial_substeps: Vec<JobSubstepRun> = job
+                .spec
+                .substeps
+                .iter()
+                .map(|substep| JobSubstepRun::new(substep.name.clone()))
+                .collect();
 
             self.step_store
                 .update_step_state(tenant_id, &sr.id, StepRunState::Running)
@@ -300,6 +311,9 @@ impl DagExecutor {
                         step.job_id = Some(job_id.clone());
                         step.started_at = Some(Utc::now());
                         step.error_message = None;
+                        if step.substeps.is_empty() {
+                            step.substeps = initial_substeps.clone();
+                        }
                         step.updated_at = Utc::now();
                         self.step_store.update_step(&step).await?;
                     }
@@ -472,6 +486,7 @@ impl DagExecutor {
         job_name: &str,
         job_def: &JobDef,
         clone_url: Option<&str>,
+        step_run: &StepRun,
     ) -> Job {
         let env_vars = build_env_vars(
             &pipeline_def.env,
@@ -505,6 +520,14 @@ impl DagExecutor {
 
         let artifact_upload_paths = job_def.artifact_upload_paths();
         let artifact_upload_key = (!artifact_upload_paths.is_empty()).then(|| job_name.to_string());
+        let substeps: Vec<JobSubstepSpec> = job_def
+            .execution_substeps()
+            .into_iter()
+            .map(|step| JobSubstepSpec {
+                name: step.name,
+                commands: step.commands,
+            })
+            .collect();
 
         let (cpu, memory, timeout) = resolve_resources(job_def.resources.as_ref(), job_def.timeout);
         let runner_image = job_def
@@ -524,11 +547,13 @@ impl DagExecutor {
             framework: "pipeline".to_string(),
             idempotency_key: None,
             registry_credentials: None,
-            commands: job_def.execution_commands(),
+            commands: Vec::new(),
+            substeps,
             checkout,
             artifact_downloads,
             artifact_upload_paths,
             artifact_upload_key,
+            pipeline_step_run_id: Some(step_run.id.clone()),
         })
     }
 
@@ -538,6 +563,7 @@ impl DagExecutor {
         pipeline_def: &PipelineDef,
         step_def: &StepDef,
         clone_url: Option<&str>,
+        step_run: &StepRun,
     ) -> Job {
         let env_vars = build_env_vars(
             &pipeline_def.env,
@@ -572,10 +598,12 @@ impl DagExecutor {
             idempotency_key: None,
             registry_credentials: None,
             commands,
+            substeps: vec![],
             checkout: None,
             artifact_downloads: vec![],
             artifact_upload_paths: vec![],
             artifact_upload_key: None,
+            pipeline_step_run_id: Some(step_run.id.clone()),
         })
     }
 

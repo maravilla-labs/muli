@@ -4,13 +4,13 @@
 //! Domain ↔ Proto conversion functions for pipeline types.
 
 use muli_core::pipeline::{
-    Artifact, CacheEntry, FailureStrategy as DomainFailureStrategy, PipelineRun as DomainRun,
-    PipelineRunState as DomainRunState, PipelineTrigger, StepRun as DomainStep,
-    StepRunState as DomainStepState,
+    Artifact, CacheEntry, FailureStrategy as DomainFailureStrategy, JobSubstepRun as DomainSubstep,
+    PipelineRun as DomainRun, PipelineRunState as DomainRunState, PipelineTrigger,
+    StepRun as DomainStep, StepRunState as DomainStepState,
 };
 use muli_proto::{
-    FailureStrategy as ProtoFailureStrategy, PipelineArtifact, PipelineCache, PipelineRun,
-    PipelineRunState, PipelineStepState, PipelineTriggerType, StepRun,
+    FailureStrategy as ProtoFailureStrategy, JobSubstepRun, PipelineArtifact, PipelineCache,
+    PipelineRun, PipelineRunState, PipelineStepState, PipelineTriggerType, StepRun,
 };
 
 use crate::grpc::util::datetime_to_proto;
@@ -68,6 +68,18 @@ pub fn failure_strategy_to_proto(s: DomainFailureStrategy) -> i32 {
     }
 }
 
+fn substep_to_proto(s: &DomainSubstep) -> JobSubstepRun {
+    JobSubstepRun {
+        name: s.name.clone(),
+        state: step_state_to_proto(s.state),
+        started_at: s.started_at.map(datetime_to_proto),
+        finished_at: s.finished_at.map(datetime_to_proto),
+        exit_code: s.exit_code.unwrap_or_default(),
+        log_start_sequence: s.log_start_sequence.unwrap_or_default(),
+        log_end_sequence: s.log_end_sequence.unwrap_or_default(),
+    }
+}
+
 pub fn step_to_proto(s: &DomainStep) -> StepRun {
     StepRun {
         id: s.id.clone(),
@@ -85,6 +97,7 @@ pub fn step_to_proto(s: &DomainStep) -> StepRun {
         finished_at: s.finished_at.map(datetime_to_proto),
         depends_on: s.depends_on.clone(),
         error_message: s.error_message.clone().unwrap_or_default(),
+        substeps: s.substeps.iter().map(substep_to_proto).collect(),
     }
 }
 

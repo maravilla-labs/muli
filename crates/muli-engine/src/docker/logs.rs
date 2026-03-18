@@ -7,6 +7,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use base64::Engine;
 use bollard::container::LogsOptions;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,7 @@ use tokio::sync::{RwLock, broadcast};
 use tracing::{debug, error, warn};
 
 use super::client::DockerClient;
+use super::container::{SUBSTEP_FINISH_MARKER, SUBSTEP_START_MARKER};
 
 const DEFAULT_RING_BUFFER_SIZE: usize = 10_000;
 const BROADCAST_CHANNEL_SIZE: usize = 1_024;
@@ -25,6 +27,9 @@ pub struct LogLine {
     pub timestamp: chrono::DateTime<chrono::Utc>,
     pub stream: LogStream,
     pub message: String,
+    pub substep_name: Option<String>,
+    pub event_type: String,
+    pub exit_code: Option<i32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +93,7 @@ impl LogCollector {
             };
 
             let mut stream = docker.inner().logs(&container_id, Some(options));
+            let mut current_substep: Option<String> = None;
 
             while let Some(result) = stream.next().await {
                 match result {
@@ -102,36 +108,24 @@ impl LogCollector {
                             _ => continue,
                         };
 
-                        let text = String::from_utf8_lossy(&message).to_string();
+                        for line in parse_output_lines(
+                            stream_type,
+                            &String::from_utf8_lossy(&message),
+                            &mut current_substep,
+                            &sequence,
+                        ) {
+                            trace_container_line(&container_id, &line);
 
-                        let line = LogLine {
-                            sequence: sequence.fetch_add(1, Ordering::SeqCst),
-                            timestamp: chrono::Utc::now(),
-                            stream: stream_type,
-                            message: text,
-                        };
+                            {
+                                let mut buf = buffer.write().await;
+                                if buf.len() >= max_lines {
+                                    buf.pop_front();
+                                }
+                                buf.push_back(line.clone());
+                            }
 
-                        // Trace container output so it appears in muli's logs
-                        match line.stream {
-                            LogStream::Stderr => {
-                                warn!(job_id = %container_id, "[container:stderr] {}", line.message)
-                            }
-                            LogStream::Stdout => {
-                                debug!(job_id = %container_id, "[container:stdout] {}", line.message)
-                            }
+                            let _ = tx.send(line);
                         }
-
-                        // Push to ring buffer
-                        {
-                            let mut buf = buffer.write().await;
-                            if buf.len() >= max_lines {
-                                buf.pop_front();
-                            }
-                            buf.push_back(line.clone());
-                        }
-
-                        // Broadcast to live subscribers (ignore if no receivers)
-                        let _ = tx.send(line);
                     }
                     Err(e) => {
                         warn!(
@@ -199,6 +193,8 @@ impl LogCollector {
 
         let mut stream = docker.inner().logs(container_id, Some(options));
         let mut fetched = Vec::new();
+        let mut current_substep: Option<String> = None;
+        let fallback_sequence = AtomicU64::new(0);
 
         while let Some(result) = stream.next().await {
             match result {
@@ -213,7 +209,12 @@ impl LogCollector {
                         _ => continue,
                     };
 
-                    fetched.push((stream_type, String::from_utf8_lossy(&message).to_string()));
+                    fetched.extend(parse_output_lines(
+                        stream_type,
+                        &String::from_utf8_lossy(&message),
+                        &mut current_substep,
+                        &fallback_sequence,
+                    ));
                 }
                 Err(e) => {
                     error!(
@@ -229,26 +230,14 @@ impl LogCollector {
         }
 
         let existing = self.snapshot_from(container_log_start_seq).await;
-        let overlap = overlap_len(&existing, &fetched);
+        let fetched_keys: Vec<(LogStream, String)> =
+            fetched.iter().map(render_overlap_key).collect();
+        let overlap = overlap_len(&existing, &fetched_keys);
         let mut appended = 0usize;
 
-        for (stream, message) in fetched.into_iter().skip(overlap) {
-            let line = LogLine {
-                sequence: self.sequence.fetch_add(1, Ordering::SeqCst),
-                timestamp: chrono::Utc::now(),
-                stream,
-                message,
-            };
-
-            match line.stream {
-                LogStream::Stderr => {
-                    warn!(job_id = %container_id, "[container:stderr] {}", line.message)
-                }
-                LogStream::Stdout => {
-                    debug!(job_id = %container_id, "[container:stdout] {}", line.message)
-                }
-            }
-
+        for mut line in fetched.into_iter().skip(overlap) {
+            line.sequence = self.sequence.fetch_add(1, Ordering::SeqCst);
+            trace_container_line(container_id, &line);
             self.push_line(line).await;
             appended += 1;
         }
@@ -291,7 +280,7 @@ impl LogCollector {
         let buf = self.buffer.read().await;
         buf.iter()
             .filter(|line| line.sequence >= start_sequence)
-            .map(|line| (line.stream, line.message.clone()))
+            .map(render_overlap_key)
             .collect()
     }
 }
@@ -306,9 +295,136 @@ fn overlap_len(existing: &[(LogStream, String)], fetched: &[(LogStream, String)]
     0
 }
 
+fn parse_output_lines(
+    stream: LogStream,
+    text: &str,
+    current_substep: &mut Option<String>,
+    sequence: &AtomicU64,
+) -> Vec<LogLine> {
+    text.lines()
+        .filter_map(|raw_line| {
+            let line_text = raw_line.trim_end_matches('\r');
+            if line_text.is_empty() {
+                return None;
+            }
+
+            match parse_control_marker(line_text) {
+                ParsedControl::SubstepStarted(name) => {
+                    *current_substep = Some(name.clone());
+                    Some(LogLine {
+                        sequence: sequence.fetch_add(1, Ordering::SeqCst),
+                        timestamp: chrono::Utc::now(),
+                        stream,
+                        message: String::new(),
+                        substep_name: Some(name),
+                        event_type: "substep_started".to_string(),
+                        exit_code: None,
+                    })
+                }
+                ParsedControl::SubstepFinished(name, exit_code) => {
+                    *current_substep = None;
+                    Some(LogLine {
+                        sequence: sequence.fetch_add(1, Ordering::SeqCst),
+                        timestamp: chrono::Utc::now(),
+                        stream,
+                        message: String::new(),
+                        substep_name: Some(name),
+                        event_type: "substep_finished".to_string(),
+                        exit_code: Some(exit_code),
+                    })
+                }
+                ParsedControl::Visible => Some(LogLine {
+                    sequence: sequence.fetch_add(1, Ordering::SeqCst),
+                    timestamp: chrono::Utc::now(),
+                    stream,
+                    message: line_text.to_string(),
+                    substep_name: current_substep.clone(),
+                    event_type: "line".to_string(),
+                    exit_code: None,
+                }),
+            }
+        })
+        .collect()
+}
+
+enum ParsedControl {
+    Visible,
+    SubstepStarted(String),
+    SubstepFinished(String, i32),
+}
+
+fn parse_control_marker(line: &str) -> ParsedControl {
+    let normalized = line.split_once(' ').map(|(_, rest)| rest).unwrap_or(line);
+
+    if let Some(payload) = normalized.strip_prefix(&format!("{SUBSTEP_START_MARKER}|")) {
+        return decode_substep_name(payload)
+            .map(ParsedControl::SubstepStarted)
+            .unwrap_or(ParsedControl::Visible);
+    }
+
+    if let Some(payload) = normalized.strip_prefix(&format!("{SUBSTEP_FINISH_MARKER}|")) {
+        let mut parts = payload.splitn(2, '|');
+        if let (Some(encoded_name), Some(exit_code)) = (parts.next(), parts.next())
+            && let Some(name) = decode_substep_name(encoded_name)
+            && let Ok(code) = exit_code.parse::<i32>()
+        {
+            return ParsedControl::SubstepFinished(name, code);
+        }
+    }
+
+    ParsedControl::Visible
+}
+
+fn decode_substep_name(value: &str) -> Option<String> {
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(value)
+        .ok()?;
+    String::from_utf8(decoded).ok()
+}
+
+fn render_overlap_key(line: &LogLine) -> (LogStream, String) {
+    (
+        line.stream,
+        format!(
+            "{}|{}|{}|{}",
+            line.event_type,
+            line.substep_name.as_deref().unwrap_or_default(),
+            line.exit_code.map(|v| v.to_string()).unwrap_or_default(),
+            line.message
+        ),
+    )
+}
+
+fn trace_container_line(container_id: &str, line: &LogLine) {
+    if line.event_type != "line" {
+        debug!(
+            job_id = %container_id,
+            event_type = %line.event_type,
+            substep_name = line.substep_name.as_deref().unwrap_or_default(),
+            exit_code = line.exit_code,
+            "container substep event"
+        );
+        return;
+    }
+
+    match line.stream {
+        LogStream::Stderr => {
+            warn!(job_id = %container_id, "[container:stderr] {}", line.message)
+        }
+        LogStream::Stdout => {
+            debug!(job_id = %container_id, "[container:stdout] {}", line.message)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{LogStream, overlap_len};
+    use std::sync::atomic::AtomicU64;
+
+    use base64::Engine;
+
+    use super::{LogStream, decode_substep_name, overlap_len, parse_output_lines};
+    use crate::docker::container::{SUBSTEP_FINISH_MARKER, SUBSTEP_START_MARKER};
 
     #[test]
     fn overlap_detects_full_duplicate_fetch() {
@@ -339,5 +455,30 @@ mod tests {
         let existing = vec![(LogStream::Stdout, "one".to_string())];
         let fetched = vec![(LogStream::Stdout, "two".to_string())];
         assert_eq!(overlap_len(&existing, &fetched), 0);
+    }
+
+    #[test]
+    fn parse_output_lines_extracts_hidden_substep_markers() {
+        let encoded = base64::engine::general_purpose::STANDARD.encode("Build");
+        let input = format!(
+            "{SUBSTEP_START_MARKER}|{encoded}\nhello\n{SUBSTEP_FINISH_MARKER}|{encoded}|0\n"
+        );
+        let mut current = None;
+        let sequence = AtomicU64::new(0);
+        let parsed = parse_output_lines(LogStream::Stdout, &input, &mut current, &sequence);
+
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[0].event_type, "substep_started");
+        assert_eq!(parsed[0].substep_name.as_deref(), Some("Build"));
+        assert_eq!(parsed[1].event_type, "line");
+        assert_eq!(parsed[1].substep_name.as_deref(), Some("Build"));
+        assert_eq!(parsed[1].message, "hello");
+        assert_eq!(parsed[2].event_type, "substep_finished");
+        assert_eq!(parsed[2].exit_code, Some(0));
+    }
+
+    #[test]
+    fn decode_substep_name_rejects_invalid_base64() {
+        assert!(decode_substep_name("%%%").is_none());
     }
 }

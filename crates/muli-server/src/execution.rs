@@ -10,7 +10,8 @@ use tracing::{error, info, warn};
 
 use muli_core::job::model::JobResult;
 use muli_core::job::state_machine::JobState;
-use muli_core::traits::{JobLogStore, JobStore};
+use muli_core::pipeline::StepRunState;
+use muli_core::traits::{JobLogStore, JobStore, StepRunStore};
 use muli_engine::docker::logs::LogCollector;
 use muli_engine::executor::DockerExecutor;
 use muli_queue::{RetryPolicy, Scheduler};
@@ -22,6 +23,7 @@ pub async fn execute_job(
     executor: Arc<DockerExecutor>,
     log_collectors: Arc<DashMap<String, Arc<LogCollector>>>,
     log_store: Arc<dyn JobLogStore>,
+    step_store: Arc<dyn StepRunStore>,
     scheduler: Arc<Scheduler>,
     retry_policy: Arc<RetryPolicy>,
 ) {
@@ -70,16 +72,28 @@ pub async fn execute_job(
     // The ring buffer is not cleared, so live `stream_logs` / `get_logs` still see all lines.
     let flush_collector = log_collector.clone();
     let flush_store = log_store.clone();
+    let flush_step_store = step_store.clone();
     let flush_job_id = job_id.clone();
+    let flush_step_run_id = job.spec.pipeline_step_run_id.clone();
+    let flush_tenant_id = job.spec.tenant_id.clone();
     let flush_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(2));
         loop {
             interval.tick().await;
             let lines = flush_collector.peek_unflushed().await;
             if !lines.is_empty() {
-                let stored = lines_to_stored(lines);
+                let stored = lines_to_stored(&lines);
                 if let Err(e) = flush_store.append_logs(&flush_job_id, stored).await {
                     tracing::warn!(job_id = %flush_job_id, error = %e, "Periodic log flush failed");
+                }
+                if let Some(step_run_id) = flush_step_run_id.as_deref() {
+                    update_pipeline_substeps(
+                        &*flush_step_store,
+                        &flush_tenant_id,
+                        step_run_id,
+                        &lines,
+                    )
+                    .await;
                 }
             }
         }
@@ -92,7 +106,15 @@ pub async fn execute_job(
     flush_handle.abort();
 
     // Persist any lines produced after the last periodic flush tick.
-    drain_and_persist_logs(&log_collector, &*log_store, &job_id).await;
+    drain_and_persist_logs(
+        &log_collector,
+        &*log_store,
+        &*step_store,
+        &job.spec.tenant_id,
+        job.spec.pipeline_step_run_id.as_deref(),
+        &job_id,
+    )
+    .await;
 
     match exec_result {
         Ok(result) => {
@@ -264,10 +286,10 @@ fn record_completion_metrics(
 
 /// Convert engine log lines to the stored representation.
 fn lines_to_stored(
-    lines: Vec<muli_engine::docker::logs::LogLine>,
+    lines: &[muli_engine::docker::logs::LogLine],
 ) -> Vec<muli_core::job::model::StoredLogLine> {
     lines
-        .into_iter()
+        .iter()
         .map(|l| muli_core::job::model::StoredLogLine {
             sequence: l.sequence,
             timestamp: l.timestamp,
@@ -275,7 +297,10 @@ fn lines_to_stored(
                 muli_engine::docker::logs::LogStream::Stdout => "stdout".to_string(),
                 muli_engine::docker::logs::LogStream::Stderr => "stderr".to_string(),
             },
-            message: l.message,
+            message: l.message.clone(),
+            substep_name: l.substep_name.clone(),
+            event_type: Some(l.event_type.clone()),
+            exit_code: l.exit_code,
         })
         .collect()
 }
@@ -284,14 +309,94 @@ fn lines_to_stored(
 async fn drain_and_persist_logs(
     collector: &LogCollector,
     log_store: &dyn JobLogStore,
+    step_store: &dyn StepRunStore,
+    tenant_id: &str,
+    step_run_id: Option<&str>,
     job_id: &str,
 ) {
     let lines = collector.drain().await;
     if lines.is_empty() {
         return;
     }
-    let stored = lines_to_stored(lines);
+    let stored = lines_to_stored(&lines);
     if let Err(e) = log_store.append_logs(job_id, stored).await {
         tracing::warn!(job_id = %job_id, error = %e, "Failed to persist job logs");
+    }
+    if let Some(step_run_id) = step_run_id {
+        update_pipeline_substeps(step_store, tenant_id, step_run_id, &lines).await;
+    }
+}
+
+async fn update_pipeline_substeps(
+    step_store: &dyn StepRunStore,
+    tenant_id: &str,
+    step_run_id: &str,
+    lines: &[muli_engine::docker::logs::LogLine],
+) {
+    let Ok(Some(mut step)) = step_store.get_step(tenant_id, step_run_id).await else {
+        return;
+    };
+
+    let mut changed = false;
+    for line in lines {
+        let Some(substep_name) = line.substep_name.as_deref() else {
+            continue;
+        };
+
+        let Some(substep) = step
+            .substeps
+            .iter_mut()
+            .find(|entry| entry.name == substep_name)
+        else {
+            continue;
+        };
+
+        match line.event_type.as_str() {
+            "substep_started" => {
+                if substep.started_at.is_none() {
+                    substep.started_at = Some(line.timestamp);
+                }
+                if substep.log_start_sequence.is_none() {
+                    substep.log_start_sequence = Some(line.sequence.saturating_add(1));
+                }
+                substep.state = StepRunState::Running;
+                changed = true;
+            }
+            "line" => {
+                if substep.log_start_sequence.is_none() {
+                    substep.log_start_sequence = Some(line.sequence);
+                }
+                substep.log_end_sequence = Some(line.sequence);
+                changed = true;
+            }
+            "substep_finished" => {
+                substep.finished_at = Some(line.timestamp);
+                substep.exit_code = line.exit_code;
+                if substep.log_end_sequence.is_none()
+                    && let Some(start) = substep.log_start_sequence
+                    && line.sequence > start
+                {
+                    substep.log_end_sequence = Some(line.sequence - 1);
+                }
+                substep.state = if line.exit_code.unwrap_or(1) == 0 {
+                    StepRunState::Succeeded
+                } else {
+                    StepRunState::Failed
+                };
+                changed = true;
+            }
+            _ => {}
+        }
+    }
+
+    if changed {
+        if let Err(e) = step_store.update_step(&step).await {
+            tracing::warn!(
+                tenant_id = %tenant_id,
+                step_run_id = %step_run_id,
+                error = %e,
+                "Failed to persist pipeline substep progress"
+            );
+        }
     }
 }

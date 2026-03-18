@@ -24,6 +24,13 @@ pub struct ArtifactDownload {
     pub job_name: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobSubstepSpec {
+    pub name: String,
+    #[serde(default)]
+    pub commands: Vec<String>,
+}
+
 /// A build job to execute in a container.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
@@ -60,6 +67,10 @@ pub struct JobSpec {
     /// runs `/bin/sh -c "<commands joined with &&>"` instead of the image default.
     #[serde(default)]
     pub commands: Vec<String>,
+    /// Structured substeps for jobs-mode pipelines. When present, the engine
+    /// emits internal substep lifecycle markers and preserves substep metadata.
+    #[serde(default)]
+    pub substeps: Vec<JobSubstepSpec>,
     /// If set, the engine performs a host-side git checkout before starting the container.
     #[serde(default)]
     pub checkout: Option<CheckoutSpec>,
@@ -71,6 +82,8 @@ pub struct JobSpec {
     pub artifact_upload_paths: Vec<String>,
     /// Key under which to store uploaded artifacts: "{job_name}" (stored as "{run_id}/{key}").
     pub artifact_upload_key: Option<String>,
+    /// Associated pipeline step_run id when this job was created from a pipeline.
+    pub pipeline_step_run_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,6 +161,9 @@ pub struct StoredLogLine {
     pub timestamp: DateTime<Utc>,
     pub stream: String, // "stdout" or "stderr"
     pub message: String,
+    pub substep_name: Option<String>,
+    pub event_type: Option<String>,
+    pub exit_code: Option<i32>,
 }
 
 impl Job {

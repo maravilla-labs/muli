@@ -134,6 +134,26 @@ impl JobDef {
         }
         commands
     }
+
+    /// Return the structured execution substeps for this job.
+    pub fn execution_substeps(&self) -> Vec<JobStepDef> {
+        if self.steps.is_empty() {
+            return vec![JobStepDef {
+                name: "Commands".to_string(),
+                commands: self.commands.clone(),
+            }];
+        }
+
+        let mut substeps = Vec::new();
+        if !self.commands.is_empty() {
+            substeps.push(JobStepDef {
+                name: "Preparation".to_string(),
+                commands: self.commands.clone(),
+            });
+        }
+        substeps.extend(self.steps.clone());
+        substeps
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

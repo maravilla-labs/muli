@@ -16,10 +16,11 @@ use serde_json::json;
 use tempfile::TempDir;
 use tokio::process::Command;
 use tokio::sync::Notify;
+use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 
 use muli_core::git::{GitPermission, GitToken, Repository};
-use muli_core::job::model::Job;
+use muli_core::job::model::{Job, StoredLogLine};
 use muli_core::pipeline::{
     FailureStrategy, Pipeline, PipelineRun, PipelineRunState, PipelineTrigger, StepRun,
     StepRunState,
@@ -30,7 +31,9 @@ use muli_core::traits::{
     PipelineRunStore, PipelineSecretStore, PipelineStore, PullRequestStore, RepositoryStore,
     StepRunStore,
 };
-use muli_engine::docker::logs::LogCollector;
+use muli_engine::docker::logs::{
+    LogCollector, LogLine as EngineLogLine, LogStream as EngineLogStream,
+};
 use muli_git::auth::{GitAuth, hash_token, token_prefix};
 use muli_git::storage::FilesystemStorage;
 use muli_git::tenant::TenantConfig;
@@ -50,7 +53,7 @@ use muli_store::sqlite::{
     SqliteStoreFactory, SqliteWebhookStore,
 };
 
-use muli_proto::GetPipelineRunRequest;
+use muli_proto::{GetPipelineRunRequest, StreamStepLogsRequest};
 
 use common::{dummy_executor, run_job, with_tenant};
 
@@ -85,6 +88,7 @@ struct CheckoutE2eEnv {
     step_store: Arc<dyn StepRunStore>,
     job_store: Arc<dyn JobStore>,
     job_log_store: Arc<dyn JobLogStore>,
+    log_collectors: Arc<DashMap<String, Arc<LogCollector>>>,
     artifact_store: Arc<dyn ArtifactStore>,
     cache_store: Arc<dyn CacheStore>,
     secret_store: Arc<dyn PipelineSecretStore>,
@@ -168,6 +172,7 @@ impl CheckoutE2eEnv {
         let limiter = Arc::new(ConcurrencyLimiter::new(10, 5));
         let scheduler = Arc::new(Scheduler::new(queue, limiter, notify));
         let cancel = CancellationToken::new();
+        let log_collectors: Arc<DashMap<String, Arc<LogCollector>>> = Arc::new(DashMap::new());
 
         {
             let sched = scheduler.clone();
@@ -175,14 +180,14 @@ impl CheckoutE2eEnv {
             let log_store = job_log_store.clone();
             let cancel_clone = cancel.clone();
             let executor = dummy_executor().await;
-            let log_collectors: Arc<DashMap<String, Arc<LogCollector>>> = Arc::new(DashMap::new());
+            let live_collectors = log_collectors.clone();
 
             tokio::spawn(async move {
                 sched
                     .run(cancel_clone, move |job_id, _tenant_id| {
                         let store = store.clone();
                         let executor = executor.clone();
-                        let log_collectors = log_collectors.clone();
+                        let log_collectors = live_collectors.clone();
                         let log_store = log_store.clone();
                         async move {
                             run_job(job_id, store, executor, log_collectors, log_store).await;
@@ -267,6 +272,7 @@ impl CheckoutE2eEnv {
             step_store,
             job_store,
             job_log_store,
+            log_collectors,
             artifact_store,
             cache_store,
             secret_store,
@@ -328,6 +334,27 @@ impl CheckoutE2eEnv {
             .await
             .expect("set owner");
         repo
+    }
+}
+
+fn pipeline_service(env: &CheckoutE2eEnv) -> PipelineServiceImpl {
+    PipelineServiceImpl {
+        pipeline_store: env.pipeline_store.clone(),
+        run_store: env.run_store.clone(),
+        step_store: env.step_store.clone(),
+        artifact_store: env.artifact_store.clone(),
+        artifact_storage: env.artifact_storage.clone(),
+        cache_store: env.cache_store.clone(),
+        secret_store: env.secret_store.clone(),
+        job_store: env.job_store.clone(),
+        job_log_store: env.job_log_store.clone(),
+        log_collectors: env.log_collectors.clone(),
+        max_log_lines: 10_000,
+        job_submitter: env.job_submitter.clone(),
+        repo_store: env.repo_store.clone(),
+        git_root: env.git_root.path().to_path_buf(),
+        token_store: env.token_store.clone(),
+        git_base_url: format!("http://{}", env.addr),
     }
 }
 
@@ -747,9 +774,8 @@ jobs:
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        log_text.contains("==> Build Node Project")
-            && (log_text.contains("src") || log_text.contains("tsconfig.json")),
-        "expected prep and named step output in logs, got: {log_text}"
+        (log_text.contains("src") || log_text.contains("tsconfig.json")),
+        "expected visible prep output in logs, got: {log_text}"
     );
     assert!(
         log_text.contains("found 0 vulnerabilities") || log_text.contains("up to date, audited"),
@@ -762,6 +788,28 @@ jobs:
     assert!(
         log_text.contains("src/index.ts") || log_text.contains("TS2322"),
         "expected TypeScript build failure output in logs, got: {log_text}"
+    );
+    assert!(
+        !log_text.contains("__MULI_SUBSTEP_"),
+        "hidden substep markers leaked into persisted logs: {log_text}"
+    );
+
+    let substep_events = logs
+        .iter()
+        .filter_map(|line| {
+            (line.event_type.as_deref() == Some("substep_finished"))
+                .then(|| (line.substep_name.clone(), line.exit_code))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        substep_events,
+        vec![
+            (Some("Preparation".into()), Some(0)),
+            (Some("Lint and Type Check".into()), Some(0)),
+            (Some("Format".into()), Some(0)),
+            (Some("Build Node Project".into()), Some(2)),
+        ],
+        "expected structured substep lifecycle events in persisted logs"
     );
 
     muli_test::docker_helpers::cleanup_test_containers(&docker).await;
@@ -886,22 +934,7 @@ jobs:
         "expected checkout failure in step error, got: {error_message}"
     );
 
-    let service = PipelineServiceImpl {
-        pipeline_store: env.pipeline_store.clone(),
-        run_store: env.run_store.clone(),
-        step_store: env.step_store.clone(),
-        artifact_store: env.artifact_store.clone(),
-        artifact_storage: env.artifact_storage.clone(),
-        cache_store: env.cache_store.clone(),
-        secret_store: env.secret_store.clone(),
-        job_store: env.job_store.clone(),
-        job_log_store: env.job_log_store.clone(),
-        job_submitter: env.job_submitter.clone(),
-        repo_store: env.repo_store.clone(),
-        git_root: env.git_root.path().to_path_buf(),
-        token_store: env.token_store.clone(),
-        git_base_url: format!("http://{}", env.addr),
-    };
+    let service = pipeline_service(&env);
     let response = service
         .get_pipeline_run_impl(with_tenant(
             GetPipelineRunRequest {
@@ -1057,4 +1090,222 @@ jobs:
     }
 
     muli_test::docker_helpers::cleanup_test_containers(&docker).await;
+}
+
+#[tokio::test]
+async fn test_stream_step_logs_returns_backlog_then_live_lines_without_duplicates() {
+    let Some(env) = CheckoutE2eEnv::start().await else {
+        return;
+    };
+
+    let repo = env.create_private_repo("stream-logs-live").await;
+    let pipeline = Pipeline::new(
+        TENANT.into(),
+        repo.id.clone(),
+        "stream-live".into(),
+        "sha-live".into(),
+    );
+    env.pipeline_store.upsert_pipeline(&pipeline).await.unwrap();
+
+    let run = PipelineRun::new(
+        pipeline.id.clone(),
+        TENANT.into(),
+        repo.id.clone(),
+        1,
+        "sha-live".into(),
+        "refs/heads/main".into(),
+        PipelineTrigger::Manual {
+            triggered_by: "test".into(),
+        },
+        "name: stream-live".into(),
+    );
+    env.run_store.create_run(&run).await.unwrap();
+
+    let mut step = StepRun::new(
+        run.id.clone(),
+        TENANT.into(),
+        "install".into(),
+        FailureStrategy::Stop,
+        None,
+    );
+    step.job_id = Some("job-live".into());
+    env.step_store.create_step(&step).await.unwrap();
+
+    let collector = Arc::new(LogCollector::new());
+    collector
+        .push_line(EngineLogLine {
+            sequence: 0,
+            timestamp: chrono::Utc::now(),
+            stream: EngineLogStream::Stdout,
+            message: "backlog-1".into(),
+            substep_name: None,
+            event_type: "line".into(),
+            exit_code: None,
+        })
+        .await;
+    collector
+        .push_line(EngineLogLine {
+            sequence: 1,
+            timestamp: chrono::Utc::now(),
+            stream: EngineLogStream::Stderr,
+            message: "backlog-2".into(),
+            substep_name: None,
+            event_type: "line".into(),
+            exit_code: None,
+        })
+        .await;
+    env.log_collectors
+        .insert("job-live".into(), collector.clone());
+
+    let service = pipeline_service(&env);
+    let mut stream = service
+        .stream_step_logs_impl(with_tenant(
+            StreamStepLogsRequest {
+                tenant_id: TENANT.into(),
+                run_id: run.id.clone(),
+                step_name: "install".into(),
+            },
+            TENANT,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let first = tokio::time::timeout(Duration::from_secs(5), stream.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let second = tokio::time::timeout(Duration::from_secs(5), stream.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(first.line, "backlog-1");
+    assert_eq!(second.line, "backlog-2");
+    assert_eq!(second.stream, "stderr");
+
+    collector
+        .push_line(EngineLogLine {
+            sequence: 2,
+            timestamp: chrono::Utc::now(),
+            stream: EngineLogStream::Stdout,
+            message: "live-3".into(),
+            substep_name: None,
+            event_type: "line".into(),
+            exit_code: None,
+        })
+        .await;
+
+    let third = tokio::time::timeout(Duration::from_secs(5), stream.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(third.line, "live-3");
+
+    let no_duplicate = tokio::time::timeout(Duration::from_millis(250), stream.next()).await;
+    assert!(no_duplicate.is_err(), "unexpected duplicate step log line");
+}
+
+#[tokio::test]
+async fn test_stream_step_logs_replays_completed_step_logs_and_closes() {
+    let Some(env) = CheckoutE2eEnv::start().await else {
+        return;
+    };
+
+    let repo = env.create_private_repo("stream-logs-complete").await;
+    let pipeline = Pipeline::new(
+        TENANT.into(),
+        repo.id.clone(),
+        "stream-complete".into(),
+        "sha-complete".into(),
+    );
+    env.pipeline_store.upsert_pipeline(&pipeline).await.unwrap();
+
+    let run = PipelineRun::new(
+        pipeline.id.clone(),
+        TENANT.into(),
+        repo.id.clone(),
+        1,
+        "sha-complete".into(),
+        "refs/heads/main".into(),
+        PipelineTrigger::Manual {
+            triggered_by: "test".into(),
+        },
+        "name: stream-complete".into(),
+    );
+    env.run_store.create_run(&run).await.unwrap();
+
+    let mut step = StepRun::new(
+        run.id.clone(),
+        TENANT.into(),
+        "build".into(),
+        FailureStrategy::Stop,
+        None,
+    );
+    step.job_id = Some("job-complete".into());
+    env.step_store.create_step(&step).await.unwrap();
+
+    env.job_log_store
+        .append_logs(
+            "job-complete",
+            vec![
+                StoredLogLine {
+                    sequence: 0,
+                    stream: "stdout".into(),
+                    message: "done-1".into(),
+                    timestamp: chrono::Utc::now(),
+                    substep_name: None,
+                    event_type: Some("line".into()),
+                    exit_code: None,
+                },
+                StoredLogLine {
+                    sequence: 1,
+                    stream: "stderr".into(),
+                    message: "done-2".into(),
+                    timestamp: chrono::Utc::now(),
+                    substep_name: None,
+                    event_type: Some("line".into()),
+                    exit_code: None,
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+    let service = pipeline_service(&env);
+    let mut stream = service
+        .stream_step_logs_impl(with_tenant(
+            StreamStepLogsRequest {
+                tenant_id: TENANT.into(),
+                run_id: run.id.clone(),
+                step_name: "build".into(),
+            },
+            TENANT,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let first = tokio::time::timeout(Duration::from_secs(5), stream.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let second = tokio::time::timeout(Duration::from_secs(5), stream.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(first.line, "done-1");
+    assert_eq!(second.line, "done-2");
+    assert_eq!(second.stream, "stderr");
+
+    let end = tokio::time::timeout(Duration::from_secs(5), stream.next())
+        .await
+        .unwrap();
+    assert!(end.is_none(), "completed step stream should close");
 }

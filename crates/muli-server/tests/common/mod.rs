@@ -308,6 +308,9 @@ pub async fn run_job(
                     muli_engine::docker::logs::LogStream::Stderr => "stderr".to_string(),
                 },
                 message: l.message,
+                substep_name: l.substep_name,
+                event_type: Some(l.event_type),
+                exit_code: l.exit_code,
             })
             .collect();
         let _ = job_log_store.append_logs(&job_id, stored).await;

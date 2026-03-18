@@ -74,10 +74,12 @@ fn assignment_to_job(assignment: &JobAssignment) -> Job {
         idempotency_key: None,
         registry_credentials,
         commands: vec![],
+        substeps: vec![],
         checkout: None,
         artifact_downloads: vec![],
         artifact_upload_paths: vec![],
         artifact_upload_key: None,
+        pipeline_step_run_id: None,
     };
 
     Job {

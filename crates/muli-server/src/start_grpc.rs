@@ -127,6 +127,8 @@ pub(crate) async fn start_grpc(
         secret_store: stores.pipeline_secret_store,
         job_store: stores.job_store.clone(),
         job_log_store: stores.job_log_store.clone(),
+        log_collectors: log_collectors.clone(),
+        max_log_lines: config.max_log_lines,
         job_submitter: pipeline_job_submitter,
         repo_store: stores.repo_store.clone(),
         git_root: config.effective_git_root(),

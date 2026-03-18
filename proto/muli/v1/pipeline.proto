@@ -91,6 +91,17 @@ message StepRun {
   Timestamp finished_at = 9;
   repeated string depends_on = 10; // dependency job/step names
   string error_message = 11;
+  repeated JobSubstepRun substeps = 12;
+}
+
+message JobSubstepRun {
+  string name = 1;
+  PipelineStepState state = 2;
+  Timestamp started_at = 3;
+  Timestamp finished_at = 4;
+  int32 exit_code = 5;
+  uint64 log_start_sequence = 6;
+  uint64 log_end_sequence = 7;
 }
 
 message PipelineArtifact {
@@ -117,6 +128,9 @@ message LogLine {
   string line = 1;
   string stream = 2;
   int64 timestamp_ms = 3;
+  string substep_name = 4;
+  string event_type = 5;
+  int32 exit_code = 6;
 }
 
 message ArtifactChunk {

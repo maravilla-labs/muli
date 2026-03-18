@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use base64::Engine;
 use bollard::container::{
     Config, CreateContainerOptions, RemoveContainerOptions, StartContainerOptions,
     StopContainerOptions, WaitContainerOptions,
@@ -18,6 +19,9 @@ use muli_core::job::model::JobSpec;
 use muli_core::resource::limits::DockerResourceLimits;
 
 use super::client::DockerClient;
+
+pub const SUBSTEP_START_MARKER: &str = "__MULI_SUBSTEP_START__";
+pub const SUBSTEP_FINISH_MARKER: &str = "__MULI_SUBSTEP_FINISH__";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainerWaitOutcome {
@@ -87,16 +91,12 @@ pub async fn create_container(
     };
 
     // If commands are specified (pipeline steps), override the container's CMD
-    // to run them as a shell script with `set -e` (stop on first error).
-    // Each command is on its own line, preserving heredocs and multiline strings.
-    let cmd = if spec.commands.is_empty() {
+    // to run them as a shell script. Structured jobs-mode substeps emit
+    // internal lifecycle markers that are later converted into substep metadata.
+    let cmd = if spec.commands.is_empty() && spec.substeps.is_empty() {
         None
     } else {
-        let mut script = String::from("set -e\n");
-        for c in &spec.commands {
-            script.push_str(c);
-            script.push('\n');
-        }
+        let script = build_job_script(spec);
         Some(vec!["/bin/sh".to_string(), "-c".to_string(), script])
     };
 
@@ -129,6 +129,37 @@ pub async fn create_container(
     );
 
     Ok(response.id)
+}
+
+fn build_job_script(spec: &JobSpec) -> String {
+    if spec.substeps.is_empty() {
+        let mut script = String::from("set -e\n");
+        for command in &spec.commands {
+            script.push_str(command);
+            script.push('\n');
+        }
+        return script;
+    }
+
+    let mut script = String::new();
+    for substep in &spec.substeps {
+        let encoded_name = base64::engine::general_purpose::STANDARD.encode(&substep.name);
+        script.push_str(&format!(
+            "printf '%s\\n' '{SUBSTEP_START_MARKER}|{encoded_name}'\n"
+        ));
+        script.push_str("(\nset -e\n");
+        for command in &substep.commands {
+            script.push_str(command);
+            script.push('\n');
+        }
+        script.push_str(")\n");
+        script.push_str("status=$?\n");
+        script.push_str(&format!(
+            "printf '%s|%s\\n' '{SUBSTEP_FINISH_MARKER}|{encoded_name}' \"$status\"\n"
+        ));
+        script.push_str("if [ \"$status\" -ne 0 ]; then\n  exit \"$status\"\nfi\n");
+    }
+    script
 }
 
 /// Start a created container.
@@ -238,5 +269,44 @@ pub async fn wait_container(docker: &DockerClient, container_id: &str) -> Contai
     ContainerWaitOutcome {
         exit_code: None,
         wait_error: Some("Container wait stream ended unexpectedly".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SUBSTEP_FINISH_MARKER, build_job_script};
+    use muli_core::job::model::{JobSpec, JobSubstepSpec, PriorityTier};
+    use muli_core::resource::limits::ResourceSpec;
+
+    #[test]
+    fn build_job_script_formats_substep_finish_marker_with_exit_code_argument() {
+        let spec = JobSpec {
+            deployment_id: "dep-1".into(),
+            project_id: "proj-1".into(),
+            workspace_id: "ws-1".into(),
+            tenant_id: "tenant".into(),
+            env_vars: vec![],
+            resources: ResourceSpec::default(),
+            priority_tier: PriorityTier::Standard,
+            framework: "none".into(),
+            idempotency_key: None,
+            registry_credentials: None,
+            pipeline_step_run_id: None,
+            runner_image: "alpine:latest".into(),
+            commands: vec![],
+            substeps: vec![JobSubstepSpec {
+                name: "Build".into(),
+                commands: vec!["echo hi".into()],
+            }],
+            checkout: None,
+            artifact_downloads: vec![],
+            artifact_upload_paths: vec![],
+            artifact_upload_key: None,
+        };
+
+        let script = build_job_script(&spec);
+        assert!(script.contains("printf '%s|%s\\n'"));
+        assert!(script.contains(SUBSTEP_FINISH_MARKER));
+        assert!(!script.contains("|%s' \"$status\""));
     }
 }

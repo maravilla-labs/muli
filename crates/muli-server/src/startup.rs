@@ -85,6 +85,7 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
         let executor = executor.clone();
         let log_collectors = log_collectors.clone();
         let ls = stores.job_log_store.clone();
+        let step_store = stores.step_run_store.clone();
         let cancel = cancel.clone();
         let sched = scheduler.clone();
         let rp = retry_policy.clone();
@@ -96,6 +97,7 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
                     let executor = executor.clone();
                     let log_collectors = log_collectors.clone();
                     let ls = ls.clone();
+                    let step_store = step_store.clone();
                     let sched = sched.clone();
                     let rp = rp.clone();
                     async move {
@@ -105,6 +107,7 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
                             executor,
                             log_collectors,
                             ls,
+                            step_store,
                             sched,
                             rp,
                         )

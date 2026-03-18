@@ -74,6 +74,9 @@ CREATE TABLE IF NOT EXISTS job_logs (
   stream TEXT NOT NULL,
   line TEXT NOT NULL,
   ts_ms INTEGER NOT NULL,
+  substep_name TEXT,
+  event_type TEXT,
+  exit_code INTEGER,
   PRIMARY KEY (job_id, seq)
 );
 CREATE INDEX IF NOT EXISTS job_logs_job ON job_logs(job_id);
@@ -366,6 +369,9 @@ impl SqliteStoreFactory {
                         "ALTER TABLE registry_tokens ADD COLUMN token_prefix TEXT NOT NULL DEFAULT ''",
                         [],
                     );
+                    let _ = c.execute("ALTER TABLE job_logs ADD COLUMN substep_name TEXT", []);
+                    let _ = c.execute("ALTER TABLE job_logs ADD COLUMN event_type TEXT", []);
+                    let _ = c.execute("ALTER TABLE job_logs ADD COLUMN exit_code INTEGER", []);
                     c.execute_batch(GLOBAL_DDL)?;
                 }
                 Ok(())

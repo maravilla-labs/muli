@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use dashmap::DashMap;
 use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
 
@@ -14,6 +15,7 @@ use muli_core::traits::{
     ArtifactStore, CacheStore, GitTokenStore, JobLogStore, JobStore, PipelineRunStore,
     PipelineSecretStore, PipelineStore, RepositoryStore, StepRunStore,
 };
+use muli_engine::docker::logs::LogCollector;
 use muli_pipeline::dag::executor::JobSubmitter;
 
 use muli_proto::pipeline_service_server::PipelineService;
@@ -43,6 +45,8 @@ pub struct PipelineServiceImpl {
     pub secret_store: Arc<dyn PipelineSecretStore>,
     pub job_store: Arc<dyn JobStore>,
     pub job_log_store: Arc<dyn JobLogStore>,
+    pub log_collectors: Arc<DashMap<String, Arc<LogCollector>>>,
+    pub max_log_lines: usize,
     pub job_submitter: Arc<dyn JobSubmitter>,
     pub repo_store: Arc<dyn RepositoryStore>,
     pub git_root: PathBuf,

@@ -36,14 +36,18 @@ impl JobLogStore for SqliteJobLogStore {
         conn.call(move |c| {
             for line in &lines {
                 c.execute(
-                    "INSERT OR IGNORE INTO job_logs (job_id, seq, stream, line, ts_ms)
-                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    "INSERT OR IGNORE INTO job_logs
+                     (job_id, seq, stream, line, ts_ms, substep_name, event_type, exit_code)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                     rusqlite::params![
                         job_id,
                         line.sequence as i64,
                         line.stream,
                         line.message,
                         line.timestamp.timestamp_millis(),
+                        line.substep_name,
+                        line.event_type,
+                        line.exit_code,
                     ],
                 )?;
             }
@@ -58,8 +62,8 @@ impl JobLogStore for SqliteJobLogStore {
         let job_id = job_id.to_string();
         conn.call(move |c| {
             let mut stmt = c.prepare(
-                "SELECT seq, stream, line, ts_ms FROM (
-                   SELECT seq, stream, line, ts_ms FROM job_logs
+                "SELECT seq, stream, line, ts_ms, substep_name, event_type, exit_code FROM (
+                   SELECT seq, stream, line, ts_ms, substep_name, event_type, exit_code FROM job_logs
                    WHERE job_id = ?1 ORDER BY seq DESC LIMIT ?2
                  ) ORDER BY seq ASC",
             )?;
@@ -70,12 +74,18 @@ impl JobLogStore for SqliteJobLogStore {
                 let stream: String = row.get(1)?;
                 let message: String = row.get(2)?;
                 let ts_ms: i64 = row.get(3)?;
+                let substep_name: Option<String> = row.get(4)?;
+                let event_type: Option<String> = row.get(5)?;
+                let exit_code: Option<i32> = row.get(6)?;
                 result.push(StoredLogLine {
                     sequence: seq as u64,
                     stream,
                     message,
                     timestamp: chrono::DateTime::from_timestamp_millis(ts_ms)
                         .unwrap_or_else(chrono::Utc::now),
+                    substep_name,
+                    event_type,
+                    exit_code,
                 });
             }
             Ok(result)
