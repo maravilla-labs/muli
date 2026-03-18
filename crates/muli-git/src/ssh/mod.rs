@@ -10,4 +10,6 @@ mod ref_tracking;
 mod server;
 mod session;
 
+pub(crate) use ref_tracking::{compute_ref_updates, read_refs};
+
 pub use server::{SshConfig, SshServer, load_or_generate_host_key};

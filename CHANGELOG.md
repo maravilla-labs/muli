@@ -21,6 +21,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - **Sequence-numbered checkout logs** — each stdout/stderr line emitted by git commands during checkout carries a monotonically increasing sequence number via a shared `AtomicU64`, ensuring correct ordering in the log stream.
 - **32 new tests** — 7 DAG executor e2e tests covering `jobs:` format execution, DAG ordering with `needs:`, artifact upload/download path population in `JobSpec`, pipeline/job-level image inheritance, `PIPELINE_JOB_NAME` env var, checkout spec propagation, and failure propagation; 6 `ArtifactManager` unit tests (file roundtrip, directory roundtrip, empty paths noop, missing artifact skip, multi-job restore, partial-missing path skip); 3 host-checkout tests using a local bare git repo via `file://` URL (clone+checkout, log forwarding, invalid-URL error without leaking the URL); 16 existing tests expanded via `CapturingJobSubmitter` for JobSpec field assertions.
 
+### Fixed
+
+- **HTTP push pipeline runs had empty `commit_sha`** — `receive_pack` in the HTTP smart protocol path was parsing the pushed SHA from raw pkt-line bytes using hard-coded offsets, which silently returned no ref updates on any deviation in capabilities order or push-cert format. The handler now snapshots refs with `git for-each-ref` before and after the push and diffs them — the same approach the SSH path has always used — guaranteeing the correct 40-char SHA is recorded on every push-triggered run.
+
 ### Changed
 
 - **DAG executor refactored** — `executor.rs` reduced from ~784 lines to ~490 lines by extracting shared helpers (`execute_dag_levels`, `submit_level`, `wait_level`, `cancel_level_runs`, `evaluate_conditions`, `build_run_maps`) used by both `execute_jobs` and `execute_steps` paths. Matrix-expanded run names are now resolved to their original definition name via pre-computed `(orig, sr)` pairs, fixing a bug where matrix jobs were left in `Pending` after the refactor.

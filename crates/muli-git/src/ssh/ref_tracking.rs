@@ -22,7 +22,7 @@ pub(super) struct SshPrePushSnapshot {
 }
 
 /// Read all refs from a bare git repository.
-pub(super) async fn read_refs(repo_path: &std::path::Path) -> HashMap<String, String> {
+pub(crate) async fn read_refs(repo_path: &std::path::Path) -> HashMap<String, String> {
     let output = tokio::process::Command::new("git")
         .arg("--git-dir")
         .arg(repo_path)
@@ -47,7 +47,7 @@ pub(super) async fn read_refs(repo_path: &std::path::Path) -> HashMap<String, St
 }
 
 /// Compute ref updates by diffing old and new ref snapshots.
-pub(super) fn compute_ref_updates(
+pub(crate) fn compute_ref_updates(
     old_refs: &HashMap<String, String>,
     new_refs: &HashMap<String, String>,
 ) -> Vec<RefUpdate> {

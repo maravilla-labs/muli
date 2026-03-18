@@ -15,7 +15,7 @@ use serde::Deserialize;
 
 use crate::api::GitState;
 use crate::api::helpers::{resolve_repo, strip_git_suffix};
-use crate::hooks::RefUpdate;
+use crate::ssh::{compute_ref_updates, read_refs};
 use crate::tenant::TenantContext;
 
 /// Maximum allowed body size for git protocol requests (100 MB).
@@ -24,47 +24,6 @@ const MAX_GIT_BODY: usize = 100 * 1024 * 1024;
 #[derive(Debug, Deserialize)]
 pub struct InfoRefsQuery {
     service: Option<String>,
-}
-
-/// Parse the pkt-line ref-update section at the start of a git receive-pack body.
-fn parse_ref_updates(body: &[u8]) -> Vec<RefUpdate> {
-    let mut updates = Vec::new();
-    let mut pos = 0;
-    while pos + 4 <= body.len() {
-        let len_hex = match std::str::from_utf8(&body[pos..pos + 4]) {
-            Ok(s) => s,
-            Err(_) => break,
-        };
-        let pkt_len = match u16::from_str_radix(len_hex, 16) {
-            Ok(n) => n as usize,
-            Err(_) => break,
-        };
-        if pkt_len == 0 {
-            break;
-        }
-        if pkt_len < 4 || pos + pkt_len > body.len() {
-            break;
-        }
-        let line = &body[pos + 4..pos + pkt_len];
-        if line.len() >= 83 {
-            let old_sha = String::from_utf8_lossy(&line[0..40]).into_owned();
-            let new_sha = String::from_utf8_lossy(&line[41..81]).into_owned();
-            let ref_end = line[82..]
-                .iter()
-                .position(|&b| b == 0 || b == b'\n')
-                .unwrap_or(line.len() - 82);
-            let ref_name = String::from_utf8_lossy(&line[82..82 + ref_end]).into_owned();
-            if !ref_name.is_empty() {
-                updates.push(RefUpdate {
-                    old_sha,
-                    new_sha,
-                    ref_name,
-                });
-            }
-        }
-        pos += pkt_len;
-    }
-    updates
 }
 
 /// GET /{namespace}/{repo}/info/refs
@@ -164,7 +123,8 @@ pub async fn receive_pack(
         }
     }
 
-    let ref_updates = parse_ref_updates(&body);
+    // Snapshot refs BEFORE the push so we can diff after.
+    let old_refs = read_refs(&path).await;
 
     // Snapshot repo size before push for quota delta calculation.
     let repo_size_before = crate::hooks::compute_dir_size(&path).await.ok();
@@ -177,8 +137,10 @@ pub async fn receive_pack(
     )
     .await;
 
-    // After a successful push, fire post-push hooks (pipelines, webhooks, cache, quota).
+    // After a successful push, compute ref diff and fire post-push hooks.
     if response.status().is_success() {
+        let new_refs = read_refs(&path).await;
+        let ref_updates = compute_ref_updates(&old_refs, &new_refs);
         state.post_push_hooks.fire(
             tenant.tenant_id.clone(),
             repo.id.clone(),
