@@ -10,6 +10,7 @@ pub mod enforcement;
 pub mod execution;
 pub mod grpc;
 pub mod metrics;
+mod pipeline_clone_url;
 pub(crate) mod pipeline_job_submitter;
 mod pipeline_trigger;
 pub mod recovery;

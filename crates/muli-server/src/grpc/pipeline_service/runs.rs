@@ -23,6 +23,7 @@ use super::PipelineServiceImpl;
 use super::conversions::{proto_to_run_state, run_to_proto};
 use super::helpers::{create_steps_from_yaml, resolve_env_vars};
 use crate::grpc::util::validate_tenant;
+use crate::pipeline_clone_url::{CiCloneUrlTarget, build_ci_clone_url};
 
 impl PipelineServiceImpl {
     pub async fn trigger_pipeline_impl(
@@ -365,6 +366,13 @@ impl PipelineServiceImpl {
             let mut bg_run = new_run.clone();
             let bg_steps = steps.clone();
             tokio::spawn(async move {
+                let Ok(pipeline_def) =
+                    muli_pipeline::yaml::parser::parse_pipeline(&bg_run.yaml_content)
+                else {
+                    tracing::warn!("Failed to parse retry pipeline YAML for DAG execution");
+                    return;
+                };
+
                 // Generate a short-lived pull-only CI token for auto-checkout.
                 let clone_url = build_ci_clone_url_for_repo(
                     repo_store.as_ref(),
@@ -373,6 +381,7 @@ impl PipelineServiceImpl {
                     &bg_tenant_id,
                     &bg_repo_id,
                     &bg_run.id,
+                    ci_clone_url_target(&pipeline_def),
                 )
                 .await;
                 let ci_token_id = clone_url.as_ref().and_then(|(_, id)| id.clone());
@@ -384,21 +393,16 @@ impl PipelineServiceImpl {
                     job_store,
                     job_submitter,
                 );
-                // Re-parse YAML for the executor
-                if let Ok(pipeline_def) =
-                    muli_pipeline::yaml::parser::parse_pipeline(&bg_run.yaml_content)
+                if let Err(e) = executor
+                    .execute(
+                        &mut bg_run,
+                        &pipeline_def,
+                        &bg_steps,
+                        clone_url_str.as_deref(),
+                    )
+                    .await
                 {
-                    if let Err(e) = executor
-                        .execute(
-                            &mut bg_run,
-                            &pipeline_def,
-                            &bg_steps,
-                            clone_url_str.as_deref(),
-                        )
-                        .await
-                    {
-                        tracing::warn!(error = %e, "DAG executor failed for retry run");
-                    }
+                    tracing::warn!(error = %e, "DAG executor failed for retry run");
                 }
 
                 // Revoke the CI token regardless of execution outcome.
@@ -437,6 +441,7 @@ async fn build_ci_clone_url_for_repo(
     tenant_id: &str,
     repo_id: &str,
     run_id: &str,
+    target: CiCloneUrlTarget,
 ) -> Option<(String, Option<String>)> {
     let repo = repo_store.get_repository(repo_id).await.ok()??;
 
@@ -470,24 +475,23 @@ async fn build_ci_clone_url_for_repo(
     let token_id = ci_token.id.clone();
     token_store.create_token(&ci_token).await.ok()?;
 
-    let base = git_base_url.trim_end_matches('/');
-    let (scheme, host) = if let Some(i) = base.find("://") {
-        (&base[..i], base[i + 3..].to_string())
-    } else {
-        ("http", base.to_string())
-    };
-    // Containers can't reach the host via localhost; use host.docker.internal instead.
-    let host = if host.starts_with("localhost") {
-        host.replacen("localhost", "host.docker.internal", 1)
-    } else if host.starts_with("127.0.0.1") {
-        host.replacen("127.0.0.1", "host.docker.internal", 1)
-    } else {
-        host
-    };
-    let clone_url = format!(
-        "{scheme}://x-pipeline-token:{plaintext}@{host}/{}/{}.git",
-        repo.namespace, repo.name
+    let clone_url = build_ci_clone_url(
+        git_base_url,
+        &plaintext,
+        &repo.namespace,
+        &repo.name,
+        target,
     );
 
     Some((clone_url, Some(token_id)))
+}
+
+fn ci_clone_url_target(
+    pipeline_def: &muli_pipeline::yaml::schema::PipelineDef,
+) -> CiCloneUrlTarget {
+    if pipeline_def.jobs.is_empty() {
+        CiCloneUrlTarget::ContainerClone
+    } else {
+        CiCloneUrlTarget::HostCheckout
+    }
 }

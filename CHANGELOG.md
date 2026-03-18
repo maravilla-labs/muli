@@ -12,12 +12,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ### Added
 
 - **Exact fast-failing Node pipeline e2e coverage** — Muli's server e2e suite now exercises the real private-repo checkout path with a `node:22-alpine` pipeline using `jobs.<name>.commands` plus named `steps`, and verifies that a fast failing build preserves the actual container output and exit code.
+- **Localhost host-checkout regression coverage** — Muli's server e2e suite now covers `jobs:` pipelines running with `MULI_GIT_BASE_URL=http://127.0.0.1:7000` and verifies that host-side checkout keeps the configured local git URL instead of rewriting it to `host.docker.internal`.
 
 ### Fixed
 
 - **Bogus Docker wait exit codes** — job execution no longer treats Docker wait API error codes as authoritative container exit codes. Muli now inspects the container state after wait and uses the inspected exit code when available, avoiding misleading failures such as `exit code 243`.
 - **Missing final container logs on failed jobs** — failed jobs now always perform a best-effort final container log fetch before cleanup, even when a follow stream already started, so fast failures keep their real runtime output instead of only checkout logs.
 - **Docker runtime diagnostics in step failures** — when container execution fails before a trustworthy exit code is available, step failure messages now include structured Docker wait/inspect diagnostics instead of collapsing into an incorrect numeric exit code.
+- **Workspace write permissions for checked-out jobs** — host bind-mounted `/workspace` directories are now normalized before container start so capability-dropped containers can create `node_modules`, build outputs, and other writable job artifacts without relaxing container hardening.
+- **Host checkout clone URL rewriting** — `jobs:` pipelines now keep the configured `MULI_GIT_BASE_URL` for host-side checkout, while the `host.docker.internal` rewrite remains limited to the legacy in-container clone path used by `steps:` mode.
 
 ## [0.4.2] - 2026-03-18
 

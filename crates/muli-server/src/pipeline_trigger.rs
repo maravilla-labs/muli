@@ -30,7 +30,10 @@ use muli_pipeline::dag::executor::{DagExecutor, JobSubmitter};
 use muli_pipeline::trigger::matcher::{PipelineEvent, matches_trigger};
 use muli_pipeline::trigger::reader::read_pipeline_files;
 use muli_pipeline::yaml::parser::parse_pipeline;
+use muli_pipeline::yaml::schema::PipelineDef;
 use muli_pipeline::yaml::validation::validate_pipeline;
+
+use crate::pipeline_clone_url::{CiCloneUrlTarget, build_ci_clone_url};
 
 /// Minimum interval between pipeline triggers for the same repo (rate limit).
 const MIN_TRIGGER_INTERVAL_SECS: u64 = 5;
@@ -475,6 +478,7 @@ impl PipelineTriggerImpl {
                                 &plaintext,
                                 &repo.namespace,
                                 &repo.name,
+                                ci_clone_url_target(&pipeline_def),
                             );
                             (Some(token_id), Some(clone_url))
                         }
@@ -675,30 +679,12 @@ impl PipelineTriggerHook for PipelineTriggerImpl {
     }
 }
 
-/// Construct a git clone URL with embedded CI token credentials.
-///
-/// e.g. `http://x-pipeline-token:<token>@host.docker.internal:7000/<namespace>/<repo>.git`
-///
-/// `localhost`/`127.0.0.1` are rewritten to `host.docker.internal` so the URL is reachable
-/// from inside Docker containers on Linux (requires `extra_hosts: host.docker.internal:host-gateway`
-/// in HostConfig).  For multi-tenant production, set `MULI_GIT_BASE_URL` to a public hostname
-/// (e.g. `https://myorg.git.example.com`) — no substitution is applied in that case.
-fn build_ci_clone_url(git_base_url: &str, token: &str, namespace: &str, name: &str) -> String {
-    let base = git_base_url.trim_end_matches('/');
-    let (scheme, host) = if let Some(i) = base.find("://") {
-        (&base[..i], base[i + 3..].to_string())
+fn ci_clone_url_target(pipeline_def: &PipelineDef) -> CiCloneUrlTarget {
+    if pipeline_def.jobs.is_empty() {
+        CiCloneUrlTarget::ContainerClone
     } else {
-        ("http", base.to_string())
-    };
-    // Containers can't reach the host via localhost; use host.docker.internal instead.
-    let host = if host.starts_with("localhost") {
-        host.replacen("localhost", "host.docker.internal", 1)
-    } else if host.starts_with("127.0.0.1") {
-        host.replacen("127.0.0.1", "host.docker.internal", 1)
-    } else {
-        host
-    };
-    format!("{scheme}://x-pipeline-token:{token}@{host}/{namespace}/{name}.git")
+        CiCloneUrlTarget::HostCheckout
+    }
 }
 
 /// Resolve the HEAD commit SHA for a branch in a bare repository.

@@ -127,6 +127,16 @@ impl DockerExecutor {
             }
         }
 
+        if let Err(e) = volume::prepare_workspace_for_container(&workspace_path) {
+            error!(
+                job_id = %job_id,
+                workspace_path = %workspace_path.display(),
+                error = %e,
+                "Failed to normalize workspace permissions before container start"
+            );
+            return Err(e);
+        }
+
         // 4. Parse docker resource limits
         let docker_limits = spec.resources.to_docker_limits()?;
 

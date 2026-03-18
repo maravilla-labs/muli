@@ -14,7 +14,7 @@ The primary entry point. Orchestrates job execution through these steps:
 
 1. Pull the Docker image (with retry and 10-minute timeout)
 2. Create an isolated network for the job
-3. Create a workspace volume
+3. Create a bind-mounted host workspace under `/tmp`
 4. Create a hardened container with CPU/memory limits, environment variables, and command
 5. Start log collection in the background
 6. Start the container
@@ -28,6 +28,8 @@ Containers are created with the following hardening by default:
 - **Capabilities**: All dropped (`--cap-drop=ALL`)
 - **Privileges**: `--security-opt=no-new-privileges`, `privileged=false`
 - **Filesystem**: Read-only root filesystem with writable `/workspace` mount and `/tmp` tmpfs (64MB)
+  - `/workspace` is a short-lived bind mount backed by a host temp directory such as `/tmp/muli-workspace-<jobid>`
+  - Before container start, Muli normalizes that workspace tree to be writable by the job container without restoring dropped filesystem-bypass capabilities
 - **PID limit**: 256 (prevents fork bombs)
 - **Network**: Isolated bridge network per job
 - **Resources**: CPU and memory limits enforced via Docker cgroups
@@ -42,7 +44,7 @@ Tracks total CPU and memory allocation across all running jobs. Prevents overall
 - `docker/image` — Image pulling and verification
 - `docker/container` — Container creation, start, and wait
 - `docker/network` — Per-job network isolation
-- `docker/volume` — Workspace directory management
+- `docker/volume` — Host workspace directory management and permission normalization
 - `docker/logs` — Real-time log collection and streaming
 - `docker/cleanup` — Garbage collection of old containers and networks
 

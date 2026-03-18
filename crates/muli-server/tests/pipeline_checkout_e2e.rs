@@ -103,6 +103,10 @@ impl Drop for CheckoutE2eEnv {
 
 impl CheckoutE2eEnv {
     async fn start() -> Option<Self> {
+        Self::start_with_bind_addr("[::1]:0").await
+    }
+
+    async fn start_with_bind_addr(bind_addr: &str) -> Option<Self> {
         let git_root = TempDir::new().expect("git tempdir");
         let storage = Arc::new(
             FilesystemStorage::new(git_root.path().to_str().unwrap())
@@ -193,10 +197,10 @@ impl CheckoutE2eEnv {
             scheduler: scheduler.clone(),
         });
 
-        let listener = match tokio::net::TcpListener::bind("[::1]:0").await {
+        let listener = match tokio::net::TcpListener::bind(bind_addr).await {
             Ok(listener) => listener,
             Err(e) => {
-                eprintln!("SKIP: IPv6 loopback bind failed for checkout e2e: {e}");
+                eprintln!("SKIP: checkout e2e bind failed on {bind_addr}: {e}");
                 cancel.cancel();
                 return None;
             }
@@ -501,6 +505,87 @@ jobs:
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_push_trigger_jobs_checkout_keeps_localhost_git_base_url_for_host_clone() {
+    if !muli_test::docker_helpers::docker_available().await {
+        eprintln!("SKIP: Docker not available");
+        return;
+    }
+
+    let docker = muli_test::docker_helpers::require_docker().await;
+    muli_test::docker_helpers::ensure_test_image(&docker, "alpine:latest").await;
+
+    let Some(env) = CheckoutE2eEnv::start_with_bind_addr("127.0.0.1:0").await else {
+        return;
+    };
+    let repo = env
+        .create_private_repo("pipeline-localhost-host-checkout")
+        .await;
+
+    let work_dir = TempDir::new().unwrap();
+    let url = env.git_url(&repo.name, OWNER_TOKEN);
+    git(work_dir.path(), &["clone", "--no-local", &url, "."]).await;
+    git(work_dir.path(), &["config", "user.email", "ci@muli.test"]).await;
+    git(work_dir.path(), &["config", "user.name", "Muli CI"]).await;
+    write_file(
+        work_dir.path().join("README.md").as_path(),
+        "hello from localhost git base url\n",
+    );
+    write_file(
+        work_dir.path().join(".maravilla/pipeline.yml").as_path(),
+        r#"
+name: localhost-checkout
+on:
+  push:
+    branches: [main]
+jobs:
+  verify:
+    image: alpine:latest
+    commands:
+      - cat README.md
+      - echo "HOST_CHECKOUT_OK"
+"#,
+    );
+    git(work_dir.path(), &["add", "."]).await;
+    git(
+        work_dir.path(),
+        &["commit", "-m", "add localhost host-checkout pipeline"],
+    )
+    .await;
+    git(
+        work_dir.path(),
+        &["push", "--set-upstream", "origin", "main"],
+    )
+    .await;
+
+    let run = wait_for_terminal_run(&env, &repo.id, Duration::from_secs(180)).await;
+    assert_eq!(run.state, PipelineRunState::Succeeded);
+
+    let steps = env.step_store.list_by_run(TENANT, &run.id).await.unwrap();
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].state, StepRunState::Succeeded);
+
+    let job_id = steps[0].job_id.as_ref().expect("job id");
+    let logs = env.job_log_store.get_logs(job_id, 200).await.unwrap();
+    let log_text = logs
+        .iter()
+        .map(|line| line.message.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        log_text.contains("From http://127.0.0.1:")
+            || log_text.contains("Cloning into")
+            || log_text.contains("HEAD is now at"),
+        "expected host-side checkout logs for 127.0.0.1 git base url, got: {log_text}"
+    );
+    assert!(
+        !log_text.contains("host.docker.internal") && !log_text.contains("Could not resolve host"),
+        "unexpected host.docker.internal rewrite during host checkout: {log_text}"
+    );
+
+    muli_test::docker_helpers::cleanup_test_containers(&docker).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_push_trigger_checkout_preserves_real_exit_code_and_logs_for_fast_failing_node_job() {
     if !muli_test::docker_helpers::docker_available().await {
         eprintln!("SKIP: Docker not available");
@@ -665,6 +750,14 @@ jobs:
         log_text.contains("==> Build Node Project")
             && (log_text.contains("src") || log_text.contains("tsconfig.json")),
         "expected prep and named step output in logs, got: {log_text}"
+    );
+    assert!(
+        log_text.contains("found 0 vulnerabilities") || log_text.contains("up to date, audited"),
+        "expected npm ci to complete before the later build failure, got: {log_text}"
+    );
+    assert!(
+        !log_text.contains("EACCES") && !log_text.contains("permission denied"),
+        "unexpected workspace permission failure in logs: {log_text}"
     );
     assert!(
         log_text.contains("src/index.ts") || log_text.contains("TS2322"),
