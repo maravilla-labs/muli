@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-03-18
+
+### Fixed
+
+- **Missing fast-failure container logs after checkout** — pipeline jobs that failed immediately after host-side checkout could previously persist only the checkout output, hiding the actual container error. Muli now detects the absence of container log lines after the container log stream starts and performs a one-shot recovery fetch so the real runtime failure is preserved.
+- **Repository pipeline overview ordering** — pipeline runs listed at repository scope are now ordered by real run creation time rather than per-pipeline `run_number`, so multi-pipeline repositories show the newest run first in clients.
+- **Checkout log noise** — host-side `git checkout <sha>` now suppresses detached HEAD advice output to keep pipeline logs focused on actionable information.
+
 ## [0.4.1] - 2026-03-18
 
 ### Added
