@@ -10,6 +10,20 @@ use uuid::Uuid;
 use super::state_machine::JobState;
 use crate::resource::limits::ResourceSpec;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckoutSpec {
+    pub clone_url: String,
+    pub sha: String,
+    #[serde(default)]
+    pub submodules: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactDownload {
+    pub run_id: String,
+    pub job_name: String,
+}
+
 /// A build job to execute in a container.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
@@ -46,6 +60,17 @@ pub struct JobSpec {
     /// runs `/bin/sh -c "<commands joined with &&>"` instead of the image default.
     #[serde(default)]
     pub commands: Vec<String>,
+    /// If set, the engine performs a host-side git checkout before starting the container.
+    #[serde(default)]
+    pub checkout: Option<CheckoutSpec>,
+    /// Artifacts from dependency jobs to restore before the container starts.
+    #[serde(default)]
+    pub artifact_downloads: Vec<ArtifactDownload>,
+    /// Filesystem paths to tar+upload after a successful exit (empty = no upload).
+    #[serde(default)]
+    pub artifact_upload_paths: Vec<String>,
+    /// Key under which to store uploaded artifacts: "{job_name}" (stored as "{run_id}/{key}").
+    pub artifact_upload_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

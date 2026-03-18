@@ -7,6 +7,30 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-03-18
+
+### Added
+
+- **`jobs:` pipeline format** — new top-level `jobs:` map replaces `steps:` as the recommended way to declare CI/CD pipelines. Each job is a named DAG node with its own image, commands, `needs:` dependencies, resources, artifacts, and optional `if:` condition. Pipeline-level `image:` is inherited by all jobs that do not declare their own. Fully backward-compatible: existing `steps:` pipelines continue to work without changes.
+- **Host-side git checkout** — the engine now clones and checks out the repository directly on the host (not inside the user container) before the job container starts. Clone URL is kept separate from all log output and error messages to prevent accidental auth-token leakage. `checkout: submodules: true` populates submodules via `git submodule update --init --recursive --depth 1`. Applies to both `jobs:` mode and legacy `steps:` mode when a clone URL is provided.
+- **Job-to-job artifact handover** — jobs can declare `artifacts: paths: [dist/, node_modules/]` to tar and upload outputs at completion. All jobs listed in `needs:` whose dependency exported artifacts automatically have those artifacts downloaded and extracted into their workspace before commands run — no explicit download declaration needed.
+- **`ArtifactHandler` trait** (`muli-core::job::artifact_handler`) — decouples the engine from pipeline-specific tar/storage logic. `DockerExecutor` accepts an optional `Arc<dyn ArtifactHandler>` via `with_artifact_handler()` builder method.
+- **`CheckoutSpec` and `ArtifactDownload` models** — new fields on `JobSpec`: `checkout: Option<CheckoutSpec>`, `artifact_downloads: Vec<ArtifactDownload>`, `artifact_upload_paths: Vec<String>`, `artifact_upload_key: Option<String>`.
+- **`checkout:` pipeline config block** — `checkout: submodules: true/false` (default false) in pipeline YAML controls submodule initialization during host-side checkout.
+- **`DownloadArtifact` gRPC streaming** — `PipelineServiceImpl.download_artifact_impl` now streams artifact bytes in 64 KB chunks via the existing `ArtifactChunk` message. Requires `ArtifactStorage` injected into the gRPC service (wired through `start_grpc.rs` and `startup.rs`).
+- **Sequence-numbered checkout logs** — each stdout/stderr line emitted by git commands during checkout carries a monotonically increasing sequence number via a shared `AtomicU64`, ensuring correct ordering in the log stream.
+- **32 new tests** — 7 DAG executor e2e tests covering `jobs:` format execution, DAG ordering with `needs:`, artifact upload/download path population in `JobSpec`, pipeline/job-level image inheritance, `PIPELINE_JOB_NAME` env var, checkout spec propagation, and failure propagation; 6 `ArtifactManager` unit tests (file roundtrip, directory roundtrip, empty paths noop, missing artifact skip, multi-job restore, partial-missing path skip); 3 host-checkout tests using a local bare git repo via `file://` URL (clone+checkout, log forwarding, invalid-URL error without leaking the URL); 16 existing tests expanded via `CapturingJobSubmitter` for JobSpec field assertions.
+
+### Changed
+
+- **DAG executor refactored** — `executor.rs` reduced from ~784 lines to ~490 lines by extracting shared helpers (`execute_dag_levels`, `submit_level`, `wait_level`, `cancel_level_runs`, `evaluate_conditions`, `build_run_maps`) used by both `execute_jobs` and `execute_steps` paths. Matrix-expanded run names are now resolved to their original definition name via pre-computed `(orig, sr)` pairs, fixing a bug where matrix jobs were left in `Pending` after the refactor.
+- **`muli-engine` checkout** moved to `docker/checkout.rs` with URL-safe error formatting — clone errors never include the clone URL string; only non-URL git commands (fetch, checkout, submodule) include their args in error messages.
+
+### Security
+
+- Clone URLs (which may contain short-lived auth tokens) are passed to `git clone` as a dedicated argument and are never interpolated into error messages, log lines, or format strings.
+- Artifact tar extraction enforces `set_preserve_permissions(false)` (no setuid/setgid bit restoration) and relies on tar 0.4.16+ path traversal rejection for `..` and absolute paths.
+
 ## [0.3.3] - 2026-03-17
 
 ### Added

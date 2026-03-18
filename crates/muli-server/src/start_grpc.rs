@@ -47,6 +47,7 @@ pub(crate) async fn start_grpc(
     log_collectors: Arc<DashMap<String, Arc<LogCollector>>>,
     git_storage: Arc<muli_git::storage::FilesystemStorage>,
     pipeline_job_submitter: Arc<dyn muli_pipeline::JobSubmitter>,
+    artifact_storage: Arc<muli_pipeline::artifact::storage::ArtifactStorage>,
     cancel: CancellationToken,
 ) -> anyhow::Result<()> {
     let job_service = JobServiceImpl {
@@ -121,6 +122,7 @@ pub(crate) async fn start_grpc(
         run_store: stores.pipeline_run_store,
         step_store: stores.step_run_store,
         artifact_store: stores.artifact_store,
+        artifact_storage,
         cache_store: stores.pipeline_cache_store,
         secret_store: stores.pipeline_secret_store,
         job_store: stores.job_store.clone(),

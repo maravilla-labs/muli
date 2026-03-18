@@ -113,7 +113,9 @@ fn validate_artifact_names(def: &PipelineDef) -> Result<()> {
     for step in &def.steps {
         if let Some(arts) = &step.artifacts {
             if let Some(upload) = &arts.upload {
-                validate_path_component(&upload.name, "artifact name")?;
+                if let Some(name) = &upload.name {
+                    validate_path_component(name, "artifact name")?;
+                }
             }
         }
         if let Some(cache) = &step.cache {
@@ -276,16 +278,14 @@ steps:
         // Note: YAML parser may or may not pass the null byte through.
         // If it does, validation should catch it.
         if let Ok(def) = parse_pipeline(yaml) {
-            if def.steps[0]
+            let name_contains_null = def.steps[0]
                 .artifacts
                 .as_ref()
-                .unwrap()
-                .upload
-                .as_ref()
-                .unwrap()
-                .name
-                .contains('\0')
-            {
+                .and_then(|a| a.upload.as_ref())
+                .and_then(|u| u.name.as_deref())
+                .map(|n| n.contains('\0'))
+                .unwrap_or(false);
+            if name_contains_null {
                 assert!(validate_pipeline(&def).is_err());
             }
         }

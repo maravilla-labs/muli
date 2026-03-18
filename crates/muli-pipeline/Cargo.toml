@@ -21,6 +21,7 @@ hex = { workspace = true }
 git2 = { workspace = true }
 zstd = { workspace = true }
 glob = { workspace = true }
+tar = { workspace = true }
 axum = { workspace = true }
 thiserror = { workspace = true }
 

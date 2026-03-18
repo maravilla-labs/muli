@@ -2,7 +2,7 @@
 
 Muli pipelines provide GitHub Actions-style CI/CD directly from your git repositories.
 Push a `.maravilla/pipeline.yml` file to your repo and Muli automatically parses it,
-builds a dependency graph, and executes each step as an isolated Docker container.
+builds a dependency graph, and executes each job as an isolated Docker container.
 
 ---
 
@@ -12,12 +12,14 @@ builds a dependency graph, and executes each step as an isolated Docker containe
 2. The receive-pack hook reads the YAML from the commit via git2
 3. Muli parses, validates, and matches the trigger config against the push event
 4. A **PipelineRun** is created with a sequential run number
-5. Steps are expanded (matrix) and organized into a DAG (topological levels)
-6. Each level executes in parallel — every step becomes a **Job** submitted to the scheduler
+5. Jobs are expanded (matrix) and organized into a DAG (topological levels)
+6. Each level executes in parallel — every job becomes a **Job** submitted to the scheduler
 7. The scheduler dispatches Jobs to the Docker executor
-8. Each container runs `/bin/sh -c` with `set -e` and the step commands
-9. Logs are captured in real-time and persisted
-10. On completion, the pipeline state is computed: **Succeeded**, **Failed**, **Degraded**, or **Cancelled**
+8. For each job, the engine: checks out the git repo on the host, restores artifacts from dependency jobs, then starts the container with `/workspace` bind-mounted
+9. Each container runs `/bin/sh -c` with `set -e` and the job commands
+10. On success, artifact paths are tarred and uploaded for downstream jobs
+11. Logs are captured in real-time and persisted
+12. On completion, the pipeline state is computed: **Succeeded**, **Failed**, **Degraded**, or **Cancelled**
 
 ---
 
@@ -26,26 +28,46 @@ builds a dependency graph, and executes each step as an isolated Docker containe
 ```yaml
 # .maravilla/pipeline.yml
 name: ci
+image: node:22-alpine
 
 on:
   push:
     branches: [main]
 
-steps:
-  - name: test
-    image: node:22-alpine
+jobs:
+  install:
     commands:
       - npm ci
+    artifacts:
+      paths: [node_modules/]
+
+  test:
+    needs: install
+    commands:
       - npm test
 
-  - name: build
-    image: node:22-alpine
-    needs: [test]
+  build:
+    needs: [install, test]
     commands:
       - npm run build
 ```
 
-Push this file and Muli runs `test` first, then `build` after it succeeds.
+Push this file and Muli runs `install` first, then `test` and (only after `install` too)
+`build` once `test` succeeds. No `git` binary needed inside the container — checkout
+happens on the host before your container starts.
+
+---
+
+## Pipeline Formats
+
+Muli supports two YAML formats:
+
+| Format | Key | When to use |
+|--------|-----|-------------|
+| **Jobs** (recommended) | `jobs:` | Multi-step workflows with artifact handover, parallel execution, no git in container |
+| **Steps** (legacy) | `steps:` | Simple single-image pipelines; git clone runs inside the container |
+
+A pipeline must use one or the other — mixing `jobs:` and `steps:` in the same file is not supported.
 
 ---
 
@@ -53,14 +75,45 @@ Push this file and Muli runs `test` first, then `build` after it succeeds.
 
 ### Top-Level Fields
 
+#### Jobs format
+
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | string | yes | Pipeline name (displayed in UI and logs) |
+| `image` | string | no | Default Docker image inherited by all jobs that don't specify their own |
+| `checkout` | object | no | Checkout configuration (see below) |
 | `on` | object | no | Trigger configuration (when to run) |
-| `env` | map | no | Environment variables injected into every step |
+| `env` | map | no | Environment variables injected into every job |
 | `services` | map | no | Sidecar containers (databases, caches) |
 | `secrets` | list | no | Secret names resolved from the pipeline secret store |
-| `steps` | list | yes | Ordered list of step definitions |
+| `jobs` | map | yes* | Map of `job_name → JobDef` |
+
+#### Steps format (legacy)
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | yes | Pipeline name |
+| `on` | object | no | Trigger configuration |
+| `env` | map | no | Environment variables injected into every step |
+| `services` | map | no | Sidecar containers |
+| `secrets` | list | no | Secret names |
+| `steps` | list | yes* | Ordered list of step definitions |
+
+### Checkout (`checkout`)
+
+Applies only to the jobs format. Controls host-side git checkout behavior.
+
+```yaml
+checkout:
+  submodules: false   # default: false
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `submodules` | bool | `false` | If true, runs `git submodule update --init --recursive --depth 1` after checkout |
+
+The engine always performs a shallow clone (`--depth 1`) and fetches the exact commit SHA,
+so even non-tip commits work correctly.
 
 ### Triggers (`on`)
 
@@ -94,7 +147,51 @@ on:
 - `src/**` — matches `src/lib.rs`, `src/deep/nested/file.rs`
 - `*` — matches everything
 
-### Steps
+### Jobs
+
+```yaml
+jobs:
+  install:
+    commands: [npm ci]
+    artifacts:
+      paths: [node_modules/]
+
+  test:
+    needs: install          # string (single dependency)
+    commands:
+      - npm test
+    env:
+      DATABASE_URL: postgres://localhost:5432/test
+    failure_strategy: continue
+
+  build:
+    needs: [test, install]  # array (multiple dependencies)
+    image: node:22-alpine   # overrides pipeline-level image
+    commands:
+      - npm run build
+    artifacts:
+      paths: [dist/]
+    resources:
+      cpu: "2000m"
+      memory: "2Gi"
+    timeout: 1800
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `image` | string | no* | Docker image. Inherits pipeline-level `image` if absent. One of the two must be set. |
+| `commands` | list | no | Shell commands executed in order with `set -e` |
+| `needs` | string or list | no | Job name(s) this job depends on. Accepts `needs: install` or `needs: [a, b]` |
+| `env` | map | no | Job-specific environment variables (override pipeline-level env) |
+| `artifacts` | object | no | Artifact upload configuration (see below) |
+| `cache` | object | no | Dependency caching configuration |
+| `resources` | object | no | CPU and memory limits for the container |
+| `matrix` | map | no | Matrix expansion — runs the job for every combination |
+| `if` | string | no | Condition expression — skip job if false |
+| `failure_strategy` | string | no | What to do when job fails: `stop` (default), `continue`, `ignore` |
+| `timeout` | integer | no | Maximum execution time in seconds (default: 1800) |
+
+### Steps (legacy)
 
 ```yaml
 steps:
@@ -127,17 +224,63 @@ steps:
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | string | yes | Unique step name within the pipeline |
-| `image` | string | yes | Docker image to run (e.g., `node:22-alpine`, `rust:1.82`) |
-| `commands` | list | no | Shell commands executed in order with `set -e` (stop on first failure) |
+| `image` | string | yes | Docker image to run |
+| `commands` | list | no | Shell commands executed in order with `set -e` |
 | `needs` | list | no | Step names this step depends on (DAG edges) |
-| `env` | map | no | Step-specific environment variables (override pipeline-level env) |
+| `env` | map | no | Step-specific environment variables |
 | `cache` | object | no | Dependency caching configuration |
 | `artifacts` | object | no | Artifact upload/download configuration |
-| `resources` | object | no | CPU and memory limits for the container |
-| `matrix` | map | no | Matrix expansion — runs the step for every combination |
-| `if` | string | no | Condition expression — skip step if false |
-| `failure_strategy` | string | no | What to do when step fails: `stop` (default), `continue`, `ignore` |
-| `timeout` | integer | no | Maximum execution time in seconds (default: 1800) |
+| `resources` | object | no | CPU and memory limits |
+| `matrix` | map | no | Matrix expansion |
+| `if` | string | no | Condition expression |
+| `failure_strategy` | string | no | `stop` (default), `continue`, `ignore` |
+| `timeout` | integer | no | Max execution time in seconds (default: 1800) |
+
+### Artifacts
+
+#### Jobs format — shorthand paths
+
+```yaml
+jobs:
+  build:
+    commands: [npm run build]
+    artifacts:
+      paths: [dist/, coverage/]    # uploaded after job exits 0
+      expire_in: "1 week"          # optional; default: 30 days
+
+  deploy:
+    needs: build
+    commands: [kubectl apply -f k8s/]
+    # dist/ and coverage/ are automatically restored into /workspace
+    # before this job's commands run — no explicit download declaration needed
+```
+
+Artifacts from all `needs:` jobs that have `artifacts.paths` configured are
+**automatically downloaded and extracted** into the workspace before the job's
+commands run (GitLab-style implicit restore).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `paths` | list | Workspace-relative paths (files or directories) to tar and upload after success |
+| `expire_in` | string | Retention override, e.g. `"1 day"`, `"1 week"` |
+
+#### Steps format — explicit upload/download
+
+```yaml
+artifacts:
+  upload:
+    name: dist
+    paths: [dist/, coverage/]
+  download: [other-step-artifact]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `upload.name` | string | Artifact name (must be unique within the run) |
+| `upload.paths` | list | Files/directories to upload after step succeeds |
+| `download` | list | Artifact names from earlier steps to download before this step runs |
+
+Artifacts are retained for 30 days by default (configurable via `MULI_PIPELINE_ARTIFACT_RETENTION_DAYS`).
 
 ### Cache
 
@@ -157,24 +300,6 @@ cache:
 Cache is stored per-repository with zstd compression. A per-tenant size limit (default 5 GB)
 enforces LRU eviction when exceeded.
 
-### Artifacts
-
-```yaml
-artifacts:
-  upload:
-    name: dist
-    paths: [dist/, coverage/]
-  download: [other-step-artifact]
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `upload.name` | string | Artifact name (must be unique within the run) |
-| `upload.paths` | list | Files/directories to upload after step succeeds |
-| `download` | list | Artifact names from earlier steps to download before this step runs |
-
-Artifacts are retained for 30 days by default (configurable via `MULI_PIPELINE_ARTIFACT_RETENTION_DAYS`).
-
 ### Matrix
 
 ```yaml
@@ -183,10 +308,10 @@ matrix:
   os: [alpine, bookworm]
 ```
 
-This expands the step into 6 parallel copies (3 x 2). Each copy gets the matrix values
+This expands the job into 6 parallel copies (3 x 2). Each copy gets the matrix values
 as uppercase environment variables (`NODE_VERSION=18`, `OS=alpine`).
 
-**Limits:** Maximum 25 combinations per step. Maximum 100 steps per pipeline.
+**Limits:** Maximum 25 combinations per job. Maximum 100 jobs per pipeline.
 
 ### Conditions (`if`)
 
@@ -200,15 +325,15 @@ Simple expressions supporting:
 - `tag == 'v1.0'`
 - `&&` for AND (up to 10 conditions)
 
-When a condition evaluates to false, the step is **skipped** (not failed).
-Unknown expressions default to true (step runs).
+When a condition evaluates to false, the job is **skipped** (not failed).
+Unknown expressions default to true (job runs).
 
 ### Failure Strategy
 
 | Value | Behavior |
 |-------|----------|
-| `stop` | (default) Pipeline fails immediately. Downstream steps are cancelled. |
-| `continue` | Pipeline continues. Final state is **Degraded** if any step failed. |
+| `stop` | (default) Pipeline fails immediately. Downstream jobs are cancelled. |
+| `continue` | Pipeline continues. Final state is **Degraded** if any job failed. |
 | `ignore` | Failure is ignored entirely. Pipeline can still be **Succeeded**. |
 
 ### Resources
@@ -234,14 +359,14 @@ services:
     image: redis:7-alpine
 ```
 
-Service containers run alongside your step containers on the same Docker network.
+Service containers run alongside your job containers on the same Docker network.
 Access them via their name as hostname (e.g., `postgres:5432`).
 
 ---
 
 ## Built-in Environment Variables
 
-Every step automatically receives these environment variables:
+Every job automatically receives these environment variables:
 
 | Variable | Example | Description |
 |----------|---------|-------------|
@@ -250,30 +375,58 @@ Every step automatically receives these environment variables:
 | `PIPELINE_SHA` | `abc123def456` | Commit SHA being built |
 | `PIPELINE_BRANCH` | `main` | Branch name (extracted from ref) |
 | `PIPELINE_EVENT` | `push` | Trigger type: `push`, `pull_request`, `manual`, `schedule`, `retry` |
-| `PIPELINE_CLONE_URL` | `http://...` | Git clone URL (when auto-checkout is enabled) |
-| `PIPELINE_STEP_NAME` | `build` | Name of the current step |
+| `PIPELINE_JOB_NAME` | `build` | Name of the current job (jobs format) |
+| `PIPELINE_STEP_NAME` | `build` | Name of the current step (steps format) |
+| `PIPELINE_CLONE_URL` | `http://...` | Git clone URL (steps format only, when auto-checkout is enabled) |
 
-Additionally, pipeline-level `env`, step-level `env`, and vault secrets (as `WUNDER_*`) are injected.
+Additionally, pipeline-level `env`, job-level `env`, and vault secrets are injected.
 
-**Priority order** (highest wins): Built-in vars > Run env_vars (vault) > Step env > Pipeline env
+**Priority order** (highest wins): Built-in vars > Run env_vars (vault) > Job/Step env > Pipeline env
 
 ---
 
-## Auto-Checkout
+## Checkout and Workspace
 
-When a clone URL is configured, Muli automatically prepends a git clone command before your step commands:
+### Jobs format — host-side checkout
+
+In the jobs format, git checkout happens **on the host** before the container starts.
+No `git` binary is required inside your Docker image.
+
+The engine performs:
+```bash
+git clone --depth 1 <clone_url> /tmp/muli-workspace-<id>
+git fetch --depth 1 origin <sha>
+git checkout <sha>
+# if checkout.submodules: true:
+git submodule update --init --recursive --depth 1
+```
+
+Then starts your container with `/workspace` bind-mounted to that directory.
+
+Your commands run with the repo already checked out:
+```yaml
+jobs:
+  test:
+    commands:
+      - cargo test    # repo is already in /workspace
+```
+
+### Steps format — in-container checkout
+
+In the steps format, when a clone URL is configured, Muli prepends a git clone
+command before your step commands:
 
 ```bash
 git clone "$PIPELINE_CLONE_URL" /workspace && cd /workspace && git checkout "$PIPELINE_SHA"
 ```
 
-Your commands then run in `/workspace` with the repo checked out at the exact commit.
+This requires `git` to be available in your container image.
 
 ---
 
 ## DAG Execution
 
-Steps are organized into **levels** based on `needs` dependencies:
+Jobs are organized into **levels** based on `needs` dependencies:
 
 ```
 Level 0:  [install]           ← no dependencies, runs first
@@ -282,11 +435,25 @@ Level 2:  [build]             ← needs lint + test, runs after both complete
 Level 3:  [deploy]            ← needs build
 ```
 
-Within a level, all steps are submitted to the scheduler simultaneously.
+Within a level, all jobs are submitted to the scheduler simultaneously.
 The scheduler dispatches them based on priority and available resources.
 
-If a step fails with `failure_strategy: stop`, all steps in subsequent levels are **cancelled**.
+If a job fails with `failure_strategy: stop`, all jobs in subsequent levels are **cancelled**.
 With `continue`, execution proceeds and the pipeline ends in **Degraded** state.
+
+### Artifact handover flow
+
+```
+Job: build
+  1. Fresh workspace created on host
+  2. git clone --depth 1 → /workspace
+  3. Artifacts from needs: [install] downloaded + extracted into /workspace
+     → node_modules/ appears in workspace automatically
+  4. Container started (image: node:22-alpine, /workspace bind-mounted)
+  5. Commands run: npm run build → produces dist/
+  6. Container exits 0 → SUCCESS
+  7. artifacts.paths: [dist/] → tar dist/ → upload (key: "{run_id}/build")
+```
 
 ---
 
@@ -297,13 +464,13 @@ With `continue`, execution proceeds and the pipeline ends in **Degraded** state.
 | State | Description |
 |-------|-------------|
 | **Pending** | Run created, not yet started |
-| **Running** | At least one step is executing |
-| **Succeeded** | All steps completed successfully |
-| **Failed** | A required step failed (stop strategy) |
-| **Degraded** | Some steps failed but execution continued (continue strategy) |
+| **Running** | At least one job is executing |
+| **Succeeded** | All jobs completed successfully |
+| **Failed** | A required job failed (stop strategy) |
+| **Degraded** | Some jobs failed but execution continued (continue strategy) |
 | **Cancelled** | Cancelled by user or system |
 
-### Step States
+### Job/Step States
 
 | State | Description |
 |-------|-------------|
@@ -321,11 +488,11 @@ With `continue`, execution proceeds and the pipeline ends in **Degraded** state.
 
 - **Tenant isolation:** All pipeline data is scoped by tenant_id. Cross-tenant access is prevented at the store level.
 - **Path traversal protection:** Artifact names and cache keys are validated — `..`, `/`, `\`, null bytes rejected.
-- **Container hardening:** Steps run with `cap_drop: ALL`, `no-new-privileges`, `readonly_rootfs`, `pids_limit: 256`.
+- **Container hardening:** Jobs run with `cap_drop: ALL`, `no-new-privileges`, `readonly_rootfs`, `pids_limit: 256`.
 - **Secret safety:** Pipeline secrets are AES-256-GCM encrypted at rest. They never appear in API responses (only names are listed). Log output is not filtered — avoid `echo $SECRET` in commands.
-- **YAML limits:** Max 1 MB YAML size, max 100 steps, max 25 matrix combinations, max 512-char conditions.
+- **YAML limits:** Max 1 MB YAML size, max 100 jobs/steps, max 25 matrix combinations, max 512-char conditions.
 - **Rate limiting:** Per-repo cooldown of 5 seconds between pipeline triggers.
-- **Network isolation:** Each step runs in an isolated Docker network.
+- **Network isolation:** Each job runs in an isolated Docker network.
 
 ---
 
@@ -338,7 +505,7 @@ Server-level configuration via environment variables or `muli.toml`:
 | `MULI_PIPELINE_ENABLED` | `false` | Enable pipeline feature (requires `MULI_GIT_ENABLED=true`) |
 | `MULI_PIPELINE_ARTIFACT_RETENTION_DAYS` | `30` | Days before artifacts are auto-deleted |
 | `MULI_PIPELINE_CACHE_MAX_GB` | `5.0` | Per-tenant cache size limit in GB |
-| `MULI_PIPELINE_MAX_MATRIX_SIZE` | `25` | Maximum matrix combinations per step |
+| `MULI_PIPELINE_MAX_MATRIX_SIZE` | `25` | Maximum matrix combinations per job |
 | `MULI_PIPELINE_SECRET_ENCRYPTION_KEY` | — | Base64-encoded AES-256 key for pipeline secrets |
 
 ---
@@ -386,10 +553,76 @@ service PipelineService {
 
 ## Real-World Examples
 
-### Rust Project
+### Node.js with Artifact Handover (jobs format)
+
+```yaml
+name: fullstack-ci
+image: node:22-alpine
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    events: [opened, synchronize]
+
+services:
+  postgres:
+    image: postgres:16
+    env:
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: app_test
+
+secrets: [DATABASE_URL, DEPLOY_TOKEN]
+
+jobs:
+  install:
+    commands:
+      - npm ci
+    artifacts:
+      paths: [node_modules/]    # shared with lint, test, build
+
+  lint:
+    needs: install
+    commands:
+      - npx eslint src/ --max-warnings 0
+      - npx prettier --check src/
+    failure_strategy: continue
+
+  test:
+    needs: install
+    commands:
+      - npm test
+    env:
+      DATABASE_URL: postgres://postgres:test@postgres:5432/app_test
+    timeout: 600
+
+  build:
+    needs: [lint, test]         # lint and test run in parallel; build waits for both
+    commands:
+      - npm run build
+    artifacts:
+      paths: [dist/]
+    resources:
+      cpu: "2000m"
+      memory: "2Gi"
+
+  deploy:
+    image: alpine/curl          # different image for this job
+    needs: build
+    commands:
+      - curl -sSf -X POST "https://deploy.example.com/api/deploy"
+        -H "Authorization: Bearer $DEPLOY_TOKEN"
+        -d "{\"version\":\"$PIPELINE_SHA\"}"
+    if: "branch == 'main' && event == 'push'"
+```
+
+### Rust Project (jobs format)
 
 ```yaml
 name: rust-ci
+image: rust:1.82
+
 on:
   push:
     branches: [main, develop]
@@ -400,44 +633,61 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
 
-steps:
-  - name: check
-    image: rust:1.82
+jobs:
+  check:
     commands:
       - cargo check --workspace
-    cache:
-      key: "cargo-{{ hash('Cargo.lock') }}"
-      paths: [/usr/local/cargo/registry, target]
 
-  - name: test
-    image: rust:1.82
-    needs: [check]
+  test:
+    needs: check
     commands:
       - cargo test --workspace
-    cache:
-      key: "cargo-{{ hash('Cargo.lock') }}"
-      paths: [target]
 
-  - name: clippy
-    image: rust:1.82
-    needs: [check]
+  clippy:
+    needs: check
     commands:
       - rustup component add clippy
       - cargo clippy --workspace -- -D warnings
 
-  - name: build-release
-    image: rust:1.82
+  build-release:
     needs: [test, clippy]
     commands:
       - cargo build --release
     artifacts:
-      upload:
-        name: binary
-        paths: [target/release/myapp]
+      paths: [target/release/myapp]
     if: "branch == 'main' && event == 'push'"
 ```
 
-### Node.js Full-Stack App
+### Multi-Platform Build (matrix)
+
+```yaml
+name: cross-compile
+image: rust:1.82
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    commands:
+      - rustup target add $TARGET
+      - cargo build --release --target $TARGET
+    matrix:
+      target:
+        - x86_64-unknown-linux-gnu
+        - aarch64-unknown-linux-gnu
+        - x86_64-apple-darwin
+    artifacts:
+      paths: [target/]
+    resources:
+      cpu: "2000m"
+      memory: "4Gi"
+```
+
+This runs 3 builds in parallel — one per target architecture.
+
+### Node.js Full-Stack App (legacy steps format)
 
 ```yaml
 name: fullstack-ci
@@ -476,27 +726,11 @@ steps:
       - npx prettier --check src/
     failure_strategy: continue
 
-  - name: typecheck
+  - name: test
     image: node:22-alpine
     needs: [install]
     commands:
-      - npx tsc --noEmit
-
-  - name: test-unit
-    image: node:22-alpine
-    needs: [install]
-    commands:
-      - npm run test:unit -- --coverage
-    artifacts:
-      upload:
-        name: coverage
-        paths: [coverage/]
-
-  - name: test-integration
-    image: node:22-alpine
-    needs: [install]
-    commands:
-      - npm run test:integration
+      - npm test
     env:
       DATABASE_URL: postgres://postgres:test@postgres:5432/app_test
       REDIS_URL: redis://redis:6379
@@ -504,7 +738,7 @@ steps:
 
   - name: build
     image: node:22-alpine
-    needs: [lint, typecheck, test-unit, test-integration]
+    needs: [lint, test]
     commands:
       - npm run build
     artifacts:
@@ -522,48 +756,8 @@ steps:
       - apk add --no-cache curl
       - curl -sSf -X POST "https://deploy.example.com/api/deploy"
         -H "Authorization: Bearer $DEPLOY_TOKEN"
-        -d '{"version":"$PIPELINE_SHA","env":"production"}'
+        -d "{\"version\":\"$PIPELINE_SHA\",\"env\":\"production\"}"
     artifacts:
       download: [dist]
     if: "branch == 'main' && event == 'push'"
-
-  - name: notify
-    image: alpine:latest
-    needs: [deploy]
-    commands:
-      - apk add --no-cache curl
-      - curl -sSf -X POST "https://hooks.slack.com/services/..."
-        -d '{"text":"Deployed $PIPELINE_SHA to production"}'
-    failure_strategy: ignore
-    if: "branch == 'main' && event == 'push'"
 ```
-
-### Multi-Platform Build (Matrix)
-
-```yaml
-name: cross-compile
-on:
-  push:
-    branches: [main]
-
-steps:
-  - name: build
-    image: rust:1.82
-    commands:
-      - rustup target add $TARGET
-      - cargo build --release --target $TARGET
-    matrix:
-      target:
-        - x86_64-unknown-linux-gnu
-        - aarch64-unknown-linux-gnu
-        - x86_64-apple-darwin
-    artifacts:
-      upload:
-        name: binary
-        paths: [target/$TARGET/release/myapp]
-    resources:
-      cpu: "2000m"
-      memory: "4Gi"
-```
-
-This runs 3 builds in parallel — one per target architecture.

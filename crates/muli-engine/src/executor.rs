@@ -9,13 +9,14 @@ use std::time::Duration;
 use tracing::{error, info};
 
 use muli_core::error::Result;
+use muli_core::job::artifact_handler::ArtifactHandler;
 use muli_core::job::model::{Job, JobResult};
 use muli_core::resource::limits::parse_cpu_millicores;
 use muli_core::resource::limits::parse_memory_bytes;
 
 use crate::docker::client::DockerClient;
 use crate::docker::logs::LogCollector;
-use crate::docker::{container, image, network, volume};
+use crate::docker::{checkout, container, image, network, volume};
 use crate::resource_manager::ResourceManager;
 use crate::timeout::enforce_timeout;
 
@@ -23,6 +24,7 @@ use crate::timeout::enforce_timeout;
 pub struct DockerExecutor {
     docker: DockerClient,
     resource_manager: Arc<ResourceManager>,
+    artifact_handler: Option<Arc<dyn ArtifactHandler>>,
 }
 
 impl DockerExecutor {
@@ -30,7 +32,14 @@ impl DockerExecutor {
         Self {
             docker,
             resource_manager,
+            artifact_handler: None,
         }
+    }
+
+    /// Attach an artifact handler for upload/restore operations.
+    pub fn with_artifact_handler(mut self, handler: Arc<dyn ArtifactHandler>) -> Self {
+        self.artifact_handler = Some(handler);
+        self
     }
 
     /// Execute a job end-to-end: pull image, create network, create container,
@@ -93,6 +102,31 @@ impl DockerExecutor {
         let workspace_path = volume::create_temp_dir(job_id)?;
         let workspace_str = workspace_path.to_string_lossy().to_string();
 
+        // 3a. Host-side git checkout (before artifact restore so artifacts overlay the tree)
+        if let Some(checkout_spec) = &spec.checkout {
+            checkout::perform_checkout(checkout_spec, &workspace_path, &log_collector).await?;
+        }
+
+        // 3b. Restore artifacts from dependency jobs
+        if !spec.artifact_downloads.is_empty() {
+            if let Some(handler) = &self.artifact_handler {
+                let needed_jobs: Vec<&str> = spec
+                    .artifact_downloads
+                    .iter()
+                    .map(|d| d.job_name.as_str())
+                    .collect();
+                // Use the run_id from the first download (they all share the same run)
+                let run_id = spec
+                    .artifact_downloads
+                    .first()
+                    .map(|d| d.run_id.as_str())
+                    .unwrap_or(&spec.deployment_id);
+                handler
+                    .restore_artifacts(&spec.tenant_id, run_id, &needed_jobs, &workspace_path)
+                    .await?;
+            }
+        }
+
         // 4. Parse docker resource limits
         let docker_limits = spec.resources.to_docker_limits()?;
 
@@ -142,6 +176,30 @@ impl DockerExecutor {
                 } else {
                     format!("Job failed with exit code {exit_code}")
                 };
+
+                // 9. Upload artifacts if exit 0 and paths configured
+                if exit_code == 0 && !spec.artifact_upload_paths.is_empty() {
+                    if let (Some(handler), Some(key)) =
+                        (&self.artifact_handler, &spec.artifact_upload_key)
+                    {
+                        if let Err(e) = handler
+                            .upload_artifacts(
+                                &spec.tenant_id,
+                                &spec.deployment_id,
+                                key,
+                                &workspace_path,
+                                &spec.artifact_upload_paths,
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                job_id = %job_id,
+                                error = %e,
+                                "artifact upload failed (job still succeeded)"
+                            );
+                        }
+                    }
+                }
 
                 info!(
                     job_id = %job_id,

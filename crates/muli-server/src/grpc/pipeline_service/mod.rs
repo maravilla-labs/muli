@@ -38,6 +38,7 @@ pub struct PipelineServiceImpl {
     pub run_store: Arc<dyn PipelineRunStore>,
     pub step_store: Arc<dyn StepRunStore>,
     pub artifact_store: Arc<dyn ArtifactStore>,
+    pub artifact_storage: Arc<muli_pipeline::artifact::storage::ArtifactStorage>,
     pub cache_store: Arc<dyn CacheStore>,
     pub secret_store: Arc<dyn PipelineSecretStore>,
     pub job_store: Arc<dyn JobStore>,

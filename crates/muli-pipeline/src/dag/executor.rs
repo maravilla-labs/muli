@@ -1,7 +1,7 @@
 // Copyright 2026 Maravilla Labs
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! DAG executor: processes pipeline steps level-by-level, submitting each as a Job.
+//! DAG executor: processes pipeline steps/jobs level-by-level, submitting each as a Job.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -12,15 +12,17 @@ use chrono::Utc;
 use tracing::{error, info, warn};
 
 use muli_core::error::Result;
-use muli_core::job::model::{EnvVar, Job, JobSpec, PriorityTier};
+use muli_core::job::model::{ArtifactDownload, CheckoutSpec, EnvVar, Job, JobSpec, PriorityTier};
 use muli_core::job::state_machine::JobState;
-use muli_core::pipeline::{FailureStrategy, PipelineRun, PipelineRunState, StepRun, StepRunState};
+use muli_core::pipeline::{
+    FailureStrategy, PipelineRun, PipelineRunState, PipelineTrigger, StepRun, StepRunState,
+};
 use muli_core::resource::limits::ResourceSpec;
 use muli_core::traits::{JobStore, PipelineRunStore, StepRunStore};
 
 use crate::dag::graph::DagGraph;
 use crate::yaml::expression::{ExpressionContext, evaluate_condition};
-use crate::yaml::schema::{PipelineDef, StepDef};
+use crate::yaml::schema::{JobDef, PipelineDef, ResourceDef, StepDef};
 
 /// Abstraction for submitting jobs to the scheduler.
 /// Implemented by the server layer to avoid coupling muli-pipeline to muli-queue.
@@ -30,11 +32,8 @@ pub trait JobSubmitter: Send + Sync {
     async fn submit(&self, job: Job) -> Result<String>;
 }
 
-/// Default polling interval when waiting for jobs to complete.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
-
-/// Maximum time to wait for a single pipeline run before giving up.
-const MAX_PIPELINE_DURATION: Duration = Duration::from_secs(3600); // 1 hour
+const MAX_PIPELINE_DURATION: Duration = Duration::from_secs(3600);
 
 /// Orchestrates pipeline execution by processing DAG levels.
 pub struct DagExecutor {
@@ -51,16 +50,10 @@ impl DagExecutor {
         job_store: Arc<dyn JobStore>,
         job_submitter: Arc<dyn JobSubmitter>,
     ) -> Self {
-        Self {
-            run_store,
-            step_store,
-            job_store,
-            job_submitter,
-        }
+        Self { run_store, step_store, job_store, job_submitter }
     }
 
-    /// Execute a pipeline run end-to-end: evaluate conditions, process DAG levels,
-    /// submit Jobs, wait for completion, compute final state.
+    /// Execute a pipeline run end-to-end.
     pub async fn execute(
         &self,
         run: &mut PipelineRun,
@@ -68,236 +61,456 @@ impl DagExecutor {
         step_runs: &[StepRun],
         clone_url: Option<&str>,
     ) -> Result<PipelineRunState> {
-        let tenant_id = &run.tenant_id;
+        if !pipeline_def.jobs.is_empty() {
+            self.execute_jobs(run, pipeline_def, step_runs, clone_url).await
+        } else {
+            self.execute_steps(run, pipeline_def, step_runs, clone_url).await
+        }
+    }
 
-        // Mark run as Running
-        run.state = PipelineRunState::Running;
-        run.started_at = Some(Utc::now());
-        run.updated_at = Utc::now();
-        self.run_store.update_run(run).await?;
+    // ── Jobs mode ────────────────────────────────────────────────────────────
 
-        let expr_ctx = ExpressionContext {
-            branch: run.ref_name.replace("refs/heads/", ""),
-            event: trigger_event_str(&run.trigger),
-            tag: None,
+    async fn execute_jobs(
+        &self,
+        run: &mut PipelineRun,
+        pipeline_def: &PipelineDef,
+        step_runs: &[StepRun],
+        clone_url: Option<&str>,
+    ) -> Result<PipelineRunState> {
+        self.mark_run_started(run).await?;
+
+        let expr_ctx = make_expr_ctx(run);
+        let job_names: Vec<String> = pipeline_def.jobs.keys().cloned().collect();
+        let original_names: Vec<&str> = job_names.iter().map(String::as_str).collect();
+
+        let (step_run_map, original_to_runs) =
+            build_run_maps(step_runs, &original_names);
+
+        self.evaluate_conditions(
+            &run.tenant_id,
+            step_runs,
+            &original_names,
+            &expr_ctx,
+            |n| {
+                pipeline_def
+                    .jobs
+                    .get(n)
+                    .and_then(|d| d.condition.as_deref())
+                    .map(|s| s.to_string())
+            },
+        )
+        .await?;
+
+        let deps: Vec<(String, Vec<String>)> = pipeline_def
+            .jobs
+            .iter()
+            .map(|(n, d)| (n.clone(), d.needs.clone()))
+            .collect();
+        let levels = DagGraph::from_steps(&deps).topological_levels();
+
+        info!(run_id = %run.id, levels = levels.len(), "executing pipeline DAG (jobs mode)");
+
+        let deadline =
+            Utc::now() + chrono::Duration::from_std(MAX_PIPELINE_DURATION).unwrap();
+
+        let build_fn = |orig: &str, _sr: &str| -> Option<Job> {
+            let def = pipeline_def.jobs.get(orig)?;
+            Some(self.build_job_from_jobdef(run, pipeline_def, orig, def, clone_url))
         };
 
-        // Build step name → StepDef lookup.
+        let (had_failure, had_stop_failure) = self
+            .execute_dag_levels(
+                &run.tenant_id,
+                &levels,
+                &original_to_runs,
+                &step_run_map,
+                deadline,
+                &build_fn,
+            )
+            .await?;
+
+        self.finalize_run(run, had_failure, had_stop_failure).await
+    }
+
+    // ── Steps mode (legacy) ──────────────────────────────────────────────────
+
+    async fn execute_steps(
+        &self,
+        run: &mut PipelineRun,
+        pipeline_def: &PipelineDef,
+        step_runs: &[StepRun],
+        clone_url: Option<&str>,
+    ) -> Result<PipelineRunState> {
+        self.mark_run_started(run).await?;
+
+        let expr_ctx = make_expr_ctx(run);
+        let original_names: Vec<&str> =
+            pipeline_def.steps.iter().map(|s| s.name.as_str()).collect();
+
         let step_def_map: HashMap<&str, &StepDef> = pipeline_def
             .steps
             .iter()
             .map(|s| (s.name.as_str(), s))
             .collect();
 
-        // Collect original step names for matching matrix-expanded step_runs
-        let original_names: Vec<&str> =
-            pipeline_def.steps.iter().map(|s| s.name.as_str()).collect();
+        let (step_run_map, original_to_runs) =
+            build_run_maps(step_runs, &original_names);
 
-        // Build step_run_name → StepRun map, and original_name → [step_run_names] map
-        let step_run_map: HashMap<&str, &StepRun> = step_runs
-            .iter()
-            .map(|s| (s.step_name.as_str(), s))
-            .collect();
+        self.evaluate_conditions(
+            &run.tenant_id,
+            step_runs,
+            &original_names,
+            &expr_ctx,
+            |n| {
+                step_def_map
+                    .get(n)
+                    .and_then(|d| d.condition.as_deref())
+                    .map(|s| s.to_string())
+            },
+        )
+        .await?;
 
-        // Map original step name → all expanded step_run names
-        let mut original_to_runs: HashMap<&str, Vec<&str>> = HashMap::new();
-        for sr in step_runs {
-            if let Some(orig) = find_original_name(&sr.step_name, &original_names) {
-                original_to_runs
-                    .entry(orig)
-                    .or_default()
-                    .push(&sr.step_name);
-            }
-        }
-
-        // Evaluate `if` conditions — skip steps that don't match
-        for sr in step_runs.iter() {
-            let orig = find_original_name(&sr.step_name, &original_names);
-            if let Some(def) = orig.and_then(|n| step_def_map.get(n)) {
-                if let Some(ref condition) = def.condition {
-                    if !evaluate_condition(condition, &expr_ctx) {
-                        self.step_store
-                            .update_step_state(tenant_id, &sr.id, StepRunState::Skipped)
-                            .await?;
-                        info!(step = %sr.step_name, "step skipped (condition not met)");
-                    }
-                }
-            }
-        }
-
-        // Build DAG from step definitions (name → deps)
-        let step_deps: Vec<(String, Vec<String>)> = pipeline_def
+        let deps: Vec<(String, Vec<String>)> = pipeline_def
             .steps
             .iter()
             .map(|s| (s.name.clone(), s.needs.clone()))
             .collect();
-        let dag = DagGraph::from_steps(&step_deps);
-        let levels = dag.topological_levels();
+        let levels = DagGraph::from_steps(&deps).topological_levels();
 
-        info!(
-            run_id = %run.id,
-            levels = levels.len(),
-            total_steps = step_runs.len(),
-            "executing pipeline DAG"
-        );
+        info!(run_id = %run.id, levels = levels.len(), "executing pipeline DAG (steps mode)");
 
+        let deadline =
+            Utc::now() + chrono::Duration::from_std(MAX_PIPELINE_DURATION).unwrap();
+
+        let build_fn = |orig: &str, _sr: &str| -> Option<Job> {
+            let def = *step_def_map.get(orig)?;
+            Some(self.build_job(run, pipeline_def, def, clone_url))
+        };
+
+        let (had_failure, had_stop_failure) = self
+            .execute_dag_levels(
+                &run.tenant_id,
+                &levels,
+                &original_to_runs,
+                &step_run_map,
+                deadline,
+                &build_fn,
+            )
+            .await?;
+
+        self.finalize_run(run, had_failure, had_stop_failure).await
+    }
+
+    // ── Shared level executor ────────────────────────────────────────────────
+
+    /// Process all DAG levels sequentially; within each level jobs run in parallel.
+    /// `build_fn(orig_name, sr_name) -> Option<Job>` constructs the Job for a given run.
+    /// Returns `(had_failure, had_stop_failure)`.
+    async fn execute_dag_levels(
+        &self,
+        tenant_id: &str,
+        levels: &[Vec<&str>],
+        original_to_runs: &HashMap<String, Vec<&str>>,
+        step_run_map: &HashMap<&str, &StepRun>,
+        deadline: chrono::DateTime<Utc>,
+        build_fn: &(impl Fn(&str, &str) -> Option<Job> + Sync),
+    ) -> Result<(bool, bool)> {
         let mut had_failure = false;
         let mut had_stop_failure = false;
-        let deadline = Utc::now() + chrono::Duration::from_std(MAX_PIPELINE_DURATION).unwrap();
 
-        // Process each level sequentially; within a level, steps run in parallel
         for (level_idx, level) in levels.iter().enumerate() {
             if had_stop_failure {
-                // A step with failure_strategy=Stop failed — cancel remaining levels
-                for &orig_name in level {
-                    let run_names = original_to_runs.get(orig_name).cloned().unwrap_or_default();
-                    for rn in run_names {
-                        if let Some(sr) = step_run_map.get(rn) {
-                            let current = self.step_store.get_step(tenant_id, &sr.id).await?;
-                            if let Some(s) = current {
-                                if !s.state.is_terminal() {
-                                    self.step_store
-                                        .update_step_state(
-                                            tenant_id,
-                                            &sr.id,
-                                            StepRunState::Cancelled,
-                                        )
-                                        .await?;
-                                }
-                            }
-                        }
-                    }
-                }
+                self.cancel_level_runs(tenant_id, level, original_to_runs, step_run_map)
+                    .await?;
                 continue;
             }
 
-            info!(run_id = %run.id, level = level_idx, steps = ?level, "processing DAG level");
+            info!(level = level_idx, jobs = ?level, "processing DAG level");
 
-            // Collect all step_runs in this level (including matrix expansions)
-            let mut level_runs: Vec<&str> = Vec::new();
-            for &orig_name in level {
-                if let Some(runs) = original_to_runs.get(orig_name) {
-                    level_runs.extend_from_slice(runs);
-                }
+            // Collect (orig_name, sr_name) pairs; orig is already known from the map.
+            let level_run_pairs: Vec<(&str, &str)> = level
+                .iter()
+                .flat_map(|n| {
+                    let orig: &str = n;
+                    original_to_runs
+                        .get(*n)
+                        .map(|v| v.iter().map(move |&sr| (orig, sr)).collect::<Vec<_>>())
+                        .unwrap_or_default()
+                })
+                .collect();
+
+            let (submitted, submit_failed, submit_stop) = self
+                .submit_level(tenant_id, &level_run_pairs, step_run_map, build_fn)
+                .await?;
+
+            if submit_failed {
+                had_failure = true;
+            }
+            if submit_stop {
+                had_stop_failure = true;
             }
 
-            // Submit all ready steps in this level as Jobs
-            let mut submitted: Vec<(String, String)> = Vec::new(); // (step_run_name, job_id)
+            let (wait_failed, wait_stop) = self
+                .wait_level(tenant_id, submitted, step_run_map, deadline)
+                .await?;
 
-            for &sr_name in &level_runs {
-                let sr = match step_run_map.get(sr_name) {
-                    Some(sr) => sr,
-                    None => continue,
-                };
+            if wait_failed {
+                had_failure = true;
+            }
+            if wait_stop {
+                had_stop_failure = true;
+            }
+        }
 
-                // Re-fetch current state (may have been skipped by conditions)
-                let current = self.step_store.get_step(tenant_id, &sr.id).await?;
-                let current_state = current.as_ref().map(|s| s.state);
-                if current_state == Some(StepRunState::Skipped)
-                    || current_state == Some(StepRunState::Cancelled)
-                {
-                    continue;
-                }
+        Ok((had_failure, had_stop_failure))
+    }
 
-                let orig_name = find_original_name(sr_name, &original_names);
-                let step_def = match orig_name.and_then(|n| step_def_map.get(n)) {
-                    Some(d) => *d,
-                    None => continue,
-                };
+    /// Submit all ready runs in a level. Returns (submitted pairs, had_failure, had_stop_failure).
+    /// Each element of `level_run_pairs` is `(orig_def_name, expanded_sr_name)`.
+    async fn submit_level(
+        &self,
+        tenant_id: &str,
+        level_run_pairs: &[(&str, &str)],
+        step_run_map: &HashMap<&str, &StepRun>,
+        build_fn: &(impl Fn(&str, &str) -> Option<Job> + Sync),
+    ) -> Result<(Vec<(String, String)>, bool, bool)> {
+        let mut submitted = Vec::new();
+        let mut had_failure = false;
+        let mut had_stop = false;
 
-                // Build the Job
-                let job = self.build_job(run, pipeline_def, step_def, clone_url);
+        for &(orig_name, sr_name) in level_run_pairs {
+            let sr = match step_run_map.get(sr_name) {
+                Some(sr) => sr,
+                None => continue,
+            };
 
-                // Mark step as Running
-                self.step_store
-                    .update_step_state(tenant_id, &sr.id, StepRunState::Running)
-                    .await?;
-
-                // Submit to scheduler
-                match self.job_submitter.submit(job).await {
-                    Ok(job_id) => {
-                        // Record job_id on step
-                        if let Some(mut step) = self.step_store.get_step(tenant_id, &sr.id).await? {
-                            step.job_id = Some(job_id.clone());
-                            step.started_at = Some(Utc::now());
-                            step.updated_at = Utc::now();
-                            self.step_store.update_step(&step).await?;
-                        }
-                        submitted.push((sr_name.to_string(), job_id));
-                        info!(step = %sr_name, "step job submitted");
-                    }
-                    Err(e) => {
-                        error!(step = %sr_name, error = %e, "failed to submit step job");
-                        self.step_store
-                            .update_step_state(tenant_id, &sr.id, StepRunState::Failed)
-                            .await?;
-                        had_failure = true;
-                        if sr.failure_strategy == FailureStrategy::Stop {
-                            had_stop_failure = true;
-                        }
-                    }
-                }
+            // Skip if already in a terminal state (e.g. condition-skipped)
+            let current = self.step_store.get_step(tenant_id, &sr.id).await?;
+            let state = current.as_ref().map(|s| s.state);
+            if matches!(state, Some(StepRunState::Skipped) | Some(StepRunState::Cancelled)) {
+                continue;
             }
 
-            // Wait for all submitted jobs in this level to complete
-            for (step_name, job_id) in &submitted {
-                let sr = match step_run_map.get(step_name.as_str()) {
-                    Some(sr) => sr,
-                    None => continue,
-                };
+            let job = match build_fn(orig_name, sr_name) {
+                Some(j) => j,
+                None => continue,
+            };
 
-                let final_state = self.wait_for_job(job_id, deadline).await;
+            self.step_store
+                .update_step_state(tenant_id, &sr.id, StepRunState::Running)
+                .await?;
 
-                let step_state = match final_state {
-                    Some(JobState::Succeeded) => StepRunState::Succeeded,
-                    Some(JobState::Cancelled) => StepRunState::Cancelled,
-                    Some(JobState::TimedOut) => StepRunState::Failed,
-                    _ => StepRunState::Failed,
-                };
-
-                // Update step with final state
-                if let Some(mut step) = self.step_store.get_step(tenant_id, &sr.id).await? {
-                    step.state = step_state;
-                    step.finished_at = Some(Utc::now());
-                    step.updated_at = Utc::now();
-                    self.step_store.update_step(&step).await?;
+            match self.job_submitter.submit(job).await {
+                Ok(job_id) => {
+                    if let Some(mut step) =
+                        self.step_store.get_step(tenant_id, &sr.id).await?
+                    {
+                        step.job_id = Some(job_id.clone());
+                        step.started_at = Some(Utc::now());
+                        step.updated_at = Utc::now();
+                        self.step_store.update_step(&step).await?;
+                    }
+                    submitted.push((sr_name.to_string(), job_id));
+                    info!(job = %sr_name, "job submitted");
                 }
-
-                info!(step = %step_name, state = ?step_state, "step completed");
-
-                if step_state == StepRunState::Failed {
+                Err(e) => {
+                    error!(job = %sr_name, error = %e, "failed to submit job");
+                    self.step_store
+                        .update_step_state(tenant_id, &sr.id, StepRunState::Failed)
+                        .await?;
                     had_failure = true;
                     if sr.failure_strategy == FailureStrategy::Stop {
-                        had_stop_failure = true;
+                        had_stop = true;
                     }
                 }
             }
         }
 
-        // Compute final pipeline state
-        let final_state = if had_stop_failure {
-            PipelineRunState::Failed
-        } else if had_failure {
-            PipelineRunState::Degraded
-        } else {
-            PipelineRunState::Succeeded
-        };
+        Ok((submitted, had_failure, had_stop))
+    }
 
-        run.state = final_state;
+    /// Wait for all submitted jobs to finish; returns (had_failure, had_stop_failure).
+    async fn wait_level(
+        &self,
+        tenant_id: &str,
+        submitted: Vec<(String, String)>,
+        step_run_map: &HashMap<&str, &StepRun>,
+        deadline: chrono::DateTime<Utc>,
+    ) -> Result<(bool, bool)> {
+        let mut had_failure = false;
+        let mut had_stop = false;
+
+        for (step_name, job_id) in &submitted {
+            let sr = match step_run_map.get(step_name.as_str()) {
+                Some(sr) => sr,
+                None => continue,
+            };
+
+            let job_state = self.wait_for_job(job_id, deadline).await;
+            let step_state = match job_state {
+                Some(JobState::Succeeded) => StepRunState::Succeeded,
+                Some(JobState::Cancelled) => StepRunState::Cancelled,
+                _ => StepRunState::Failed,
+            };
+
+            if let Some(mut step) = self.step_store.get_step(tenant_id, &sr.id).await? {
+                step.state = step_state;
+                step.finished_at = Some(Utc::now());
+                step.updated_at = Utc::now();
+                self.step_store.update_step(&step).await?;
+            }
+
+            info!(job = %step_name, state = ?step_state, "job completed");
+
+            if step_state == StepRunState::Failed {
+                had_failure = true;
+                if sr.failure_strategy == FailureStrategy::Stop {
+                    had_stop = true;
+                }
+            }
+        }
+
+        Ok((had_failure, had_stop))
+    }
+
+    /// Cancel all step_runs belonging to the given level (called on stop-failure).
+    async fn cancel_level_runs(
+        &self,
+        tenant_id: &str,
+        level: &[&str],
+        original_to_runs: &HashMap<String, Vec<&str>>,
+        step_run_map: &HashMap<&str, &StepRun>,
+    ) -> Result<()> {
+        for &orig_name in level {
+            for &rn in original_to_runs.get(orig_name).map(Vec::as_slice).unwrap_or(&[]) {
+                if let Some(sr) = step_run_map.get(rn) {
+                    let current = self.step_store.get_step(tenant_id, &sr.id).await?;
+                    if let Some(s) = current {
+                        if !s.state.is_terminal() {
+                            self.step_store
+                                .update_step_state(tenant_id, &sr.id, StepRunState::Cancelled)
+                                .await?;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Evaluate `if` conditions and mark non-matching runs as Skipped.
+    async fn evaluate_conditions(
+        &self,
+        tenant_id: &str,
+        step_runs: &[StepRun],
+        original_names: &[&str],
+        expr_ctx: &ExpressionContext,
+        condition_for: impl Fn(&str) -> Option<String>,
+    ) -> Result<()> {
+        for sr in step_runs {
+            if let Some(orig) = find_original_name(&sr.step_name, original_names) {
+                if let Some(cond) = condition_for(orig) {
+                    if !evaluate_condition(&cond, expr_ctx) {
+                        self.step_store
+                            .update_step_state(tenant_id, &sr.id, StepRunState::Skipped)
+                            .await?;
+                        info!(step = %sr.step_name, "skipped (condition not met)");
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn mark_run_started(&self, run: &mut PipelineRun) -> Result<()> {
+        run.state = PipelineRunState::Running;
+        run.started_at = Some(Utc::now());
+        run.updated_at = Utc::now();
+        self.run_store.update_run(run).await
+    }
+
+    async fn finalize_run(
+        &self,
+        run: &mut PipelineRun,
+        had_failure: bool,
+        had_stop_failure: bool,
+    ) -> Result<PipelineRunState> {
+        let state = compute_final_state(had_failure, had_stop_failure);
+        run.state = state;
         run.finished_at = Some(Utc::now());
         run.updated_at = Utc::now();
         self.run_store.update_run(run).await?;
-
-        info!(
-            run_id = %run.id,
-            state = ?final_state,
-            "pipeline run completed"
-        );
-
-        Ok(final_state)
+        info!(run_id = %run.id, state = ?state, "pipeline run completed");
+        Ok(state)
     }
 
-    /// Build a Job from a pipeline step definition.
+    // ── Job builders ─────────────────────────────────────────────────────────
+
+    fn build_job_from_jobdef(
+        &self,
+        run: &PipelineRun,
+        pipeline_def: &PipelineDef,
+        job_name: &str,
+        job_def: &JobDef,
+        clone_url: Option<&str>,
+    ) -> Job {
+        let env_vars = build_env_vars(
+            &pipeline_def.env,
+            &job_def.env,
+            run,
+            "PIPELINE_JOB_NAME",
+            job_name,
+            None, // jobs mode: checkout is host-side, no PIPELINE_CLONE_URL
+        );
+
+        let checkout = clone_url.map(|url| CheckoutSpec {
+            clone_url: url.to_string(),
+            sha: run.commit_sha.clone(),
+            submodules: pipeline_def.checkout.submodules,
+        });
+
+        let artifact_downloads: Vec<ArtifactDownload> = job_def
+            .needs
+            .iter()
+            .filter_map(|needed| {
+                let needed_def = pipeline_def.jobs.get(needed)?;
+                if needed_def.artifact_upload_paths().is_empty() {
+                    return None;
+                }
+                Some(ArtifactDownload { run_id: run.id.clone(), job_name: needed.clone() })
+            })
+            .collect();
+
+        let artifact_upload_paths = job_def.artifact_upload_paths();
+        let artifact_upload_key =
+            (!artifact_upload_paths.is_empty()).then(|| job_name.to_string());
+
+        let (cpu, memory, timeout) = resolve_resources(job_def.resources.as_ref(), job_def.timeout);
+        let runner_image = job_def
+            .effective_image(pipeline_def.image.as_deref())
+            .unwrap_or("alpine:latest")
+            .to_string();
+
+        Job::new(JobSpec {
+            deployment_id: run.id.clone(),
+            project_id: run.repo_id.clone(),
+            workspace_id: run.tenant_id.clone(),
+            tenant_id: run.tenant_id.clone(),
+            runner_image,
+            env_vars,
+            resources: make_resource_spec(cpu, memory, timeout),
+            priority_tier: PriorityTier::Standard,
+            framework: "pipeline".to_string(),
+            idempotency_key: None,
+            registry_credentials: None,
+            commands: job_def.commands.clone(),
+            checkout,
+            artifact_downloads,
+            artifact_upload_paths,
+            artifact_upload_key,
+        })
+    }
+
     fn build_job(
         &self,
         run: &PipelineRun,
@@ -305,71 +518,15 @@ impl DagExecutor {
         step_def: &StepDef,
         clone_url: Option<&str>,
     ) -> Job {
-        let branch = run.ref_name.replace("refs/heads/", "");
+        let env_vars = build_env_vars(
+            &pipeline_def.env,
+            &step_def.env,
+            run,
+            "PIPELINE_STEP_NAME",
+            &step_def.name,
+            clone_url,
+        );
 
-        // Build environment variables: pipeline globals → step env → run env_vars → built-ins
-        let mut env_vars: Vec<EnvVar> = Vec::new();
-
-        // 1. Pipeline-level env
-        for (k, v) in &pipeline_def.env {
-            env_vars.push(EnvVar {
-                name: k.clone(),
-                value: v.clone(),
-            });
-        }
-
-        // 2. Step-level env (overrides pipeline)
-        for (k, v) in &step_def.env {
-            env_vars.retain(|e| e.name != *k);
-            env_vars.push(EnvVar {
-                name: k.clone(),
-                value: v.clone(),
-            });
-        }
-
-        // 3. Run-level env_vars (vault secrets + caller env — overrides everything)
-        for (k, v) in &run.env_vars {
-            env_vars.retain(|e| e.name != *k);
-            env_vars.push(EnvVar {
-                name: k.clone(),
-                value: v.clone(),
-            });
-        }
-
-        // 4. Built-in pipeline env vars (highest priority)
-        let builtins = [
-            ("PIPELINE_RUN_ID", run.id.as_str()),
-            ("PIPELINE_REF", run.ref_name.as_str()),
-            ("PIPELINE_SHA", run.commit_sha.as_str()),
-            ("PIPELINE_BRANCH", &branch),
-            (
-                "PIPELINE_EVENT",
-                match &run.trigger {
-                    muli_core::pipeline::PipelineTrigger::Push { .. } => "push",
-                    muli_core::pipeline::PipelineTrigger::PullRequest { .. } => "pull_request",
-                    muli_core::pipeline::PipelineTrigger::Manual { .. } => "manual",
-                    muli_core::pipeline::PipelineTrigger::Schedule { .. } => "schedule",
-                    muli_core::pipeline::PipelineTrigger::Retry { .. } => "retry",
-                },
-            ),
-            ("PIPELINE_STEP_NAME", &step_def.name),
-        ];
-        for (k, v) in &builtins {
-            env_vars.retain(|e| e.name != *k);
-            env_vars.push(EnvVar {
-                name: k.to_string(),
-                value: v.to_string(),
-            });
-        }
-
-        if let Some(url) = clone_url {
-            env_vars.push(EnvVar {
-                name: "PIPELINE_CLONE_URL".to_string(),
-                value: url.to_string(),
-            });
-        }
-
-        // Build commands with auto-checkout prepended
         let mut commands = Vec::new();
         if clone_url.is_some() {
             commands.push(
@@ -378,41 +535,30 @@ impl DagExecutor {
         }
         commands.extend(step_def.commands.clone());
 
-        // Parse resource limits
-        let (cpu, memory) = match &step_def.resources {
-            Some(r) => (
-                r.cpu.clone().unwrap_or_else(|| "1000m".to_string()),
-                r.memory.clone().unwrap_or_else(|| "512Mi".to_string()),
-            ),
-            None => ("1000m".to_string(), "512Mi".to_string()),
-        };
-        let timeout = step_def.timeout.unwrap_or(1800);
+        let (cpu, memory, timeout) = resolve_resources(step_def.resources.as_ref(), step_def.timeout);
 
-        let spec = JobSpec {
+        Job::new(JobSpec {
             deployment_id: run.id.clone(),
             project_id: run.repo_id.clone(),
             workspace_id: run.tenant_id.clone(),
             tenant_id: run.tenant_id.clone(),
             runner_image: step_def.image.clone(),
             env_vars,
-            resources: ResourceSpec {
-                cpu_request: cpu.clone(),
-                cpu_limit: cpu,
-                memory_request: memory.clone(),
-                memory_limit: memory,
-                timeout_seconds: timeout,
-            },
+            resources: make_resource_spec(cpu, memory, timeout),
             priority_tier: PriorityTier::Standard,
             framework: "pipeline".to_string(),
-            idempotency_key: None, // Matrix-expanded steps need unique keys; let Job::new() generate unique IDs
+            idempotency_key: None,
             registry_credentials: None,
             commands,
-        };
-
-        Job::new(spec)
+            checkout: None,
+            artifact_downloads: vec![],
+            artifact_upload_paths: vec![],
+            artifact_upload_key: None,
+        })
     }
 
-    /// Poll the job store until the job reaches a terminal state or deadline.
+    // ── Polling ───────────────────────────────────────────────────────────────
+
     async fn wait_for_job(
         &self,
         job_id: &str,
@@ -420,24 +566,18 @@ impl DagExecutor {
     ) -> Option<JobState> {
         loop {
             if Utc::now() > deadline {
-                warn!(job_id = %job_id, "pipeline deadline exceeded while waiting for job");
+                warn!(job_id, "pipeline deadline exceeded");
                 return Some(JobState::TimedOut);
             }
-
             match self.job_store.get_job(job_id).await {
-                Ok(Some(job)) if job.state.is_terminal() => {
-                    return Some(job.state);
-                }
-                Ok(Some(_)) => {
-                    // Still running, wait and poll again
-                    tokio::time::sleep(POLL_INTERVAL).await;
-                }
+                Ok(Some(job)) if job.state.is_terminal() => return Some(job.state),
+                Ok(Some(_)) => tokio::time::sleep(POLL_INTERVAL).await,
                 Ok(None) => {
-                    error!(job_id = %job_id, "job disappeared from store");
+                    error!(job_id, "job disappeared from store");
                     return None;
                 }
                 Err(e) => {
-                    error!(job_id = %job_id, error = %e, "error polling job status");
+                    error!(job_id, error = %e, "error polling job status");
                     tokio::time::sleep(POLL_INTERVAL).await;
                 }
             }
@@ -445,8 +585,114 @@ impl DagExecutor {
     }
 }
 
-/// Find the original step definition name for a possibly matrix-expanded step_run name.
-/// "test (version=1.80)" → "test", "test" → "test"
+// ── Free helpers ──────────────────────────────────────────────────────────────
+
+/// Build the env var list: pipeline → item → run → builtins.
+/// `clone_url` is only set in steps mode (adds PIPELINE_CLONE_URL).
+fn build_env_vars(
+    pipeline_env: &std::collections::HashMap<String, String>,
+    item_env: &std::collections::HashMap<String, String>,
+    run: &PipelineRun,
+    name_key: &str,
+    name_val: &str,
+    clone_url: Option<&str>,
+) -> Vec<EnvVar> {
+    let mut env: Vec<EnvVar> = Vec::new();
+
+    let branch = run.ref_name.replace("refs/heads/", "");
+
+    // 1. Pipeline-level
+    for (k, v) in pipeline_env {
+        env.push(EnvVar { name: k.clone(), value: v.clone() });
+    }
+    // 2. Item-level (overrides pipeline)
+    for (k, v) in item_env {
+        env.retain(|e| e.name != *k);
+        env.push(EnvVar { name: k.clone(), value: v.clone() });
+    }
+    // 3. Run-level env_vars (vault secrets + caller — overrides everything)
+    for (k, v) in &run.env_vars {
+        env.retain(|e| e.name != *k);
+        env.push(EnvVar { name: k.clone(), value: v.clone() });
+    }
+    // 4. Built-in vars (always highest priority)
+    let event = trigger_event_str(&run.trigger);
+    let builtins: &[(&str, &str)] = &[
+        ("PIPELINE_RUN_ID", &run.id),
+        ("PIPELINE_REF", &run.ref_name),
+        ("PIPELINE_SHA", &run.commit_sha),
+        ("PIPELINE_BRANCH", &branch),
+        ("PIPELINE_EVENT", &event),
+        (name_key, name_val),
+    ];
+    for (k, v) in builtins {
+        env.retain(|e| e.name != *k);
+        env.push(EnvVar { name: k.to_string(), value: v.to_string() });
+    }
+    if let Some(url) = clone_url {
+        env.retain(|e| e.name != "PIPELINE_CLONE_URL");
+        env.push(EnvVar { name: "PIPELINE_CLONE_URL".into(), value: url.to_string() });
+    }
+    env
+}
+
+/// Parse CPU/memory/timeout from an optional ResourceDef, applying defaults.
+fn resolve_resources(res: Option<&ResourceDef>, timeout: Option<u64>) -> (String, String, u64) {
+    let cpu = res.and_then(|r| r.cpu.clone()).unwrap_or_else(|| "1000m".into());
+    let memory = res.and_then(|r| r.memory.clone()).unwrap_or_else(|| "512Mi".into());
+    (cpu, memory, timeout.unwrap_or(1800))
+}
+
+fn make_resource_spec(cpu: String, memory: String, timeout: u64) -> ResourceSpec {
+    ResourceSpec {
+        cpu_request: cpu.clone(),
+        cpu_limit: cpu,
+        memory_request: memory.clone(),
+        memory_limit: memory,
+        timeout_seconds: timeout,
+    }
+}
+
+fn compute_final_state(had_failure: bool, had_stop_failure: bool) -> PipelineRunState {
+    if had_stop_failure {
+        PipelineRunState::Failed
+    } else if had_failure {
+        PipelineRunState::Degraded
+    } else {
+        PipelineRunState::Succeeded
+    }
+}
+
+fn make_expr_ctx(run: &PipelineRun) -> ExpressionContext {
+    ExpressionContext {
+        branch: run.ref_name.replace("refs/heads/", ""),
+        event: trigger_event_str(&run.trigger),
+        tag: None,
+    }
+}
+
+/// Build step_run_name → &StepRun and orig_name → [expanded names] maps.
+/// The `original_to_runs` map uses owned `String` keys to avoid lifetime coupling
+/// between `step_runs` and `original_names`.
+fn build_run_maps<'a>(
+    step_runs: &'a [StepRun],
+    original_names: &[&str],
+) -> (HashMap<&'a str, &'a StepRun>, HashMap<String, Vec<&'a str>>) {
+    let step_run_map: HashMap<&'a str, &'a StepRun> =
+        step_runs.iter().map(|s| (s.step_name.as_str(), s)).collect();
+
+    let mut original_to_runs: HashMap<String, Vec<&'a str>> = HashMap::new();
+    for sr in step_runs {
+        if let Some(orig) = find_original_name(&sr.step_name, original_names) {
+            original_to_runs.entry(orig.to_string()).or_default().push(&sr.step_name);
+        }
+    }
+
+    (step_run_map, original_to_runs)
+}
+
+/// Find the base definition name for a possibly matrix-expanded run name.
+/// e.g. `"test (version=1.80)"` → `"test"`.
 fn find_original_name<'a>(sr_name: &str, original_names: &[&'a str]) -> Option<&'a str> {
     for &name in original_names {
         if sr_name == name {
@@ -459,12 +705,12 @@ fn find_original_name<'a>(sr_name: &str, original_names: &[&'a str]) -> Option<&
     None
 }
 
-fn trigger_event_str(trigger: &muli_core::pipeline::PipelineTrigger) -> String {
+fn trigger_event_str(trigger: &PipelineTrigger) -> String {
     match trigger {
-        muli_core::pipeline::PipelineTrigger::Push { .. } => "push".into(),
-        muli_core::pipeline::PipelineTrigger::PullRequest { .. } => "pull_request".into(),
-        muli_core::pipeline::PipelineTrigger::Manual { .. } => "manual".into(),
-        muli_core::pipeline::PipelineTrigger::Schedule { .. } => "schedule".into(),
-        muli_core::pipeline::PipelineTrigger::Retry { .. } => "retry".into(),
+        PipelineTrigger::Push { .. } => "push".into(),
+        PipelineTrigger::PullRequest { .. } => "pull_request".into(),
+        PipelineTrigger::Manual { .. } => "manual".into(),
+        PipelineTrigger::Schedule { .. } => "schedule".into(),
+        PipelineTrigger::Retry { .. } => "retry".into(),
     }
 }

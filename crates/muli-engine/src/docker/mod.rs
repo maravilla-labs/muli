@@ -3,6 +3,7 @@
 
 //! Docker client and container management primitives.
 
+pub mod checkout;
 pub mod cleanup;
 pub mod client;
 pub mod container;

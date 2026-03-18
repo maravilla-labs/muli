@@ -46,10 +46,18 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
         config.max_concurrent_jobs,
     ));
 
-    let executor = Arc::new(DockerExecutor::new(
-        docker.clone(),
-        resource_manager.clone(),
+    let artifact_storage = Arc::new(muli_pipeline::artifact::storage::ArtifactStorage::new(
+        &std::path::PathBuf::from(&config.data_dir),
     ));
+
+    let artifact_manager = Arc::new(muli_pipeline::artifact::manager::ArtifactManager::new(
+        artifact_storage.clone(),
+    ));
+
+    let executor = Arc::new(
+        DockerExecutor::new(docker.clone(), resource_manager.clone())
+            .with_artifact_handler(artifact_manager),
+    );
 
     let log_collectors: Arc<DashMap<String, Arc<LogCollector>>> = Arc::new(DashMap::new());
     let cancel = CancellationToken::new();
@@ -274,6 +282,7 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
         log_collectors,
         git_storage,
         pipeline_job_submitter,
+        artifact_storage,
         cancel,
     )
     .await?;

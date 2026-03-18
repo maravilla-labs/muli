@@ -3,6 +3,7 @@
 
 //! Job domain models, state machine, and priority scoring.
 
+pub mod artifact_handler;
 pub mod model;
 pub mod priority;
 pub mod state_machine;

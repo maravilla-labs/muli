@@ -709,3 +709,490 @@ steps:
         );
     }
 }
+
+// ── Helpers for jobs: format tests ───────────────────────────────────────────
+
+/// A job submitter that captures submitted Jobs for later inspection.
+struct CapturingJobSubmitter {
+    job_store: Arc<dyn JobStore>,
+    captured: Arc<tokio::sync::Mutex<Vec<muli_core::job::model::Job>>>,
+}
+
+impl CapturingJobSubmitter {
+    fn new(
+        job_store: Arc<dyn JobStore>,
+    ) -> (Self, Arc<tokio::sync::Mutex<Vec<muli_core::job::model::Job>>>) {
+        let captured = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        (Self { job_store, captured: captured.clone() }, captured)
+    }
+}
+
+#[async_trait]
+impl JobSubmitter for CapturingJobSubmitter {
+    async fn submit(&self, job: muli_core::job::model::Job) -> Result<String> {
+        let job_id = job.id.clone();
+        self.captured.lock().await.push(job.clone());
+        self.job_store.create_job(&job).await?;
+        self.job_store
+            .update_state(&job_id, JobState::Pending, JobState::Scheduled)
+            .await?;
+        self.job_store
+            .update_state(&job_id, JobState::Scheduled, JobState::Running)
+            .await?;
+        self.job_store
+            .update_state(&job_id, JobState::Running, JobState::Succeeded)
+            .await?;
+        Ok(job_id)
+    }
+}
+
+/// Create StepRun records for each job in a jobs: pipeline and return them.
+async fn create_job_step_runs(
+    run: &PipelineRun,
+    pipeline_def: &muli_pipeline::yaml::schema::PipelineDef,
+    step_store: &Arc<dyn StepRunStore>,
+) -> Vec<StepRun> {
+    let mut step_runs = Vec::new();
+    for job_name in pipeline_def.jobs.keys() {
+        let sr = StepRun::new(
+            run.id.clone(),
+            run.tenant_id.clone(),
+            job_name.clone(),
+            FailureStrategy::Stop,
+            None,
+        );
+        step_store.create_step(&sr).await.unwrap();
+        step_runs.push(sr);
+    }
+    step_runs
+}
+
+// ── jobs: format tests ────────────────────────────────────────────────────────
+
+/// Basic jobs: format — single job executes and succeeds.
+#[tokio::test]
+async fn test_jobs_format_basic_execution() {
+    let (_factory, pipeline_store, run_store, step_store, job_store, _dir) = make_stores().await;
+
+    let yaml = r#"
+name: ci
+image: alpine:latest
+jobs:
+  test:
+    commands: [echo "running tests"]
+"#;
+
+    let pipeline_def = parse_pipeline(yaml).unwrap();
+    let pipeline = Pipeline::new("t1".into(), "repo1".into(), "ci".into(), "sha".into());
+    pipeline_store.upsert_pipeline(&pipeline).await.unwrap();
+
+    let mut run = PipelineRun::new(
+        pipeline.id.clone(),
+        "t1".into(),
+        "repo1".into(),
+        1,
+        "abc123".into(),
+        "refs/heads/main".into(),
+        PipelineTrigger::Push { ref_name: "refs/heads/main".into() },
+        yaml.into(),
+    );
+    run_store.create_run(&run).await.unwrap();
+
+    let step_runs = create_job_step_runs(&run, &pipeline_def, &step_store).await;
+
+    let submitter: Arc<dyn JobSubmitter> = Arc::new(MockJobSubmitter { job_store: job_store.clone() });
+    let executor = DagExecutor::new(run_store.clone(), step_store.clone(), job_store.clone(), submitter);
+
+    let result = executor.execute(&mut run, &pipeline_def, &step_runs, None).await.unwrap();
+    assert_eq!(result, PipelineRunState::Succeeded);
+
+    let steps = step_store.list_by_run("t1", &run.id).await.unwrap();
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].state, StepRunState::Succeeded);
+    assert!(steps[0].job_id.is_some());
+}
+
+/// jobs: with needs: — DAG ordering respected across multiple levels.
+#[tokio::test]
+async fn test_jobs_format_dag_with_needs() {
+    let (_factory, pipeline_store, run_store, step_store, job_store, _dir) = make_stores().await;
+
+    let yaml = r#"
+name: ci
+image: node:22-alpine
+jobs:
+  install:
+    commands: [npm ci]
+  lint:
+    needs: install
+    commands: [npm run lint]
+  build:
+    needs: [lint, install]
+    commands: [npm run build]
+  deploy:
+    needs: build
+    commands: [kubectl apply -f k8s/]
+"#;
+
+    let pipeline_def = parse_pipeline(yaml).unwrap();
+    let pipeline = Pipeline::new("t1".into(), "repo1".into(), "ci".into(), "sha".into());
+    pipeline_store.upsert_pipeline(&pipeline).await.unwrap();
+
+    let mut run = PipelineRun::new(
+        pipeline.id.clone(),
+        "t1".into(),
+        "repo1".into(),
+        1,
+        "deadbeef".into(),
+        "refs/heads/main".into(),
+        PipelineTrigger::Push { ref_name: "refs/heads/main".into() },
+        yaml.into(),
+    );
+    run_store.create_run(&run).await.unwrap();
+
+    let step_runs = create_job_step_runs(&run, &pipeline_def, &step_store).await;
+
+    let submitter: Arc<dyn JobSubmitter> = Arc::new(MockJobSubmitter { job_store: job_store.clone() });
+    let executor = DagExecutor::new(run_store.clone(), step_store.clone(), job_store.clone(), submitter);
+
+    let result = executor.execute(&mut run, &pipeline_def, &step_runs, None).await.unwrap();
+    assert_eq!(result, PipelineRunState::Succeeded);
+
+    // All 4 jobs succeeded
+    let steps = step_store.list_by_run("t1", &run.id).await.unwrap();
+    assert_eq!(steps.len(), 4);
+    for s in &steps {
+        assert_eq!(s.state, StepRunState::Succeeded, "job {} should succeed", s.step_name);
+        assert!(s.job_id.is_some(), "job {} should have job_id", s.step_name);
+    }
+}
+
+/// jobs: with artifacts.paths — JobSpec gets artifact_upload_paths and artifact_upload_key.
+#[tokio::test]
+async fn test_jobs_artifact_upload_paths_in_jobspec() {
+    let (_factory, pipeline_store, run_store, step_store, job_store, _dir) = make_stores().await;
+
+    let yaml = r#"
+name: ci
+image: node:22-alpine
+jobs:
+  build:
+    commands: [npm run build]
+    artifacts:
+      paths: [dist/, coverage/]
+"#;
+
+    let pipeline_def = parse_pipeline(yaml).unwrap();
+    let pipeline = Pipeline::new("t1".into(), "repo1".into(), "ci".into(), "sha".into());
+    pipeline_store.upsert_pipeline(&pipeline).await.unwrap();
+
+    let mut run = PipelineRun::new(
+        pipeline.id.clone(),
+        "t1".into(),
+        "repo1".into(),
+        1,
+        "abc".into(),
+        "refs/heads/main".into(),
+        PipelineTrigger::Push { ref_name: "refs/heads/main".into() },
+        yaml.into(),
+    );
+    run_store.create_run(&run).await.unwrap();
+
+    let step_runs = create_job_step_runs(&run, &pipeline_def, &step_store).await;
+    let (submitter, captured) = CapturingJobSubmitter::new(job_store.clone());
+    let executor = DagExecutor::new(
+        run_store.clone(),
+        step_store.clone(),
+        job_store.clone(),
+        Arc::new(submitter),
+    );
+
+    let result = executor.execute(&mut run, &pipeline_def, &step_runs, None).await.unwrap();
+    assert_eq!(result, PipelineRunState::Succeeded);
+
+    let jobs = captured.lock().await;
+    assert_eq!(jobs.len(), 1);
+    let build_job = &jobs[0];
+    assert_eq!(build_job.spec.artifact_upload_paths, vec!["dist/", "coverage/"]);
+    assert_eq!(build_job.spec.artifact_upload_key, Some("build".to_string()));
+    // No downloads (no needs:)
+    assert!(build_job.spec.artifact_downloads.is_empty());
+}
+
+/// jobs: needs + dependency has artifacts → artifact_downloads populated in downstream job.
+#[tokio::test]
+async fn test_jobs_artifact_downloads_from_needs() {
+    let (_factory, pipeline_store, run_store, step_store, job_store, _dir) = make_stores().await;
+
+    let yaml = r#"
+name: ci
+image: node:22-alpine
+jobs:
+  install:
+    commands: [npm ci]
+    artifacts:
+      paths: [node_modules/]
+  test:
+    needs: install
+    commands: [npm test]
+  build:
+    needs: [install, test]
+    commands: [npm run build]
+    artifacts:
+      paths: [dist/]
+"#;
+
+    let pipeline_def = parse_pipeline(yaml).unwrap();
+    let pipeline = Pipeline::new("t1".into(), "repo1".into(), "ci".into(), "sha".into());
+    pipeline_store.upsert_pipeline(&pipeline).await.unwrap();
+
+    let mut run = PipelineRun::new(
+        pipeline.id.clone(),
+        "t1".into(),
+        "repo1".into(),
+        1,
+        "abc".into(),
+        "refs/heads/main".into(),
+        PipelineTrigger::Push { ref_name: "refs/heads/main".into() },
+        yaml.into(),
+    );
+    run_store.create_run(&run).await.unwrap();
+
+    let step_runs = create_job_step_runs(&run, &pipeline_def, &step_store).await;
+    let (submitter, captured) = CapturingJobSubmitter::new(job_store.clone());
+    let executor = DagExecutor::new(
+        run_store.clone(),
+        step_store.clone(),
+        job_store.clone(),
+        Arc::new(submitter),
+    );
+
+    executor.execute(&mut run, &pipeline_def, &step_runs, None).await.unwrap();
+
+    let jobs = captured.lock().await;
+    let by_name: HashMap<&str, &muli_core::job::model::Job> =
+        jobs.iter().map(|j| (j.spec.env_vars.iter()
+            .find(|e| e.name == "PIPELINE_JOB_NAME")
+            .map(|e| e.value.as_str())
+            .unwrap_or(""), j))
+        .collect();
+
+    // install: no downloads, uploads node_modules/
+    let install = by_name["install"];
+    assert!(install.spec.artifact_downloads.is_empty());
+    assert_eq!(install.spec.artifact_upload_paths, vec!["node_modules/"]);
+    assert_eq!(install.spec.artifact_upload_key, Some("install".to_string()));
+
+    // test: needs install (which has artifacts) → downloads install
+    let test = by_name["test"];
+    assert_eq!(test.spec.artifact_downloads.len(), 1);
+    assert_eq!(test.spec.artifact_downloads[0].job_name, "install");
+    assert_eq!(test.spec.artifact_downloads[0].run_id, run.id);
+    // test has no artifacts itself
+    assert!(test.spec.artifact_upload_paths.is_empty());
+    assert!(test.spec.artifact_upload_key.is_none());
+
+    // build: needs install (artifacts) + test (no artifacts) → 1 download (install only)
+    let build = by_name["build"];
+    assert_eq!(build.spec.artifact_downloads.len(), 1);
+    assert_eq!(build.spec.artifact_downloads[0].job_name, "install");
+    assert_eq!(build.spec.artifact_upload_paths, vec!["dist/"]);
+}
+
+/// Pipeline-level image is inherited by jobs that don't specify their own image.
+#[tokio::test]
+async fn test_jobs_pipeline_level_image_inheritance() {
+    let (_factory, pipeline_store, run_store, step_store, job_store, _dir) = make_stores().await;
+
+    let yaml = r#"
+name: ci
+image: node:22-alpine
+jobs:
+  test:
+    commands: [npm test]
+  deploy:
+    image: alpine/kubectl
+    commands: [kubectl apply -f k8s/]
+"#;
+
+    let pipeline_def = parse_pipeline(yaml).unwrap();
+    let pipeline = Pipeline::new("t1".into(), "repo1".into(), "ci".into(), "sha".into());
+    pipeline_store.upsert_pipeline(&pipeline).await.unwrap();
+
+    let mut run = PipelineRun::new(
+        pipeline.id.clone(),
+        "t1".into(),
+        "repo1".into(),
+        1,
+        "abc".into(),
+        "refs/heads/main".into(),
+        PipelineTrigger::Push { ref_name: "refs/heads/main".into() },
+        yaml.into(),
+    );
+    run_store.create_run(&run).await.unwrap();
+
+    let step_runs = create_job_step_runs(&run, &pipeline_def, &step_store).await;
+    let (submitter, captured) = CapturingJobSubmitter::new(job_store.clone());
+    let executor = DagExecutor::new(
+        run_store.clone(),
+        step_store.clone(),
+        job_store.clone(),
+        Arc::new(submitter),
+    );
+
+    executor.execute(&mut run, &pipeline_def, &step_runs, None).await.unwrap();
+
+    let jobs = captured.lock().await;
+    let by_image: HashMap<&str, &str> =
+        jobs.iter().map(|j| (j.spec.runner_image.as_str(),
+            j.spec.env_vars.iter().find(|e| e.name == "PIPELINE_JOB_NAME")
+                .map(|e| e.value.as_str()).unwrap_or("")))
+        .map(|(img, name)| (name, img))
+        .collect();
+
+    // test job inherits pipeline-level image
+    assert_eq!(by_image["test"], "node:22-alpine");
+    // deploy job uses its own image
+    assert_eq!(by_image["deploy"], "alpine/kubectl");
+}
+
+/// PIPELINE_JOB_NAME is set (not PIPELINE_STEP_NAME) in jobs mode.
+#[tokio::test]
+async fn test_jobs_env_var_job_name_set() {
+    let (_factory, pipeline_store, run_store, step_store, job_store, _dir) = make_stores().await;
+
+    let yaml = r#"
+name: ci
+image: alpine:latest
+jobs:
+  my-job:
+    commands: [echo hi]
+"#;
+
+    let pipeline_def = parse_pipeline(yaml).unwrap();
+    let pipeline = Pipeline::new("t1".into(), "repo1".into(), "ci".into(), "sha".into());
+    pipeline_store.upsert_pipeline(&pipeline).await.unwrap();
+
+    let mut run = PipelineRun::new(
+        pipeline.id.clone(),
+        "t1".into(),
+        "repo1".into(),
+        1,
+        "sha1".into(),
+        "refs/heads/main".into(),
+        PipelineTrigger::Push { ref_name: "refs/heads/main".into() },
+        yaml.into(),
+    );
+    run_store.create_run(&run).await.unwrap();
+
+    let step_runs = create_job_step_runs(&run, &pipeline_def, &step_store).await;
+    let (submitter, captured) = CapturingJobSubmitter::new(job_store.clone());
+    let executor = DagExecutor::new(
+        run_store.clone(),
+        step_store.clone(),
+        job_store.clone(),
+        Arc::new(submitter),
+    );
+
+    executor.execute(&mut run, &pipeline_def, &step_runs, None).await.unwrap();
+
+    let jobs = captured.lock().await;
+    let env: HashMap<&str, &str> = jobs[0].spec.env_vars.iter()
+        .map(|e| (e.name.as_str(), e.value.as_str()))
+        .collect();
+
+    assert_eq!(env.get("PIPELINE_JOB_NAME"), Some(&"my-job"), "PIPELINE_JOB_NAME must be set");
+    assert!(env.get("PIPELINE_STEP_NAME").is_none(), "PIPELINE_STEP_NAME must not be set in jobs mode");
+    assert!(env.contains_key("PIPELINE_RUN_ID"));
+    assert_eq!(env.get("PIPELINE_SHA"), Some(&"sha1"));
+}
+
+/// jobs: with checkout spec — JobSpec.checkout is populated when clone_url is given.
+#[tokio::test]
+async fn test_jobs_checkout_spec_populated() {
+    let (_factory, pipeline_store, run_store, step_store, job_store, _dir) = make_stores().await;
+
+    let yaml = r#"
+name: ci
+image: alpine:latest
+checkout:
+  submodules: true
+jobs:
+  build:
+    commands: [make]
+"#;
+
+    let pipeline_def = parse_pipeline(yaml).unwrap();
+    let pipeline = Pipeline::new("t1".into(), "repo1".into(), "ci".into(), "sha".into());
+    pipeline_store.upsert_pipeline(&pipeline).await.unwrap();
+
+    let mut run = PipelineRun::new(
+        pipeline.id.clone(),
+        "t1".into(),
+        "repo1".into(),
+        1,
+        "cafebabe".into(),
+        "refs/heads/main".into(),
+        PipelineTrigger::Push { ref_name: "refs/heads/main".into() },
+        yaml.into(),
+    );
+    run_store.create_run(&run).await.unwrap();
+
+    let step_runs = create_job_step_runs(&run, &pipeline_def, &step_store).await;
+    let (submitter, captured) = CapturingJobSubmitter::new(job_store.clone());
+    let executor = DagExecutor::new(
+        run_store.clone(),
+        step_store.clone(),
+        job_store.clone(),
+        Arc::new(submitter),
+    );
+
+    let clone_url = "https://x-token:secret@git.example.com/t1/ns/repo.git";
+    executor.execute(&mut run, &pipeline_def, &step_runs, Some(clone_url)).await.unwrap();
+
+    let jobs = captured.lock().await;
+    let checkout = jobs[0].spec.checkout.as_ref().expect("checkout should be set");
+    assert_eq!(checkout.clone_url, clone_url);
+    assert_eq!(checkout.sha, "cafebabe");
+    assert!(checkout.submodules, "submodules flag should be passed through");
+}
+
+/// jobs: a failing job propagates failure to the run.
+#[tokio::test]
+async fn test_jobs_format_failure_propagated() {
+    let (_factory, pipeline_store, run_store, step_store, job_store, _dir) = make_stores().await;
+
+    let yaml = r#"
+name: ci
+image: alpine:latest
+jobs:
+  test:
+    commands: [exit 1]
+"#;
+
+    let pipeline_def = parse_pipeline(yaml).unwrap();
+    let pipeline = Pipeline::new("t1".into(), "repo1".into(), "ci".into(), "sha".into());
+    pipeline_store.upsert_pipeline(&pipeline).await.unwrap();
+
+    let mut run = PipelineRun::new(
+        pipeline.id.clone(),
+        "t1".into(),
+        "repo1".into(),
+        1,
+        "abc".into(),
+        "refs/heads/main".into(),
+        PipelineTrigger::Push { ref_name: "refs/heads/main".into() },
+        yaml.into(),
+    );
+    run_store.create_run(&run).await.unwrap();
+
+    let step_runs = create_job_step_runs(&run, &pipeline_def, &step_store).await;
+    let submitter: Arc<dyn JobSubmitter> = Arc::new(FailingJobSubmitter { job_store: job_store.clone() });
+    let executor = DagExecutor::new(run_store.clone(), step_store.clone(), job_store.clone(), submitter);
+
+    let result = executor.execute(&mut run, &pipeline_def, &step_runs, None).await.unwrap();
+    assert_eq!(result, PipelineRunState::Failed);
+
+    let steps = step_store.list_by_run("t1", &run.id).await.unwrap();
+    assert_eq!(steps[0].state, StepRunState::Failed);
+}

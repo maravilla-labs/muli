@@ -41,11 +41,50 @@ impl PipelineServiceImpl {
 
     pub async fn download_artifact_impl(
         &self,
-        _request: Request<DownloadArtifactRequest>,
+        request: Request<DownloadArtifactRequest>,
     ) -> Result<Response<super::BoxStream<ArtifactChunk>>, Status> {
-        Err(Status::unimplemented(
-            "DownloadArtifact requires blob storage integration",
-        ))
+        let (caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
+
+        if req.artifact_id.is_empty() {
+            return Err(Status::invalid_argument("artifact_id is required"));
+        }
+
+        // Look up the artifact record to get run_id and name
+        let artifact = self
+            .artifact_store
+            .get_artifact(&caller_tenant, &req.artifact_id)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to get artifact: {e}")))?
+            .ok_or_else(|| Status::not_found("Artifact not found"))?;
+
+        let data = self
+            .artifact_storage
+            .download(&caller_tenant, &artifact.run_id, &artifact.name)
+            .await
+            .map_err(|e| Status::not_found(format!("Artifact data not found: {e}")))?;
+
+        // Stream in 64KB chunks
+        const CHUNK_SIZE: usize = 64 * 1024;
+        let chunks: Vec<Result<ArtifactChunk, Status>> = data
+            .chunks(CHUNK_SIZE)
+            .map(|chunk| {
+                Ok(ArtifactChunk {
+                    data: chunk.to_vec(),
+                })
+            })
+            .collect();
+
+        info!(
+            operation = "download_artifact",
+            tenant_id = %caller_tenant,
+            run_id = %artifact.run_id,
+            artifact_id = %req.artifact_id,
+            artifact_name = %artifact.name,
+            "audit: artifact downloaded"
+        );
+
+        let stream = tokio_stream::iter(chunks);
+        Ok(Response::new(Box::pin(stream)))
     }
 
     pub async fn list_caches_impl(
