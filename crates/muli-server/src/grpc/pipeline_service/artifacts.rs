@@ -174,22 +174,28 @@ impl PipelineServiceImpl {
             .join(&repo.namespace)
             .join(format!("{}.git", &repo.name));
 
-        if req.commit_sha.is_empty() {
-            return Err(Status::invalid_argument("commit_sha is required"));
-        }
         let commit_ref = req.commit_sha.clone();
 
         let yaml_content = tokio::task::spawn_blocking({
             let repo_path = repo_path.clone();
-            let commit_ref = commit_ref.clone();
             move || -> Result<Option<String>, Status> {
                 let git_repo = git2::Repository::open(&repo_path)
-                    .map_err(|e| Status::internal(format!("Cannot open repo: {e}")))?;
+                    .map_err(|e| Status::internal(format!("Cannot open git repository: {e}")))?;
 
-                // Resolve the reference (can be a SHA, branch name, or ref)
+                // Resolve the ref; fall back to HEAD when commit_sha was not provided.
+                let resolved = if commit_ref.is_empty() {
+                    git_repo
+                        .head()
+                        .and_then(|h| h.peel_to_commit())
+                        .map(|c| c.id().to_string())
+                        .map_err(|e| Status::not_found(format!("Repository has no commits: {e}")))?
+                } else {
+                    commit_ref.clone()
+                };
+
                 let obj = git_repo
-                    .revparse_single(&commit_ref)
-                    .map_err(|e| Status::not_found(format!("Cannot resolve ref '{commit_ref}': {e}")))?;
+                    .revparse_single(&resolved)
+                    .map_err(|e| Status::not_found(format!("Cannot resolve ref '{resolved}': {e}")))?;
 
                 let commit = obj
                     .peel_to_commit()
