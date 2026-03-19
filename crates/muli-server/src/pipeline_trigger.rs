@@ -16,8 +16,9 @@ use muli_core::git::{GitPermission, GitToken};
 use muli_core::pipeline::{FailureStrategy, Pipeline, PipelineRun, PipelineTrigger, StepRun};
 use muli_core::token_hash;
 use muli_core::traits::{
-    GitTokenStore, JobStore, OrgSecretStore, OrgStore, PipelineRunStore, PipelineSecretStore,
-    PipelineStore, PullRequestStore, RepositoryStore, StepRunStore, TenantLimitsStore,
+    ArtifactStore, GitTokenStore, JobStore, OrgSecretStore, OrgStore, PipelineRunStore,
+    PipelineSecretStore, PipelineStore, PullRequestStore, RepositoryStore, StepRunStore,
+    TenantLimitsStore,
 };
 use muli_git::api::PipelineTriggerHook;
 use muli_git::storage::FilesystemStorage;
@@ -60,6 +61,7 @@ pub struct PipelineTriggerImpl {
     org_secret_store: Arc<dyn OrgSecretStore>,
     org_store: Arc<dyn OrgStore>,
     encryption_key: Option<[u8; 32]>,
+    artifact_store: Arc<dyn ArtifactStore>,
 }
 
 impl PipelineTriggerImpl {
@@ -82,6 +84,7 @@ impl PipelineTriggerImpl {
         org_secret_store: Arc<dyn OrgSecretStore>,
         org_store: Arc<dyn OrgStore>,
         encryption_key: Option<[u8; 32]>,
+        artifact_store: Arc<dyn ArtifactStore>,
     ) -> Self {
         Self {
             git_storage,
@@ -103,6 +106,7 @@ impl PipelineTriggerImpl {
             org_secret_store,
             org_store,
             encryption_key,
+            artifact_store,
         }
     }
 
@@ -394,6 +398,7 @@ impl PipelineTriggerImpl {
             );
             run.commit_message = commit_message.clone();
             run.commit_author = commit_author.clone();
+            run.webhook_data = pipeline_def.webhook.clone();
             run.triggered_by = match &trigger {
                 muli_core::pipeline::PipelineTrigger::Manual { triggered_by } => {
                     triggered_by.clone()
@@ -459,6 +464,7 @@ impl PipelineTriggerImpl {
                     "commit_sha": run.commit_sha,
                     "ref_name": run.ref_name,
                     "state": "pending",
+                    "webhook": run.webhook_data,
                 }),
             )
             .await;
@@ -618,6 +624,26 @@ impl PipelineTriggerImpl {
                 );
             }
 
+            // Query artifacts produced by this run for inclusion in the webhook payload.
+            let artifacts_json: serde_json::Value = match self
+                .artifact_store
+                .list_by_run(tenant_id, &run.id)
+                .await
+            {
+                Ok(artifacts) => serde_json::json!(
+                    artifacts.iter().map(|a| serde_json::json!({
+                        "id": a.id,
+                        "name": a.name,
+                        "step_name": a.step_name,
+                        "size_bytes": a.size_bytes,
+                    })).collect::<Vec<_>>()
+                ),
+                Err(e) => {
+                    warn!(error = %e, "pipeline trigger: failed to list artifacts for webhook");
+                    serde_json::json!([])
+                }
+            };
+
             match exec_result {
                 Ok(state) => {
                     self.deliver_pipeline_webhook(
@@ -632,6 +658,8 @@ impl PipelineTriggerImpl {
                             "commit_sha": run.commit_sha,
                             "ref_name": run.ref_name,
                             "state": format!("{state:?}").to_lowercase(),
+                            "webhook": run.webhook_data,
+                            "artifacts": artifacts_json,
                         }),
                     )
                     .await;
@@ -657,6 +685,8 @@ impl PipelineTriggerImpl {
                             "ref_name": run.ref_name,
                             "state": "failed",
                             "error": e.to_string(),
+                            "webhook": run.webhook_data,
+                            "artifacts": artifacts_json,
                         }),
                     )
                     .await;

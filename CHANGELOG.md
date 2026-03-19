@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.9] - 2026-03-19
+
+### Added
+
+- **Pipeline `webhook:` YAML field** — pipelines can now declare a top-level `webhook:` block with arbitrary key-value data (e.g. `deploy: true`). Muli passes this data through in `pipeline.started` and `pipeline.completed` webhook payloads without interpreting it, allowing consumers like Flightdeck to react to pipeline intent.
+- **Artifact metadata in pipeline webhooks** — `pipeline.completed` webhook payloads now include an `artifacts` array with id, name, step_name, and size_bytes for each artifact produced by the run, saving consumers a round-trip gRPC call.
+- **`webhook_data` on PipelineRun** — the parsed `webhook:` block from the pipeline YAML is captured at run creation time on the `PipelineRun` model, ensuring webhook payloads reflect the config that was active when the run started.
+
 ## [0.4.8] - 2026-03-19
 
 ### Added

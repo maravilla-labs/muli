@@ -29,6 +29,7 @@ message SubmitJobRequest {
   string tenant_id = 9;
   string idempotency_key = 10;
   optional RegistryCredentials registry_credentials = 11;
+  repeated string artifact_paths = 12;
 }
 
 message SubmitJobResponse {

@@ -89,6 +89,10 @@ pub struct PipelineRun {
     /// Vault secrets are prefixed with WUNDER_, custom env vars are raw.
     #[serde(default)]
     pub env_vars: HashMap<String, String>,
+    /// Arbitrary webhook data from the pipeline YAML `webhook:` block,
+    /// captured at run creation time and included in webhook payloads.
+    #[serde(default)]
+    pub webhook_data: HashMap<String, serde_json::Value>,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -122,6 +126,7 @@ impl PipelineRun {
             state: PipelineRunState::Pending,
             yaml_content,
             env_vars: HashMap::new(),
+            webhook_data: HashMap::new(),
             started_at: None,
             finished_at: None,
             created_at: now,

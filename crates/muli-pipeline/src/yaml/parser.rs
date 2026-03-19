@@ -384,4 +384,46 @@ jobs:
 "#;
         assert!(parse_pipeline(yaml).is_err());
     }
+
+    #[test]
+    fn test_parse_webhook_field() {
+        let yaml = r#"
+name: build-and-deploy
+image: node:22-alpine
+on:
+  push:
+    branches: [main]
+webhook:
+  deploy: true
+  environment: staging
+jobs:
+  build:
+    commands:
+      - npm ci
+      - npm run build
+    artifacts:
+      paths: [dist/]
+"#;
+        let def = parse_pipeline(yaml).unwrap();
+        assert_eq!(def.webhook.len(), 2);
+        assert_eq!(def.webhook.get("deploy"), Some(&serde_json::json!(true)));
+        assert_eq!(
+            def.webhook.get("environment"),
+            Some(&serde_json::json!("staging"))
+        );
+    }
+
+    #[test]
+    fn test_parse_no_webhook_field() {
+        let yaml = r#"
+name: test
+steps:
+  - name: build
+    image: rust:1.82
+    commands:
+      - cargo build
+"#;
+        let def = parse_pipeline(yaml).unwrap();
+        assert!(def.webhook.is_empty());
+    }
 }

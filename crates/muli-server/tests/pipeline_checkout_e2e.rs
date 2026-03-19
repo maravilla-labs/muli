@@ -240,6 +240,7 @@ impl CheckoutE2eEnv {
             org_secret_store.clone(),
             org_store.clone(),
             None,
+            artifact_store.clone(),
         ));
 
         let app = git_router(GitRouterConfig {

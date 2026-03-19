@@ -52,7 +52,7 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
 
     let artifact_manager = Arc::new(muli_pipeline::artifact::manager::ArtifactManager::new(
         artifact_storage.clone(),
-    ));
+    ).with_artifact_store(stores.artifact_store.clone()));
 
     let executor = Arc::new(
         DockerExecutor::new(docker.clone(), resource_manager.clone())
@@ -193,6 +193,7 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
                 stores.org_secret_store.clone(),
                 stores.org_store.clone(),
                 encryption_key,
+                stores.artifact_store.clone(),
             )))
         } else {
             None

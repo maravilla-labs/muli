@@ -176,6 +176,13 @@ impl JobServiceImpl {
                     password: rc.password,
                 });
 
+        let artifact_upload_paths = req.artifact_paths.clone();
+        let artifact_upload_key = if req.artifact_paths.is_empty() {
+            None
+        } else {
+            Some(req.deployment_id.clone())
+        };
+
         let spec = JobSpec {
             deployment_id: req.deployment_id,
             project_id: req.project_id,
@@ -196,8 +203,8 @@ impl JobServiceImpl {
             substeps: vec![],
             checkout: None,
             artifact_downloads: vec![],
-            artifact_upload_paths: vec![],
-            artifact_upload_key: None,
+            artifact_upload_paths,
+            artifact_upload_key,
             pipeline_step_run_id: None,
         };
 

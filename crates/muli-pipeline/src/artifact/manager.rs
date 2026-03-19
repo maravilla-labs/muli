@@ -17,16 +17,27 @@ use tracing::{info, warn};
 
 use muli_core::error::{MuliError, Result};
 use muli_core::job::artifact_handler::ArtifactHandler;
+use muli_core::pipeline::model::Artifact;
+use muli_core::traits::ArtifactStore;
 
 use super::storage::ArtifactStorage;
 
 pub struct ArtifactManager {
     storage: Arc<ArtifactStorage>,
+    artifact_store: Option<Arc<dyn ArtifactStore>>,
 }
 
 impl ArtifactManager {
     pub fn new(storage: Arc<ArtifactStorage>) -> Self {
-        Self { storage }
+        Self {
+            storage,
+            artifact_store: None,
+        }
+    }
+
+    pub fn with_artifact_store(mut self, store: Arc<dyn ArtifactStore>) -> Self {
+        self.artifact_store = Some(store);
+        self
     }
 }
 
@@ -78,16 +89,32 @@ impl ArtifactHandler for ArtifactManager {
         .await
         .map_err(|e| MuliError::Storage(format!("spawn_blocking: {e}")))??;
 
-        let size = tar_bytes.len();
-        self.storage
+        let (size_bytes, sha256) = self
+            .storage
             .upload(tenant_id, run_id, job_name, &tar_bytes)
             .await?;
+
+        // Create artifact metadata in DB so DownloadArtifact can find it
+        if let Some(ref store) = self.artifact_store {
+            let artifact = Artifact::new(
+                tenant_id.to_string(),
+                run_id.to_string(),
+                job_name.to_string(), // step_name
+                job_name.to_string(), // name
+                size_bytes,
+                sha256,
+                None, // expires_at
+            );
+            if let Err(e) = store.create_artifact(&artifact).await {
+                warn!(error = %e, "failed to create artifact metadata record");
+            }
+        }
 
         info!(
             tenant_id,
             run_id,
             job_name,
-            size_bytes = size,
+            size_bytes,
             "uploaded job artifacts"
         );
 

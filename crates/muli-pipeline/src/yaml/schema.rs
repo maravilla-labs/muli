@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineDef {
@@ -29,6 +30,10 @@ pub struct PipelineDef {
     /// Legacy steps-based format (backward compat).
     #[serde(default)]
     pub steps: Vec<StepDef>,
+    /// Arbitrary key-value data included in all webhook payloads for this pipeline.
+    /// Muli does not interpret the values — consumers (e.g. Flightdeck) read them.
+    #[serde(default)]
+    pub webhook: HashMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

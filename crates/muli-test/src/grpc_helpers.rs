@@ -59,6 +59,7 @@ pub fn test_submit_request() -> SubmitJobRequest {
         tenant_id: "test-tenant".to_string(),
         idempotency_key: String::new(),
         registry_credentials: None,
+        artifact_paths: vec![],
     }
 }
 
