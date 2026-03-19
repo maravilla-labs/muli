@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.7] - 2026-03-19
+
+### Fixed
+
+- **Real-time pipeline log streaming** — Docker containers now run with TTY mode and `TERM=dumb` to force line-buffered output, fixing an issue where all log lines arrived at once after the container exited instead of streaming incrementally. The Bollard log stream handles the `Console` output variant from TTY mode, and the follow stream no longer requests historical logs that could cause duplicate bursts.
+
+### Changed
+
+- **Log line classification in frontend** — pipeline log viewer now uses regex-based heuristics to classify error/warning lines instead of relying on stdout/stderr stream separation (which TTY mode merges). Error lines display in red, warnings in yellow.
+
 ## [0.4.6] - 2026-03-19
 
 ### Added

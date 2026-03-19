@@ -53,11 +53,14 @@ pub async fn create_container(
     labels.insert("job-id".to_string(), job_id.to_string());
     labels.insert("tenant-id".to_string(), spec.tenant_id.clone());
 
-    let env: Vec<String> = spec
+    let mut env: Vec<String> = spec
         .env_vars
         .iter()
         .map(|e| format!("{}={}", e.name, e.value))
         .collect();
+    // Suppress progress bars/spinners from build tools (cargo, npm, etc.)
+    // when running with TTY mode enabled.
+    env.push("TERM=dumb".to_string());
 
     let workspace_mount = Mount {
         target: Some("/workspace".to_string()),
@@ -100,6 +103,11 @@ pub async fn create_container(
         Some(vec!["/bin/sh".to_string(), "-c".to_string(), script])
     };
 
+    // Enable TTY only when running explicit commands, to force line-buffered output
+    // for real-time log streaming. Without commands, the container runs its default
+    // entrypoint which may hang if given a TTY (e.g. alpine's /bin/sh).
+    let tty = cmd.is_some();
+
     let config = Config {
         image: Some(spec.runner_image.clone()),
         cmd,
@@ -107,6 +115,7 @@ pub async fn create_container(
         labels: Some(labels),
         host_config: Some(host_config),
         working_dir: Some("/workspace".to_string()),
+        tty: Some(tty),
         ..Default::default()
     };
 

@@ -88,7 +88,7 @@ impl LogCollector {
                 stdout: true,
                 stderr: true,
                 timestamps: true,
-                tail: "all".to_string(),
+                tail: "0".to_string(),
                 ..Default::default()
             };
 
@@ -104,6 +104,9 @@ impl LogCollector {
                             }
                             bollard::container::LogOutput::StdErr { message } => {
                                 (LogStream::Stderr, message)
+                            }
+                            bollard::container::LogOutput::Console { message } => {
+                                (LogStream::Stdout, message)
                             }
                             _ => continue,
                         };
@@ -205,6 +208,9 @@ impl LogCollector {
                         }
                         bollard::container::LogOutput::StdErr { message } => {
                             (LogStream::Stderr, message)
+                        }
+                        bollard::container::LogOutput::Console { message } => {
+                            (LogStream::Stdout, message)
                         }
                         _ => continue,
                     };
