@@ -16,8 +16,8 @@ use muli_core::git::{GitPermission, GitToken};
 use muli_core::pipeline::{FailureStrategy, Pipeline, PipelineRun, PipelineTrigger, StepRun};
 use muli_core::token_hash;
 use muli_core::traits::{
-    GitTokenStore, JobStore, PipelineRunStore, PipelineStore, PullRequestStore, RepositoryStore,
-    StepRunStore, TenantLimitsStore,
+    GitTokenStore, JobStore, OrgSecretStore, OrgStore, PipelineRunStore, PipelineSecretStore,
+    PipelineStore, PullRequestStore, RepositoryStore, StepRunStore, TenantLimitsStore,
 };
 use muli_git::api::PipelineTriggerHook;
 use muli_git::storage::FilesystemStorage;
@@ -56,6 +56,10 @@ pub struct PipelineTriggerImpl {
     git_base_url: String,
     /// Per-repo last-trigger time for rate limiting.
     last_trigger: DashMap<String, Instant>,
+    secret_store: Arc<dyn PipelineSecretStore>,
+    org_secret_store: Arc<dyn OrgSecretStore>,
+    org_store: Arc<dyn OrgStore>,
+    encryption_key: Option<[u8; 32]>,
 }
 
 impl PipelineTriggerImpl {
@@ -74,6 +78,10 @@ impl PipelineTriggerImpl {
         webhook_store: Arc<dyn muli_core::traits::WebhookStore>,
         allow_localhost_webhooks: bool,
         git_base_url: String,
+        secret_store: Arc<dyn PipelineSecretStore>,
+        org_secret_store: Arc<dyn OrgSecretStore>,
+        org_store: Arc<dyn OrgStore>,
+        encryption_key: Option<[u8; 32]>,
     ) -> Self {
         Self {
             git_storage,
@@ -91,6 +99,10 @@ impl PipelineTriggerImpl {
             allow_localhost_webhooks,
             git_base_url,
             last_trigger: DashMap::new(),
+            secret_store,
+            org_secret_store,
+            org_store,
+            encryption_key,
         }
     }
 
@@ -388,6 +400,32 @@ impl PipelineTriggerImpl {
                 }
                 _ => tenant_id.to_string(),
             };
+
+            // Resolve secrets for push-triggered pipelines
+            let org_id = self
+                .org_store
+                .get_org_by_handle(tenant_id, &repo.namespace)
+                .await
+                .ok()
+                .flatten()
+                .map(|org| org.id);
+
+            match crate::secret_resolver::resolve_env_vars(
+                &self.secret_store,
+                &self.org_secret_store,
+                tenant_id,
+                repo_id,
+                org_id.as_deref(),
+                self.encryption_key.as_ref(),
+                HashMap::new(),
+            )
+            .await
+            {
+                Ok(env) => run.env_vars = env,
+                Err(e) => {
+                    warn!(error = %e, "pipeline trigger: failed to resolve secrets; continuing without");
+                }
+            }
 
             if let Err(e) = self.run_store.create_run(&run).await {
                 error!(error = %e, "pipeline trigger: failed to create pipeline run");

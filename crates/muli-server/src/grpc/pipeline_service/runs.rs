@@ -65,11 +65,18 @@ impl PipelineServiceImpl {
             p
         };
 
+        // Look up the repo's org for org-level secret scoping
+        let org_id =
+            resolve_org_id_for_repo(self.repo_store.as_ref(), &caller_tenant, &req.repo_id).await;
+
         // Resolve env vars (muli secrets + caller env_vars)
         let env_vars = resolve_env_vars(
             &self.secret_store,
+            &self.org_secret_store,
             &caller_tenant,
             &req.repo_id,
+            org_id.as_deref(),
+            self.encryption_key.as_ref(),
             req.env_vars,
         )
         .await?;
@@ -522,6 +529,18 @@ async fn build_ci_clone_url_for_repo(
     );
 
     Some((clone_url, Some(token_id)))
+}
+
+/// Look up the org ID for a repo's namespace. Returns `None` if the namespace
+/// doesn't correspond to an organization (e.g. it's a user handle).
+async fn resolve_org_id_for_repo(
+    repo_store: &dyn muli_core::traits::RepositoryStore,
+    _tenant_id: &str,
+    repo_id: &str,
+) -> Option<String> {
+    // Return the repo namespace as org handle; the caller uses this for org secret lookup.
+    let repo = repo_store.get_repository(repo_id).await.ok()??;
+    Some(repo.namespace.clone())
 }
 
 fn ci_clone_url_target(

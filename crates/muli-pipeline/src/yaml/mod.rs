@@ -3,6 +3,7 @@
 
 pub mod expression;
 pub mod hash;
+pub mod interpolation;
 pub mod parser;
 pub mod schema;
 pub mod validation;

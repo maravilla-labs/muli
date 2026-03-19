@@ -7,10 +7,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tonic::Status;
-use tracing::warn;
 
 use muli_core::pipeline::{FailureStrategy as DomainFailureStrategy, StepRun as DomainStep};
-use muli_core::traits::{PipelineSecretStore, StepRunStore};
+use muli_core::traits::{OrgSecretStore, PipelineSecretStore, StepRunStore};
 
 /// Parse YAML, expand matrix, create StepRun records for a run.
 pub async fn create_steps_from_yaml(
@@ -82,35 +81,25 @@ pub async fn create_steps_from_yaml(
 }
 
 /// Resolve muli-native pipeline secrets and merge with caller env_vars.
+///
+/// Delegates to [`crate::secret_resolver::resolve_env_vars`] for the actual merge logic.
 pub async fn resolve_env_vars(
     secret_store: &Arc<dyn PipelineSecretStore>,
+    org_secret_store: &Arc<dyn OrgSecretStore>,
     tenant_id: &str,
     repo_id: &str,
+    org_id: Option<&str>,
+    encryption_key: Option<&[u8; 32]>,
     caller_env_vars: HashMap<String, String>,
 ) -> Result<HashMap<String, String>, Status> {
-    let mut env = HashMap::new();
-
-    // Muli's own pipeline secrets (from PipelineSecretStore)
-    let secret_names = secret_store
-        .list_names(tenant_id, repo_id)
-        .await
-        .map_err(|e| Status::internal(format!("Failed to list secrets: {e}")))?;
-
-    for name in secret_names {
-        if let Ok(Some(_secret)) = secret_store.get_secret(tenant_id, repo_id, &name).await {
-            // SECURITY: muli-native secrets are AES-256-GCM encrypted at rest.
-            // Decryption requires `pipeline_secret_encryption_key` from server config,
-            // which is not yet wired into this code path. Skip these secrets rather
-            // than injecting raw ciphertext into step environments.
-            warn!(
-                secret_name = %name,
-                repo_id = %repo_id,
-                "skipping muli-native secret: decryption not yet implemented"
-            );
-        }
-    }
-
-    // Caller-provided env_vars override muli-native secrets
-    env.extend(caller_env_vars);
-    Ok(env)
+    crate::secret_resolver::resolve_env_vars(
+        secret_store,
+        org_secret_store,
+        tenant_id,
+        repo_id,
+        org_id,
+        encryption_key,
+        caller_env_vars,
+    )
+    .await
 }

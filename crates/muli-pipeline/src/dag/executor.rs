@@ -26,6 +26,7 @@ use muli_core::traits::{JobStore, PipelineRunStore, StepRunStore};
 use crate::dag::graph::DagGraph;
 use crate::trigger::matcher::matches_any_path;
 use crate::yaml::expression::{ExpressionContext, evaluate_condition};
+use crate::yaml::interpolation::interpolate;
 use crate::yaml::schema::{JobDef, PipelineDef, ResourceDef, StepDef};
 
 /// Abstraction for submitting jobs to the scheduler.
@@ -556,12 +557,21 @@ impl DagExecutor {
 
         let artifact_upload_paths = job_def.artifact_upload_paths();
         let artifact_upload_key = (!artifact_upload_paths.is_empty()).then(|| job_name.to_string());
+        let env_map: HashMap<String, String> = env_vars
+            .iter()
+            .map(|e| (e.name.clone(), e.value.clone()))
+            .collect();
+        let secret_map: HashMap<String, String> = run.env_vars.clone();
         let substeps: Vec<JobSubstepSpec> = job_def
             .execution_substeps()
             .into_iter()
             .map(|step| JobSubstepSpec {
                 name: step.name,
-                commands: step.commands,
+                commands: step
+                    .commands
+                    .into_iter()
+                    .map(|cmd| interpolate(&cmd, &secret_map, &env_map))
+                    .collect(),
             })
             .collect();
 
@@ -616,7 +626,17 @@ impl DagExecutor {
                 "git clone \"$PIPELINE_CLONE_URL\" /workspace && cd /workspace && git checkout \"$PIPELINE_SHA\"".to_string()
             );
         }
-        commands.extend(step_def.commands.clone());
+        let env_map: HashMap<String, String> = env_vars
+            .iter()
+            .map(|e| (e.name.clone(), e.value.clone()))
+            .collect();
+        let secret_map: HashMap<String, String> = run.env_vars.clone();
+        commands.extend(
+            step_def
+                .commands
+                .iter()
+                .map(|cmd| interpolate(cmd, &secret_map, &env_map)),
+        );
 
         let (cpu, memory, timeout) =
             resolve_resources(step_def.resources.as_ref(), step_def.timeout);
@@ -734,6 +754,18 @@ fn build_env_vars(
             value: url.to_string(),
         });
     }
+
+    // Interpolate ${{ secrets.X }} and ${{ env.X }} in all env var values.
+    // Build lookup maps from the assembled env vars (secrets are in run.env_vars).
+    let env_map: HashMap<String, String> = env
+        .iter()
+        .map(|e| (e.name.clone(), e.value.clone()))
+        .collect();
+    let secret_map: HashMap<String, String> = run.env_vars.clone();
+    for e in &mut env {
+        e.value = interpolate(&e.value, &secret_map, &env_map);
+    }
+
     env
 }
 

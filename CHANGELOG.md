@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-03-19
+
+### Added
+
+- **Pipeline secret management** — new gRPC RPCs `SetSecret`, `DeleteSecret`, `ListSecrets` for repo-level secrets, plus `SetOrgSecret`, `DeleteOrgSecret`, `ListOrgSecrets` for org-level secrets. Secret values are encrypted server-side (AES-256-GCM) and never returned by list operations. Secrets are resolved and injected into pipeline job environments at execution time.
+- **Secret interpolation in pipeline YAML** — pipeline step commands and environment blocks can reference secrets via `${{ secrets.NAME }}` syntax; values are resolved just before job dispatch.
+
 ## [0.4.7] - 2026-03-19
 
 ### Fixed

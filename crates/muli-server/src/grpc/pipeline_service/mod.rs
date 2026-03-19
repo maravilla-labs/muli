@@ -12,8 +12,8 @@ use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
 
 use muli_core::traits::{
-    ArtifactStore, CacheStore, GitTokenStore, JobLogStore, JobStore, PipelineRunStore,
-    PipelineSecretStore, PipelineStore, RepositoryStore, StepRunStore,
+    ArtifactStore, CacheStore, GitTokenStore, JobLogStore, JobStore, OrgSecretStore,
+    PipelineRunStore, PipelineSecretStore, PipelineStore, RepositoryStore, StepRunStore,
 };
 use muli_engine::docker::logs::LogCollector;
 use muli_pipeline::dag::executor::JobSubmitter;
@@ -21,11 +21,14 @@ use muli_pipeline::dag::executor::JobSubmitter;
 use muli_proto::pipeline_service_server::PipelineService;
 use muli_proto::{
     ArtifactChunk, CancelPipelineRequest, CancelPipelineResponse, DeleteCacheRequest,
-    DeleteCacheResponse, DownloadArtifactRequest, GetPipelineConfigRequest,
+    DeleteCacheResponse, DeleteOrgSecretRequest, DeleteOrgSecretResponse, DeleteSecretRequest,
+    DeleteSecretResponse, DownloadArtifactRequest, GetPipelineConfigRequest,
     GetPipelineConfigResponse, GetPipelineRunRequest, GetStepLogsRequest, GetStepLogsResponse,
     ListArtifactsRequest, ListArtifactsResponse, ListCachesRequest, ListCachesResponse,
-    ListPipelineRunsRequest, ListPipelineRunsResponse, LogLine, PipelineRunEvent,
-    PipelineRunResponse, RetryPipelineRequest, StreamStepLogsRequest, TriggerPipelineRequest,
+    ListOrgSecretsRequest, ListOrgSecretsResponse, ListPipelineRunsRequest,
+    ListPipelineRunsResponse, ListSecretsRequest, ListSecretsResponse, LogLine, PipelineRunEvent,
+    PipelineRunResponse, RetryPipelineRequest, SetOrgSecretRequest, SetOrgSecretResponse,
+    SetSecretRequest, SetSecretResponse, StreamStepLogsRequest, TriggerPipelineRequest,
     WatchPipelineRunRequest,
 };
 
@@ -34,6 +37,7 @@ mod conversions;
 mod helpers;
 mod logs;
 mod runs;
+mod secrets;
 
 pub struct PipelineServiceImpl {
     pub pipeline_store: Arc<dyn PipelineStore>,
@@ -52,6 +56,8 @@ pub struct PipelineServiceImpl {
     pub git_root: PathBuf,
     pub token_store: Arc<dyn GitTokenStore>,
     pub git_base_url: String,
+    pub org_secret_store: Arc<dyn OrgSecretStore>,
+    pub encryption_key: Option<[u8; 32]>,
 }
 
 pub(crate) type BoxStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
@@ -151,5 +157,47 @@ impl PipelineService for PipelineServiceImpl {
         request: Request<GetPipelineConfigRequest>,
     ) -> Result<Response<GetPipelineConfigResponse>, Status> {
         self.get_pipeline_config_impl(request).await
+    }
+
+    async fn set_secret(
+        &self,
+        request: Request<SetSecretRequest>,
+    ) -> Result<Response<SetSecretResponse>, Status> {
+        self.set_secret_impl(request).await
+    }
+
+    async fn delete_secret(
+        &self,
+        request: Request<DeleteSecretRequest>,
+    ) -> Result<Response<DeleteSecretResponse>, Status> {
+        self.delete_secret_impl(request).await
+    }
+
+    async fn list_secrets(
+        &self,
+        request: Request<ListSecretsRequest>,
+    ) -> Result<Response<ListSecretsResponse>, Status> {
+        self.list_secrets_impl(request).await
+    }
+
+    async fn set_org_secret(
+        &self,
+        request: Request<SetOrgSecretRequest>,
+    ) -> Result<Response<SetOrgSecretResponse>, Status> {
+        self.set_org_secret_impl(request).await
+    }
+
+    async fn delete_org_secret(
+        &self,
+        request: Request<DeleteOrgSecretRequest>,
+    ) -> Result<Response<DeleteOrgSecretResponse>, Status> {
+        self.delete_org_secret_impl(request).await
+    }
+
+    async fn list_org_secrets(
+        &self,
+        request: Request<ListOrgSecretsRequest>,
+    ) -> Result<Response<ListOrgSecretsResponse>, Status> {
+        self.list_org_secrets_impl(request).await
     }
 }

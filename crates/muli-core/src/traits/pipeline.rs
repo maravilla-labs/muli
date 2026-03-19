@@ -7,8 +7,8 @@ use async_trait::async_trait;
 
 use crate::error::Result;
 use crate::pipeline::{
-    Artifact, CacheEntry, Pipeline, PipelineRun, PipelineRunState, PipelineSecret, StepRun,
-    StepRunState,
+    Artifact, CacheEntry, OrgSecret, Pipeline, PipelineRun, PipelineRunState, PipelineSecret,
+    StepRun, StepRunState,
 };
 
 /// Storage for pipeline definitions.
@@ -135,4 +135,22 @@ pub trait PipelineSecretStore: Send + Sync {
     async fn list_names(&self, tenant_id: &str, repo_id: &str) -> Result<Vec<String>>;
     /// Delete a secret.
     async fn delete_secret(&self, tenant_id: &str, repo_id: &str, name: &str) -> Result<()>;
+}
+
+/// Storage for organization-level pipeline secrets.
+#[async_trait]
+pub trait OrgSecretStore: Send + Sync {
+    /// Set (create or update) an org-level secret.
+    async fn set_org_secret(&self, secret: &OrgSecret) -> Result<()>;
+    /// Get an org-level secret by name.
+    async fn get_org_secret(
+        &self,
+        tenant_id: &str,
+        org_id: &str,
+        name: &str,
+    ) -> Result<Option<OrgSecret>>;
+    /// List org-level secret names (values never returned in listings).
+    async fn list_org_names(&self, tenant_id: &str, org_id: &str) -> Result<Vec<String>>;
+    /// Delete an org-level secret.
+    async fn delete_org_secret(&self, tenant_id: &str, org_id: &str, name: &str) -> Result<()>;
 }

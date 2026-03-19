@@ -28,8 +28,8 @@ use muli_core::pipeline::{
 use muli_core::service::RepositoryService;
 use muli_core::traits::{
     ArtifactStore, CacheStore, CollaboratorStore, GitTokenStore, JobLogStore, JobStore,
-    PipelineRunStore, PipelineSecretStore, PipelineStore, PullRequestStore, RepositoryStore,
-    StepRunStore,
+    OrgSecretStore, OrgStore, PipelineRunStore, PipelineSecretStore, PipelineStore,
+    PullRequestStore, RepositoryStore, StepRunStore,
 };
 use muli_engine::docker::logs::{
     LogCollector, LogLine as EngineLogLine, LogStream as EngineLogStream,
@@ -48,9 +48,9 @@ use muli_server::grpc::PipelineServiceImpl;
 use muli_store::memory::MemoryCollaboratorStore;
 use muli_store::sqlite::{
     SqliteArtifactStore, SqliteCacheStore, SqliteGitTokenStore, SqliteJobLogStore, SqliteJobStore,
-    SqlitePipelineRunStore, SqlitePipelineSecretStore, SqlitePipelineStore, SqlitePrCommentStore,
-    SqlitePullRequestStore, SqliteRepositoryStore, SqliteSshKeyStore, SqliteStepRunStore,
-    SqliteStoreFactory, SqliteWebhookStore,
+    SqliteOrgSecretStore, SqliteOrgStore, SqlitePipelineRunStore, SqlitePipelineSecretStore,
+    SqlitePipelineStore, SqlitePrCommentStore, SqlitePullRequestStore, SqliteRepositoryStore,
+    SqliteSshKeyStore, SqliteStepRunStore, SqliteStoreFactory, SqliteWebhookStore,
 };
 
 use muli_proto::{GetPipelineRunRequest, ListPipelineRunsRequest, StreamStepLogsRequest};
@@ -92,6 +92,8 @@ struct CheckoutE2eEnv {
     artifact_store: Arc<dyn ArtifactStore>,
     cache_store: Arc<dyn CacheStore>,
     secret_store: Arc<dyn PipelineSecretStore>,
+    org_secret_store: Arc<dyn OrgSecretStore>,
+    _org_store: Arc<dyn OrgStore>,
     job_submitter: Arc<dyn JobSubmitter>,
     artifact_storage: Arc<ArtifactStorage>,
     git_root: TempDir,
@@ -148,6 +150,9 @@ impl CheckoutE2eEnv {
         let cache_store: Arc<dyn CacheStore> = Arc::new(SqliteCacheStore::new(factory.clone()));
         let secret_store: Arc<dyn PipelineSecretStore> =
             Arc::new(SqlitePipelineSecretStore::new(factory.clone()));
+        let org_secret_store: Arc<dyn OrgSecretStore> =
+            Arc::new(SqliteOrgSecretStore::new(factory.clone()));
+        let org_store: Arc<dyn OrgStore> = Arc::new(SqliteOrgStore::new(factory.clone()));
 
         let mut owner_token = GitToken::new(
             TENANT.into(),
@@ -231,6 +236,10 @@ impl CheckoutE2eEnv {
             webhook_store.clone(),
             true,
             format!("http://{addr}"),
+            secret_store.clone(),
+            org_secret_store.clone(),
+            org_store.clone(),
+            None,
         ));
 
         let app = git_router(GitRouterConfig {
@@ -276,6 +285,8 @@ impl CheckoutE2eEnv {
             artifact_store,
             cache_store,
             secret_store,
+            org_secret_store,
+            _org_store: org_store,
             job_submitter,
             artifact_storage,
             git_root,
@@ -355,6 +366,8 @@ fn pipeline_service(env: &CheckoutE2eEnv) -> PipelineServiceImpl {
         git_root: env.git_root.path().to_path_buf(),
         token_store: env.token_store.clone(),
         git_base_url: format!("http://{}", env.addr),
+        org_secret_store: env.org_secret_store.clone(),
+        encryption_key: None,
     }
 }
 

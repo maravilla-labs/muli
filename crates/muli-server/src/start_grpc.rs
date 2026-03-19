@@ -134,6 +134,15 @@ pub(crate) async fn start_grpc(
         git_root: config.effective_git_root(),
         token_store: git_token_store,
         git_base_url: config.effective_git_base_url(),
+        org_secret_store: stores.org_secret_store,
+        encryption_key: config
+            .pipeline_secret_encryption_key
+            .as_ref()
+            .and_then(|k| {
+                use base64::Engine;
+                let bytes = base64::engine::general_purpose::STANDARD.decode(k).ok()?;
+                <[u8; 32]>::try_from(bytes.as_slice()).ok()
+            }),
     };
 
     // Auth interceptor (no-op when MULI_API_KEY is unset)

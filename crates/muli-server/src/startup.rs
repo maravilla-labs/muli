@@ -168,6 +168,9 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
             tenant_limits_store: Some(stores.tenant_limits_store.clone()),
         });
 
+    // Parse encryption key for pipeline secrets
+    let encryption_key = parse_encryption_key(&config);
+
     // Pipeline trigger
     let pipeline_trigger: Option<Arc<dyn muli_git::api::PipelineTriggerHook>> =
         if config.pipeline_enabled && config.git_enabled {
@@ -186,6 +189,10 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
                 stores.webhook_store.clone(),
                 config.git_allow_localhost_webhooks,
                 config.effective_git_base_url(),
+                stores.pipeline_secret_store.clone(),
+                stores.org_secret_store.clone(),
+                stores.org_store.clone(),
+                encryption_key,
             )))
         } else {
             None
@@ -494,6 +501,27 @@ async fn start_git_http(
     });
 
     Ok(())
+}
+
+/// Parse a base64-encoded 32-byte AES-256-GCM key from config.
+fn parse_encryption_key(config: &ServerConfig) -> Option<[u8; 32]> {
+    let encoded = config.pipeline_secret_encryption_key.as_deref()?;
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
+        .map_err(|e| {
+            warn!(error = %e, "invalid MULI_PIPELINE_SECRET_ENCRYPTION_KEY: not valid base64");
+        })
+        .ok()?;
+    if bytes.len() != 32 {
+        warn!(
+            len = bytes.len(),
+            "invalid MULI_PIPELINE_SECRET_ENCRYPTION_KEY: expected 32 bytes, got {}",
+            bytes.len()
+        );
+        return None;
+    }
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&bytes);
+    Some(key)
 }
 
 async fn start_git_ssh(

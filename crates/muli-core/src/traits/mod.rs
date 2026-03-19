@@ -18,7 +18,8 @@ pub use git::{
 pub use job::{AgentRegistry, JobLogStore, JobStore};
 pub use org::{OrgMemberStore, OrgStore, PrCommentStore, PullRequestStore};
 pub use pipeline::{
-    ArtifactStore, CacheStore, PipelineRunStore, PipelineSecretStore, PipelineStore, StepRunStore,
+    ArtifactStore, CacheStore, OrgSecretStore, PipelineRunStore, PipelineSecretStore,
+    PipelineStore, StepRunStore,
 };
 pub use registry::{RegistryTokenStore, TenantQuotaStore, TenantStore};
 pub use tenant_limits::TenantLimitsStore;

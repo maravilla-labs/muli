@@ -322,6 +322,16 @@ CREATE TABLE IF NOT EXISTS pipeline_secrets (
   UNIQUE(repo_id, name)
 );
 CREATE INDEX IF NOT EXISTS secrets_repo ON pipeline_secrets(repo_id);
+
+CREATE TABLE IF NOT EXISTS org_secrets (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  org_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  full_json TEXT NOT NULL,
+  UNIQUE(org_id, name)
+);
+CREATE INDEX IF NOT EXISTS org_secrets_org ON org_secrets(org_id);
 ";
 
 /// Central SQLite connection factory. Holds one connection per tenant DB

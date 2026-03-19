@@ -311,3 +311,39 @@ impl PipelineSecret {
         }
     }
 }
+
+/// Scope level for a pipeline secret.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretScope {
+    Repo,
+    Org,
+}
+
+/// An encrypted secret scoped to an organization.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrgSecret {
+    pub id: String,
+    pub tenant_id: String,
+    pub org_id: String,
+    pub name: String,
+    /// AES-256-GCM encrypted value (base64-encoded ciphertext + nonce).
+    pub encrypted_value: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl OrgSecret {
+    pub fn new(tenant_id: String, org_id: String, name: String, encrypted_value: String) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Uuid::new_v4().to_string(),
+            tenant_id,
+            org_id,
+            name,
+            encrypted_value,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+}

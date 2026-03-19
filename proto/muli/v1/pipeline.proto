@@ -22,6 +22,16 @@ service PipelineService {
   rpc DeleteCache(DeleteCacheRequest) returns (DeleteCacheResponse);
   rpc WatchPipelineRun(WatchPipelineRunRequest) returns (stream PipelineRunEvent);
   rpc GetPipelineConfig(GetPipelineConfigRequest) returns (GetPipelineConfigResponse);
+
+  // Secret management (repo-level)
+  rpc SetSecret(SetSecretRequest) returns (SetSecretResponse);
+  rpc DeleteSecret(DeleteSecretRequest) returns (DeleteSecretResponse);
+  rpc ListSecrets(ListSecretsRequest) returns (ListSecretsResponse);
+
+  // Secret management (org-level)
+  rpc SetOrgSecret(SetOrgSecretRequest) returns (SetOrgSecretResponse);
+  rpc DeleteOrgSecret(DeleteOrgSecretRequest) returns (DeleteOrgSecretResponse);
+  rpc ListOrgSecrets(ListOrgSecretsRequest) returns (ListOrgSecretsResponse);
 }
 
 enum PipelineRunState {
@@ -263,4 +273,58 @@ message GetPipelineConfigRequest {
 message GetPipelineConfigResponse {
   string yaml_content = 1;
   bool pipeline_detected = 2;
+}
+
+// --- Secret management messages ---
+
+message SetSecretRequest {
+  string tenant_id = 1;
+  string repo_id = 2;
+  string name = 3;
+  string value = 4; // plaintext; server encrypts before storing
+}
+
+message SetSecretResponse {}
+
+message DeleteSecretRequest {
+  string tenant_id = 1;
+  string repo_id = 2;
+  string name = 3;
+}
+
+message DeleteSecretResponse {}
+
+message ListSecretsRequest {
+  string tenant_id = 1;
+  string repo_id = 2;
+}
+
+message ListSecretsResponse {
+  repeated string names = 1;
+}
+
+message SetOrgSecretRequest {
+  string tenant_id = 1;
+  string org_id = 2;
+  string name = 3;
+  string value = 4; // plaintext; server encrypts before storing
+}
+
+message SetOrgSecretResponse {}
+
+message DeleteOrgSecretRequest {
+  string tenant_id = 1;
+  string org_id = 2;
+  string name = 3;
+}
+
+message DeleteOrgSecretResponse {}
+
+message ListOrgSecretsRequest {
+  string tenant_id = 1;
+  string org_id = 2;
+}
+
+message ListOrgSecretsResponse {
+  repeated string names = 1;
 }
