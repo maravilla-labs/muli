@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-03-19
+
+### Added
+
+- **Pipeline run commit metadata** — `PipelineRun` now includes `commit_message`, `commit_author`, and `triggered_by` fields. These are extracted from the git commit at trigger time and surfaced through the gRPC API, enabling clients to display rich run context (commit message, author, triggering user) without a separate git lookup.
+
 ## [0.4.5] - 2026-03-18
 
 ### Added

@@ -121,6 +121,9 @@ pub fn run_to_proto(
         created_at: Some(datetime_to_proto(r.created_at)),
         started_at: r.started_at.map(datetime_to_proto),
         finished_at: r.finished_at.map(datetime_to_proto),
+        commit_message: r.commit_message.clone(),
+        commit_author: r.commit_author.clone(),
+        triggered_by: r.triggered_by.clone(),
     }
 }
 

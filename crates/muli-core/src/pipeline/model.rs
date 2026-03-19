@@ -74,6 +74,12 @@ pub struct PipelineRun {
     pub repo_id: String,
     pub run_number: u64,
     pub commit_sha: String,
+    #[serde(default)]
+    pub commit_message: String,
+    #[serde(default)]
+    pub commit_author: String,
+    #[serde(default)]
+    pub triggered_by: String,
     pub ref_name: String,
     pub trigger: PipelineTrigger,
     pub state: PipelineRunState,
@@ -108,6 +114,9 @@ impl PipelineRun {
             repo_id,
             run_number,
             commit_sha,
+            commit_message: String::new(),
+            commit_author: String::new(),
+            triggered_by: String::new(),
             ref_name,
             trigger,
             state: PipelineRunState::Pending,

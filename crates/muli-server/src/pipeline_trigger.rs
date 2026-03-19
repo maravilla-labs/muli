@@ -255,6 +255,15 @@ impl PipelineTriggerImpl {
             }
         };
 
+        // Extract commit metadata for display
+        let (commit_message, commit_author) = (tokio::task::spawn_blocking({
+            let rp = repo_path.clone();
+            let sha = commit_sha.to_string();
+            move || resolve_commit_info(&rp, &sha)
+        })
+        .await)
+            .unwrap_or_default();
+
         let mut known_pipelines = match self.pipeline_store.get_by_repo(tenant_id, repo_id).await {
             Ok(pipelines) => pipelines,
             Err(e) => {
@@ -371,6 +380,14 @@ impl PipelineTriggerImpl {
                 trigger.clone(),
                 pipeline_file.content.clone(),
             );
+            run.commit_message = commit_message.clone();
+            run.commit_author = commit_author.clone();
+            run.triggered_by = match &trigger {
+                muli_core::pipeline::PipelineTrigger::Manual { triggered_by } => {
+                    triggered_by.clone()
+                }
+                _ => tenant_id.to_string(),
+            };
 
             if let Err(e) = self.run_store.create_run(&run).await {
                 error!(error = %e, "pipeline trigger: failed to create pipeline run");
@@ -850,6 +867,20 @@ fn resolve_pr_changed_paths(
         .merge_base(target_oid, source_oid)
         .unwrap_or(target_oid);
     diff_paths_between(&repo, base_oid, source_oid)
+}
+
+/// Extract commit message and author name from the given commit SHA.
+/// Returns empty strings if the commit cannot be read.
+fn resolve_commit_info(repo_path: &Path, commit_sha: &str) -> (String, String) {
+    (|| -> Option<(String, String)> {
+        let repo = git2::Repository::open(repo_path).ok()?;
+        let oid = git2::Oid::from_str(commit_sha).ok()?;
+        let commit = repo.find_commit(oid).ok()?;
+        let message = commit.message().unwrap_or("").trim().to_string();
+        let author = commit.author().name().unwrap_or("").to_string();
+        Some((message, author))
+    })()
+    .unwrap_or_default()
 }
 
 /// Resolve the HEAD commit SHA for a branch in a bare repository.

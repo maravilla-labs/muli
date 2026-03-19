@@ -78,6 +78,9 @@ message PipelineRun {
   Timestamp created_at = 11;
   Timestamp started_at = 12;
   Timestamp finished_at = 13;
+  string commit_message = 15;
+  string commit_author = 16;
+  string triggered_by = 17;
 }
 
 message StepRun {

@@ -97,6 +97,7 @@ impl PipelineServiceImpl {
             String::new(), // yaml_content will be populated by trigger hook
         );
         run.env_vars = env_vars;
+        run.triggered_by = caller_tenant.clone();
 
         self.run_store
             .create_run(&run)
