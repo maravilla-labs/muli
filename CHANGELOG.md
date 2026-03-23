@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.10] - 2026-03-23
+
+### Added
+
+- **Git Contents write API** — new `POST /api/v1/repos/{namespace}/{repo}/contents/{path}` endpoint to create or update a single file via commit, and `POST /api/v1/repos/{namespace}/{repo}/contents` for batch multi-file commits. Both accept base64-encoded content, support nested directory creation, and target a configurable branch.
+
 ## [0.4.9] - 2026-03-19
 
 ### Added

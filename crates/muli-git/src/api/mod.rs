@@ -195,11 +195,11 @@ pub fn git_router(cfg: GitRouterConfig) -> Router {
         )
         .route(
             "/api/v1/repos/{namespace}/{repo}/contents",
-            get(blobs::get_root_contents),
+            get(blobs::get_root_contents).post(blobs::create_files_batch),
         )
         .route(
             "/api/v1/repos/{namespace}/{repo}/contents/{*path}",
-            get(blobs::get_blob),
+            get(blobs::get_blob).post(blobs::create_or_update_file),
         )
         .route(
             "/api/v1/repos/{namespace}/{repo}/hooks",

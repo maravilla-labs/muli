@@ -203,6 +203,284 @@ pub async fn get_root_contents(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Write endpoints
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct CreateFileRequest {
+    pub content: String, // base64-encoded
+    pub message: String,
+    #[serde(default = "default_branch")]
+    pub branch: String,
+}
+
+fn default_branch() -> String {
+    "main".to_string()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BatchFileEntry {
+    pub path: String,
+    pub content: String, // base64-encoded
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateFilesBatchRequest {
+    pub files: Vec<BatchFileEntry>,
+    pub message: String,
+    #[serde(default = "default_branch")]
+    pub branch: String,
+}
+
+/// Insert or update a blob at the given path within a tree, creating
+/// intermediate subtrees as needed for nested paths like `a/b/c.md`.
+fn insert_blob_in_tree(
+    repo: &git2::Repository,
+    base_tree: Option<&git2::Tree<'_>>,
+    path_segments: &[&str],
+    blob_oid: git2::Oid,
+) -> Result<git2::Oid, String> {
+    if path_segments.is_empty() {
+        return Err("empty path".to_string());
+    }
+    if path_segments.len() == 1 {
+        // Leaf — insert blob directly
+        let mut builder = if let Some(tree) = base_tree {
+            repo.treebuilder(Some(tree)).map_err(|e| e.to_string())?
+        } else {
+            repo.treebuilder(None).map_err(|e| e.to_string())?
+        };
+        builder
+            .insert(path_segments[0], blob_oid, 0o100644)
+            .map_err(|e| e.to_string())?;
+        return builder.write().map_err(|e| e.to_string());
+    }
+
+    // Intermediate directory — recurse
+    let dir_name = path_segments[0];
+    let rest = &path_segments[1..];
+
+    let existing_subtree = base_tree.and_then(|t| {
+        t.get_name(dir_name).and_then(|entry| {
+            if entry.kind() == Some(git2::ObjectType::Tree) {
+                repo.find_tree(entry.id()).ok()
+            } else {
+                None
+            }
+        })
+    });
+
+    let new_subtree_oid = insert_blob_in_tree(
+        repo,
+        existing_subtree.as_ref(),
+        rest,
+        blob_oid,
+    )?;
+
+    let mut builder = if let Some(tree) = base_tree {
+        repo.treebuilder(Some(tree)).map_err(|e| e.to_string())?
+    } else {
+        repo.treebuilder(None).map_err(|e| e.to_string())?
+    };
+    builder
+        .insert(dir_name, new_subtree_oid, 0o040000)
+        .map_err(|e| e.to_string())?;
+    builder.write().map_err(|e| e.to_string())
+}
+
+/// POST /api/v1/repos/{namespace}/{repo}/contents/{*path}
+///
+/// Create or update a single file and commit.
+pub async fn create_or_update_file(
+    Extension(tenant): Extension<TenantContext>,
+    State(state): State<Arc<GitState>>,
+    Path((namespace, repo_name, file_path)): Path<(String, String, String)>,
+    Json(body): Json<CreateFileRequest>,
+) -> Response {
+    if let Err(e) = resolve_repo(&state, &tenant.tenant_id, &namespace, &repo_name).await {
+        return e;
+    }
+
+    let repo_fs_path = state
+        .storage
+        .repo_path(&tenant.tenant_id, &namespace, &repo_name);
+
+    let content = match base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        &body.content,
+    ) {
+        Ok(c) => c,
+        Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid base64 content"),
+    };
+
+    let message = body.message;
+    let branch = body.branch;
+    let file_path_clone = file_path.clone();
+
+    let result = tokio::task::spawn_blocking(move || {
+        let repo = git2::Repository::open_bare(&repo_fs_path).map_err(|e| e.to_string())?;
+        let sig = git2::Signature::now("Flightdeck", "system@maravilla.page")
+            .map_err(|e| e.to_string())?;
+
+        // Resolve branch
+        let ref_name = format!("refs/heads/{branch}");
+        let parent_commit = repo
+            .find_reference(&ref_name)
+            .and_then(|r| r.peel_to_commit())
+            .map_err(|e| format!("branch not found: {e}"))?;
+
+        let base_tree = parent_commit.tree().map_err(|e| e.to_string())?;
+
+        // Create blob
+        let blob_oid = repo.blob(&content).map_err(|e| e.to_string())?;
+
+        // Build tree with the file inserted
+        let segments: Vec<&str> = file_path_clone.split('/').collect();
+        let new_tree_oid = insert_blob_in_tree(&repo, Some(&base_tree), &segments, blob_oid)?;
+        let new_tree = repo.find_tree(new_tree_oid).map_err(|e| e.to_string())?;
+
+        // Create commit
+        let commit_oid = repo
+            .commit(
+                Some(&ref_name),
+                &sig,
+                &sig,
+                &message,
+                &new_tree,
+                &[&parent_commit],
+            )
+            .map_err(|e| e.to_string())?;
+
+        Ok::<(String, String), String>((file_path_clone, commit_oid.to_string()))
+    })
+    .await;
+
+    match result {
+        Ok(Ok((path, sha))) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({ "path": path, "sha": sha })),
+        )
+            .into_response(),
+        Ok(Err(e)) if e.contains("branch not found") => error_response(StatusCode::NOT_FOUND, &e),
+        Ok(Err(e)) => {
+            tracing::error!(error = %e, "failed to create/update file");
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, &e)
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "spawn_blocking panic in create_or_update_file");
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+        }
+    }
+}
+
+/// POST /api/v1/repos/{namespace}/{repo}/contents
+///
+/// Create or update multiple files in a single commit.
+pub async fn create_files_batch(
+    Extension(tenant): Extension<TenantContext>,
+    State(state): State<Arc<GitState>>,
+    Path((namespace, repo_name)): Path<(String, String)>,
+    Json(body): Json<CreateFilesBatchRequest>,
+) -> Response {
+    if body.files.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "files array must not be empty");
+    }
+
+    if let Err(e) = resolve_repo(&state, &tenant.tenant_id, &namespace, &repo_name).await {
+        return e;
+    }
+
+    let repo_fs_path = state
+        .storage
+        .repo_path(&tenant.tenant_id, &namespace, &repo_name);
+
+    // Decode all files upfront
+    let mut decoded_files = Vec::with_capacity(body.files.len());
+    for entry in &body.files {
+        match base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            &entry.content,
+        ) {
+            Ok(c) => decoded_files.push((entry.path.clone(), c)),
+            Err(_) => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    &format!("invalid base64 content for path: {}", entry.path),
+                );
+            }
+        }
+    }
+
+    let message = body.message;
+    let branch = body.branch;
+
+    let result = tokio::task::spawn_blocking(move || {
+        let repo = git2::Repository::open_bare(&repo_fs_path).map_err(|e| e.to_string())?;
+        let sig = git2::Signature::now("Flightdeck", "system@maravilla.page")
+            .map_err(|e| e.to_string())?;
+
+        // Resolve branch — for empty repos, create initial commit
+        let ref_name = format!("refs/heads/{branch}");
+        let parent_commit = repo
+            .find_reference(&ref_name)
+            .and_then(|r| r.peel_to_commit())
+            .ok();
+
+        let base_tree = match &parent_commit {
+            Some(c) => Some(c.tree().map_err(|e| e.to_string())?),
+            None => None,
+        };
+
+        // Insert all files into the tree
+        let mut current_tree_oid = match &base_tree {
+            Some(t) => t.id(),
+            None => {
+                let builder = repo.treebuilder(None).map_err(|e| e.to_string())?;
+                builder.write().map_err(|e| e.to_string())?
+            }
+        };
+
+        for (path, content) in &decoded_files {
+            let blob_oid = repo.blob(content).map_err(|e| e.to_string())?;
+            let current_tree = repo.find_tree(current_tree_oid).map_err(|e| e.to_string())?;
+            let segments: Vec<&str> = path.split('/').collect();
+            current_tree_oid =
+                insert_blob_in_tree(&repo, Some(&current_tree), &segments, blob_oid)?;
+        }
+
+        let final_tree = repo.find_tree(current_tree_oid).map_err(|e| e.to_string())?;
+
+        // Create commit
+        let parents: Vec<&git2::Commit<'_>> = match &parent_commit {
+            Some(c) => vec![c],
+            None => vec![],
+        };
+        let commit_oid = repo
+            .commit(Some(&ref_name), &sig, &sig, &message, &final_tree, &parents)
+            .map_err(|e| e.to_string())?;
+
+        Ok::<(usize, String), String>((decoded_files.len(), commit_oid.to_string()))
+    })
+    .await;
+
+    match result {
+        Ok(Ok((count, sha))) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({ "files_committed": count, "sha": sha })),
+        )
+            .into_response(),
+        Ok(Err(e)) => {
+            tracing::error!(error = %e, "failed to create files batch");
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, &e)
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "spawn_blocking panic in create_files_batch");
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+        }
+    }
+}
+
 /// Raw blob endpoint (currently unused but available).
 #[allow(dead_code)]
 pub async fn get_raw_blob(
