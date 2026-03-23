@@ -235,7 +235,7 @@ pub struct CreateFilesBatchRequest {
 
 /// Insert or update a blob at the given path within a tree, creating
 /// intermediate subtrees as needed for nested paths like `a/b/c.md`.
-fn insert_blob_in_tree(
+pub fn insert_blob_in_tree(
     repo: &git2::Repository,
     base_tree: Option<&git2::Tree<'_>>,
     path_segments: &[&str],

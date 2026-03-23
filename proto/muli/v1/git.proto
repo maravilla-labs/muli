@@ -44,6 +44,11 @@ service GitService {
 
   // Impersonation tokens (admin creates short-lived token on behalf of a user)
   rpc CreateImpersonationToken(CreateImpersonationTokenRequest) returns (CreateGitTokenResponse);
+
+  // Repository content operations
+  rpc GetFileContent(GetFileContentRequest) returns (GetFileContentResponse);
+  rpc CreateOrUpdateFile(CreateOrUpdateFileRequest) returns (CreateOrUpdateFileResponse);
+  rpc CreateFilesBatch(CreateFilesBatchRequest) returns (CreateFilesBatchResponse);
 }
 
 // Permission levels for git tokens.
@@ -307,3 +312,55 @@ message DeleteWebhookResponse {}
 message DeleteRepositoryResponse {}
 message RevokeGitTokenResponse {}
 message RemoveSshKeyResponse {}
+
+// --- Content RPCs ---
+
+message GetFileContentRequest {
+  string tenant_id = 1;
+  string namespace = 2;
+  string repo = 3;
+  string path = 4;            // file path within the repo (e.g. "src/main.rs")
+  optional string git_ref = 5; // branch, tag, or SHA (default: HEAD)
+}
+
+message GetFileContentResponse {
+  string path = 1;
+  string git_ref = 2;
+  uint64 size = 3;
+  string encoding = 4;  // always "base64"
+  string content = 5;   // base64-encoded file content
+}
+
+message CreateOrUpdateFileRequest {
+  string tenant_id = 1;
+  string namespace = 2;
+  string repo = 3;
+  string path = 4;      // file path within the repo
+  string content = 5;   // base64-encoded file content
+  string message = 6;   // commit message
+  string branch = 7;    // target branch (default: "main")
+}
+
+message CreateOrUpdateFileResponse {
+  string path = 1;
+  string sha = 2;       // commit SHA
+}
+
+message BatchFileEntry {
+  string path = 1;
+  string content = 2;   // base64-encoded
+}
+
+message CreateFilesBatchRequest {
+  string tenant_id = 1;
+  string namespace = 2;
+  string repo = 3;
+  repeated BatchFileEntry files = 4;
+  string message = 5;   // commit message
+  string branch = 6;    // target branch (default: "main")
+}
+
+message CreateFilesBatchResponse {
+  uint32 files_committed = 1;
+  string sha = 2;       // commit SHA
+}

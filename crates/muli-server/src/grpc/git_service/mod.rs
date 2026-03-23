@@ -12,10 +12,12 @@ use muli_core::traits::{
 };
 use muli_proto::git_service_server::GitService;
 use muli_proto::{
-    AddCollaboratorRequest, AddSshKeyRequest, CollaboratorResponse, CreateGitTokenRequest,
-    CreateGitTokenResponse, CreateImpersonationTokenRequest, CreateRepositoryRequest,
-    CreateWebhookRequest, DeleteRepositoryRequest, DeleteRepositoryResponse, DeleteWebhookRequest,
-    DeleteWebhookResponse, ForkRepositoryRequest, GetRepositoryRequest, GitRepository, GitWebhook,
+    AddCollaboratorRequest, AddSshKeyRequest, CollaboratorResponse, CreateFilesBatchRequest,
+    CreateFilesBatchResponse, CreateGitTokenRequest, CreateGitTokenResponse,
+    CreateImpersonationTokenRequest, CreateOrUpdateFileRequest, CreateOrUpdateFileResponse,
+    CreateRepositoryRequest, CreateWebhookRequest, DeleteRepositoryRequest,
+    DeleteRepositoryResponse, DeleteWebhookRequest, DeleteWebhookResponse, ForkRepositoryRequest,
+    GetFileContentRequest, GetFileContentResponse, GetRepositoryRequest, GitRepository, GitWebhook,
     ListCollaboratorsRequest, ListCollaboratorsResponse, ListGitTokensByUserRequest,
     ListGitTokensRequest, ListGitTokensResponse, ListRepositoriesRequest, ListRepositoriesResponse,
     ListSshKeysByUserRequest, ListSshKeysRequest, ListSshKeysResponse, ListWebhooksRequest,
@@ -25,6 +27,7 @@ use muli_proto::{
 };
 
 mod collaborator;
+mod content;
 mod helpers;
 mod repo;
 mod ssh;
@@ -197,5 +200,26 @@ impl GitService for GitServiceImpl {
         request: Request<CreateImpersonationTokenRequest>,
     ) -> Result<Response<CreateGitTokenResponse>, Status> {
         self.create_impersonation_token_impl(request).await
+    }
+
+    async fn get_file_content(
+        &self,
+        request: Request<GetFileContentRequest>,
+    ) -> Result<Response<GetFileContentResponse>, Status> {
+        self.get_file_content_impl(request).await
+    }
+
+    async fn create_or_update_file(
+        &self,
+        request: Request<CreateOrUpdateFileRequest>,
+    ) -> Result<Response<CreateOrUpdateFileResponse>, Status> {
+        self.create_or_update_file_impl(request).await
+    }
+
+    async fn create_files_batch(
+        &self,
+        request: Request<CreateFilesBatchRequest>,
+    ) -> Result<Response<CreateFilesBatchResponse>, Status> {
+        self.create_files_batch_impl(request).await
     }
 }

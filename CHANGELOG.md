@@ -12,6 +12,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ### Added
 
 - **Git Contents write API** — new `POST /api/v1/repos/{namespace}/{repo}/contents/{path}` endpoint to create or update a single file via commit, and `POST /api/v1/repos/{namespace}/{repo}/contents` for batch multi-file commits. Both accept base64-encoded content, support nested directory creation, and target a configurable branch.
+- **Git Contents gRPC RPCs** — `GetFileContent`, `CreateOrUpdateFile`, and `CreateFilesBatch` RPCs on `GitService`, mirroring the REST contents API over gRPC. `GetFileContent` reads a file at any ref; the write RPCs create commits with the same semantics as the REST endpoints.
 
 ## [0.4.9] - 2026-03-19
 
