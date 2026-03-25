@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.11] - 2026-03-25
+
+### Added
+
+- **Commit author override** — `POST /api/v1/repos/{namespace}/{repo}/contents/{path}` and `POST /api/v1/repos/{namespace}/{repo}/contents` (batch) now accept an optional `author` object with `name` and `email` fields. When provided, the git commit uses the given identity instead of the default system author. This enables web editors and API consumers to attribute commits to the actual user.
+
 ## [0.4.10] - 2026-03-23
 
 ### Added

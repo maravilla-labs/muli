@@ -208,11 +208,18 @@ pub async fn get_root_contents(
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
+pub struct CommitAuthor {
+    pub name: String,
+    pub email: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct CreateFileRequest {
     pub content: String, // base64-encoded
     pub message: String,
     #[serde(default = "default_branch")]
     pub branch: String,
+    pub author: Option<CommitAuthor>,
 }
 
 fn default_branch() -> String {
@@ -231,6 +238,7 @@ pub struct CreateFilesBatchRequest {
     pub message: String,
     #[serde(default = "default_branch")]
     pub branch: String,
+    pub author: Option<CommitAuthor>,
 }
 
 /// Insert or update a blob at the given path within a tree, creating
@@ -316,12 +324,16 @@ pub async fn create_or_update_file(
 
     let message = body.message;
     let branch = body.branch;
+    let author = body.author;
     let file_path_clone = file_path.clone();
 
     let result = tokio::task::spawn_blocking(move || {
         let repo = git2::Repository::open_bare(&repo_fs_path).map_err(|e| e.to_string())?;
-        let sig = git2::Signature::now("Flightdeck", "system@maravilla.page")
-            .map_err(|e| e.to_string())?;
+        let sig = match &author {
+            Some(a) => git2::Signature::now(&a.name, &a.email),
+            None => git2::Signature::now("Flightdeck", "system@maravilla.page"),
+        }
+        .map_err(|e| e.to_string())?;
 
         // Resolve branch
         let ref_name = format!("refs/heads/{branch}");
@@ -414,11 +426,15 @@ pub async fn create_files_batch(
 
     let message = body.message;
     let branch = body.branch;
+    let author = body.author;
 
     let result = tokio::task::spawn_blocking(move || {
         let repo = git2::Repository::open_bare(&repo_fs_path).map_err(|e| e.to_string())?;
-        let sig = git2::Signature::now("Flightdeck", "system@maravilla.page")
-            .map_err(|e| e.to_string())?;
+        let sig = match &author {
+            Some(a) => git2::Signature::now(&a.name, &a.email),
+            None => git2::Signature::now("Flightdeck", "system@maravilla.page"),
+        }
+        .map_err(|e| e.to_string())?;
 
         // Resolve branch — for empty repos, create initial commit
         let ref_name = format!("refs/heads/{branch}");
