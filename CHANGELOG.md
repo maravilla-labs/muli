@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.15] - 2026-03-27
+
+### Changed
+
+- **File history follows renames** — the `GET /api/v1/repos/{namespace}/{repo}/commits?path=<file>` endpoint now implements `git log --follow` behavior. When a file was renamed, the history walk detects the rename via `diff.find_similar()` and continues tracking the old path, returning the complete commit history across renames.
+
 ## [0.4.14] - 2026-03-27
 
 ### Added

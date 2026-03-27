@@ -102,6 +102,9 @@ pub async fn list_commits(
         let mut commits = Vec::new();
         // Walk more commits when filtering by path since most won't match
         let walk_limit = if filter_path.is_some() { limit * 20 } else { limit };
+        // Mutable tracked path — updated when a rename is detected (--follow)
+        let mut current_path = filter_path.clone();
+
         for oid in revwalk.take(walk_limit) {
             if commits.len() >= limit {
                 break;
@@ -109,12 +112,13 @@ pub async fn list_commits(
             let oid = oid.map_err(|e| e.to_string())?;
             let c = repo.find_commit(oid).map_err(|e| e.to_string())?;
 
-            if let Some(ref fp) = filter_path {
-                // Check if this commit touched the given path
+            if let Some(ref fp) = current_path {
                 let commit_tree = c.tree().map_err(|e| e.to_string())?;
                 let parent_tree = c.parent(0).ok().and_then(|p| p.tree().ok());
+
+                // Diff with rename detection enabled (no pathspec — pathspec
+                // prevents rename detection from working).
                 let mut opts = git2::DiffOptions::new();
-                opts.pathspec(fp);
                 let diff = repo
                     .diff_tree_to_tree(
                         parent_tree.as_ref(),
@@ -122,7 +126,35 @@ pub async fn list_commits(
                         Some(&mut opts),
                     )
                     .map_err(|e| format!("diff failed: {e}"))?;
-                if diff.deltas().len() == 0 {
+
+                // Enable rename detection on the computed diff
+                let mut find_opts = git2::DiffFindOptions::new();
+                find_opts.renames(true);
+                let mut diff = diff;
+                diff.find_similar(Some(&mut find_opts))
+                    .map_err(|e| format!("find_similar failed: {e}"))?;
+
+                // Check if any delta touches the tracked path
+                let mut touched = false;
+                for delta in diff.deltas() {
+                    let new_path = delta.new_file().path().and_then(|p| p.to_str());
+                    let old_path = delta.old_file().path().and_then(|p| p.to_str());
+
+                    if new_path == Some(fp.as_str()) || old_path == Some(fp.as_str()) {
+                        touched = true;
+                        // Follow rename: if this is a rename where new_file
+                        // matches our tracked path, continue with old_file
+                        if delta.status() == git2::Delta::Renamed {
+                            if new_path == Some(fp.as_str()) {
+                                if let Some(old) = old_path {
+                                    current_path = Some(old.to_string());
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+                if !touched {
                     continue;
                 }
             }
