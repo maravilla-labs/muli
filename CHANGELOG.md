@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.13] - 2026-03-27
+
+### Added
+
+- **File-scoped commit history** — the `GET /api/v1/repos/{namespace}/{repo}/commits` endpoint now accepts an optional `?path=<file>` query parameter. When provided, only commits that modified the given file path are returned, enabling per-file history views similar to GitHub's file history.
+
 ## [0.4.12] - 2026-03-27
 
 ### Added

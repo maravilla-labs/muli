@@ -22,6 +22,8 @@ use crate::tenant::TenantContext;
 pub struct CommitQuery {
     pub branch: Option<String>,
     pub limit: Option<usize>,
+    /// When set, only return commits that touched this file path.
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -75,14 +77,15 @@ pub async fn list_commits(
         return e;
     }
 
-    let path = state
+    let repo_path = state
         .storage
         .repo_path(&tenant.tenant_id, &namespace, &repo_name);
     let branch = query.branch.unwrap_or_else(|| "HEAD".to_string());
     let limit = query.limit.unwrap_or(20).min(500);
+    let filter_path = query.path;
 
     let result = tokio::task::spawn_blocking(move || {
-        let repo = git2::Repository::open_bare(&path).map_err(|e| e.to_string())?;
+        let repo = git2::Repository::open_bare(&repo_path).map_err(|e| e.to_string())?;
         let obj = repo
             .revparse_single(&branch)
             .map_err(|e| format!("ref not found: {e}"))?;
@@ -97,10 +100,34 @@ pub async fn list_commits(
             .map_err(|e| e.to_string())?;
 
         let mut commits = Vec::new();
-        for oid in revwalk.take(limit) {
+        // Walk more commits when filtering by path since most won't match
+        let walk_limit = if filter_path.is_some() { limit * 20 } else { limit };
+        for oid in revwalk.take(walk_limit) {
+            if commits.len() >= limit {
+                break;
+            }
             let oid = oid.map_err(|e| e.to_string())?;
-            let commit = repo.find_commit(oid).map_err(|e| e.to_string())?;
-            commits.push(commit_to_info(&commit, &oid));
+            let c = repo.find_commit(oid).map_err(|e| e.to_string())?;
+
+            if let Some(ref fp) = filter_path {
+                // Check if this commit touched the given path
+                let commit_tree = c.tree().map_err(|e| e.to_string())?;
+                let parent_tree = c.parent(0).ok().and_then(|p| p.tree().ok());
+                let mut opts = git2::DiffOptions::new();
+                opts.pathspec(fp);
+                let diff = repo
+                    .diff_tree_to_tree(
+                        parent_tree.as_ref(),
+                        Some(&commit_tree),
+                        Some(&mut opts),
+                    )
+                    .map_err(|e| format!("diff failed: {e}"))?;
+                if diff.deltas().len() == 0 {
+                    continue;
+                }
+            }
+
+            commits.push(commit_to_info(&c, &oid));
         }
         Ok::<Vec<CommitInfo>, String>(commits)
     })
