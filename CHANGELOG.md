@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.12] - 2026-03-27
+
+### Added
+
+- **Recursive tree listing** — new `GET /api/v1/repos/{namespace}/{repo}/tree` endpoint lists tree entries for a directory. Supports `?recursive=true` for a flat list of all files and directories (including nested), `?path=<subdir>` to scope to a subtree, and `?ref=<branch>` for branch selection. Follows the standard Git tree API pattern used by GitHub and Gitea.
+
+### Changed
+
+- **DRY refactor** — `TreeEntryResponse` struct and `list_tree_entries()` function moved from `blobs` module to `tree` module. The blobs module now imports from tree, eliminating duplication.
+
 ## [0.4.11] - 2026-03-25
 
 ### Added

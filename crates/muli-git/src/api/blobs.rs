@@ -16,6 +16,8 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
+use super::tree::{TreeEntryResponse, list_tree_entries};
+
 #[derive(Debug, Deserialize)]
 pub struct BlobQuery {
     #[serde(rename = "ref")]
@@ -29,15 +31,6 @@ pub struct BlobResponse {
     pub size: usize,
     pub encoding: String,
     pub content: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct TreeEntryResponse {
-    pub name: String,
-    pub path: String,
-    #[serde(rename = "type")]
-    pub kind: String,
-    pub size: usize,
 }
 
 enum ContentResult {
@@ -126,42 +119,6 @@ pub async fn get_blob(
             error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
         }
     }
-}
-
-fn list_tree_entries(
-    repo: &git2::Repository,
-    tree: &git2::Tree<'_>,
-    prefix: &str,
-) -> Vec<TreeEntryResponse> {
-    let mut entries = Vec::new();
-    for entry in tree.iter() {
-        let name = match entry.name() {
-            Some(n) => n.to_string(),
-            None => continue,
-        };
-        let kind = match entry.kind() {
-            Some(git2::ObjectType::Blob) => "file",
-            Some(git2::ObjectType::Tree) => "dir",
-            _ => continue,
-        };
-        let size = if kind == "file" {
-            repo.find_blob(entry.id()).map(|b| b.size()).unwrap_or(0)
-        } else {
-            0
-        };
-        let path = if prefix.is_empty() {
-            name.clone()
-        } else {
-            format!("{prefix}/{name}")
-        };
-        entries.push(TreeEntryResponse {
-            name,
-            path,
-            kind: kind.to_string(),
-            size,
-        });
-    }
-    entries
 }
 
 /// GET /api/v1/repos/{namespace}/{repo}/contents

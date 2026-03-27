@@ -11,13 +11,173 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::api::GitState;
 use crate::api::commits::{CommitInfo, commit_to_info};
 use crate::api::helpers::{error_response, resolve_repo};
 use crate::tenant::TenantContext;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TreeEntryResponse {
+    pub name: String,
+    pub path: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub size: usize,
+}
+
+pub fn list_tree_entries(
+    repo: &git2::Repository,
+    tree: &git2::Tree<'_>,
+    prefix: &str,
+) -> Vec<TreeEntryResponse> {
+    let mut entries = Vec::new();
+    for entry in tree.iter() {
+        let name = match entry.name() {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        let kind = match entry.kind() {
+            Some(git2::ObjectType::Blob) => "file",
+            Some(git2::ObjectType::Tree) => "dir",
+            _ => continue,
+        };
+        let size = if kind == "file" {
+            repo.find_blob(entry.id()).map(|b| b.size()).unwrap_or(0)
+        } else {
+            0
+        };
+        let path = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        entries.push(TreeEntryResponse {
+            name,
+            path,
+            kind: kind.to_string(),
+            size,
+        });
+    }
+    entries
+}
+
+fn list_tree_entries_recursive(
+    repo: &git2::Repository,
+    tree: &git2::Tree<'_>,
+    prefix: &str,
+) -> Vec<TreeEntryResponse> {
+    let mut entries = Vec::new();
+    for entry in tree.iter() {
+        let name = match entry.name() {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        let kind = match entry.kind() {
+            Some(git2::ObjectType::Blob) => "file",
+            Some(git2::ObjectType::Tree) => "dir",
+            _ => continue,
+        };
+        let path = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        let size = if kind == "file" {
+            repo.find_blob(entry.id()).map(|b| b.size()).unwrap_or(0)
+        } else {
+            0
+        };
+        entries.push(TreeEntryResponse {
+            name: name.clone(),
+            path: path.clone(),
+            kind: kind.to_string(),
+            size,
+        });
+        if kind == "dir" {
+            if let Ok(subtree) = repo.find_tree(entry.id()) {
+                entries.extend(list_tree_entries_recursive(repo, &subtree, &path));
+            }
+        }
+    }
+    entries
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TreeQuery {
+    pub path: Option<String>,
+    #[serde(rename = "ref")]
+    pub git_ref: Option<String>,
+    pub recursive: Option<bool>,
+}
+
+/// GET /api/v1/repos/{namespace}/{repo}/tree
+pub async fn list_tree(
+    Extension(tenant): Extension<TenantContext>,
+    State(state): State<Arc<GitState>>,
+    Path((namespace, repo_name)): Path<(String, String)>,
+    Query(query): Query<TreeQuery>,
+) -> Response {
+    if let Err(e) = resolve_repo(&state, &tenant.tenant_id, &namespace, &repo_name).await {
+        return e;
+    }
+
+    let repo_fs_path = state
+        .storage
+        .repo_path(&tenant.tenant_id, &namespace, &repo_name);
+    let git_ref = query.git_ref.unwrap_or_else(|| "HEAD".to_string());
+    let path = query.path.unwrap_or_default();
+    let recursive = query.recursive.unwrap_or(false);
+
+    let path_clone = path.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let repo = git2::Repository::open_bare(&repo_fs_path).map_err(|e| e.to_string())?;
+        let obj = repo
+            .revparse_single(&git_ref)
+            .map_err(|e| format!("ref not found: {e}"))?;
+        let commit = obj
+            .peel_to_commit()
+            .map_err(|e| format!("not a commit: {e}"))?;
+        let root_tree = commit.tree().map_err(|e| e.to_string())?;
+
+        let (tree, prefix) = if path_clone.is_empty() {
+            (root_tree, String::new())
+        } else {
+            let entry = root_tree
+                .get_path(std::path::Path::new(&path_clone))
+                .map_err(|e| format!("path not found: {e}"))?;
+            let subtree = repo
+                .find_tree(entry.id())
+                .map_err(|e| format!("not a tree: {e}"))?;
+            (subtree, path_clone)
+        };
+
+        let entries = if recursive {
+            list_tree_entries_recursive(&repo, &tree, &prefix)
+        } else {
+            list_tree_entries(&repo, &tree, &prefix)
+        };
+        Ok::<Vec<TreeEntryResponse>, String>(entries)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(entries)) => Json(serde_json::json!(entries)).into_response(),
+        Ok(Err(e)) if e.contains("path not found") || e.contains("ref not found") => {
+            error_response(StatusCode::NOT_FOUND, &e)
+        }
+        Ok(Err(e)) => {
+            tracing::error!(error = %e, "failed to list tree");
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, &e)
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "spawn_blocking panic in list_tree");
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct TreeCommitQuery {

@@ -186,6 +186,10 @@ pub fn git_router(cfg: GitRouterConfig) -> Router {
             get(commits::get_commit_diff),
         )
         .route(
+            "/api/v1/repos/{namespace}/{repo}/tree",
+            get(tree::list_tree),
+        )
+        .route(
             "/api/v1/repos/{namespace}/{repo}/tree-commits",
             get(tree::list_tree_commits),
         )
