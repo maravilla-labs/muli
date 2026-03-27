@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.14] - 2026-03-27
+
+### Added
+
+- **Batch delete support** — the `POST /api/v1/repos/{namespace}/{repo}/contents` batch endpoint now accepts an optional `deletes` array of file paths. Deletes are applied before creates, enabling atomic file renames (delete old path + create at new path) in a single commit. Empty parent directories are automatically cleaned up.
+
 ## [0.4.13] - 2026-03-27
 
 ### Added

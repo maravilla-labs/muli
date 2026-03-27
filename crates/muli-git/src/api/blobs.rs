@@ -192,6 +192,10 @@ pub struct BatchFileEntry {
 #[derive(Debug, Deserialize)]
 pub struct CreateFilesBatchRequest {
     pub files: Vec<BatchFileEntry>,
+    /// Paths to remove from the tree before inserting new files.
+    /// Enables atomic renames: delete old path + create at new path.
+    #[serde(default)]
+    pub deletes: Vec<String>,
     pub message: String,
     #[serde(default = "default_branch")]
     pub branch: String,
@@ -251,6 +255,52 @@ pub fn insert_blob_in_tree(
     builder
         .insert(dir_name, new_subtree_oid, 0o040000)
         .map_err(|e| e.to_string())?;
+    builder.write().map_err(|e| e.to_string())
+}
+
+/// Remove a blob at the given path from a tree, cleaning up empty
+/// intermediate subtrees. Returns the new root tree OID.
+pub fn remove_blob_from_tree(
+    repo: &git2::Repository,
+    base_tree: &git2::Tree<'_>,
+    path_segments: &[&str],
+) -> Result<git2::Oid, String> {
+    if path_segments.is_empty() {
+        return Err("empty path".to_string());
+    }
+    let mut builder = repo.treebuilder(Some(base_tree)).map_err(|e| e.to_string())?;
+    if path_segments.len() == 1 {
+        // Leaf — remove the entry
+        builder
+            .remove(path_segments[0])
+            .map_err(|e| format!("remove failed: {e}"))?;
+        return builder.write().map_err(|e| e.to_string());
+    }
+
+    // Intermediate directory — recurse
+    let dir_name = path_segments[0];
+    let rest = &path_segments[1..];
+
+    let subtree_entry = base_tree
+        .get_name(dir_name)
+        .ok_or_else(|| format!("directory not found: {dir_name}"))?;
+    let subtree = repo
+        .find_tree(subtree_entry.id())
+        .map_err(|e| format!("not a tree: {e}"))?;
+
+    let new_subtree_oid = remove_blob_from_tree(repo, &subtree, rest)?;
+
+    // Check if the subtree is now empty; if so, remove the directory entry too
+    let new_subtree = repo.find_tree(new_subtree_oid).map_err(|e| e.to_string())?;
+    if new_subtree.len() == 0 {
+        builder
+            .remove(dir_name)
+            .map_err(|e| format!("remove dir failed: {e}"))?;
+    } else {
+        builder
+            .insert(dir_name, new_subtree_oid, 0o040000)
+            .map_err(|e| e.to_string())?;
+    }
     builder.write().map_err(|e| e.to_string())
 }
 
@@ -352,8 +402,8 @@ pub async fn create_files_batch(
     Path((namespace, repo_name)): Path<(String, String)>,
     Json(body): Json<CreateFilesBatchRequest>,
 ) -> Response {
-    if body.files.is_empty() {
-        return error_response(StatusCode::BAD_REQUEST, "files array must not be empty");
+    if body.files.is_empty() && body.deletes.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "files and deletes must not both be empty");
     }
 
     if let Err(e) = resolve_repo(&state, &tenant.tenant_id, &namespace, &repo_name).await {
@@ -384,6 +434,7 @@ pub async fn create_files_batch(
     let message = body.message;
     let branch = body.branch;
     let author = body.author;
+    let deletes = body.deletes;
 
     let result = tokio::task::spawn_blocking(move || {
         let repo = git2::Repository::open_bare(&repo_fs_path).map_err(|e| e.to_string())?;
@@ -405,7 +456,7 @@ pub async fn create_files_batch(
             None => None,
         };
 
-        // Insert all files into the tree
+        // Start from the base tree
         let mut current_tree_oid = match &base_tree {
             Some(t) => t.id(),
             None => {
@@ -414,6 +465,14 @@ pub async fn create_files_batch(
             }
         };
 
+        // Apply deletes first (enables atomic renames: delete old + create new)
+        for del_path in &deletes {
+            let current_tree = repo.find_tree(current_tree_oid).map_err(|e| e.to_string())?;
+            let segments: Vec<&str> = del_path.split('/').collect();
+            current_tree_oid = remove_blob_from_tree(&repo, &current_tree, &segments)?;
+        }
+
+        // Then insert all files
         for (path, content) in &decoded_files {
             let blob_oid = repo.blob(content).map_err(|e| e.to_string())?;
             let current_tree = repo.find_tree(current_tree_oid).map_err(|e| e.to_string())?;
