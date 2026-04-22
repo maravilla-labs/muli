@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.16] - 2026-04-23
+
+### Fixed
+
+- **Orphan workspace cleanup** — `/tmp/muli-workspace-{job_id}` directories are now swept by the background cleanup service when older than `MULI_CLEANUP_MAX_AGE_SECONDS` (default 1h). Previously these were only removed at end-of-job, so executor crashes or early errors leaked them indefinitely.
+
 ## [0.4.15] - 2026-03-27
 
 ### Changed

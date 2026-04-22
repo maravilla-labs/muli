@@ -4,7 +4,9 @@
 //! Background cleanup service for orphaned containers and volumes.
 
 use std::collections::HashMap;
-use std::time::Duration;
+use std::fs;
+use std::path::PathBuf;
+use std::time::{Duration, SystemTime};
 
 use bollard::container::{ListContainersOptions, RemoveContainerOptions};
 use bollard::network::ListNetworksOptions;
@@ -46,6 +48,22 @@ impl CleanupService {
     async fn cleanup_once(&self) -> Result<()> {
         self.cleanup_exited_containers().await?;
         self.cleanup_orphan_networks().await?;
+        self.cleanup_orphan_workspaces().await?;
+        Ok(())
+    }
+
+    /// Remove `muli-workspace-*` directories in the system temp dir whose mtime
+    /// is older than `max_age`. End-of-job cleanup in `executor::cleanup` is the
+    /// primary path; this sweep reclaims workspaces leaked by crashes or early
+    /// errors that bypassed that path.
+    async fn cleanup_orphan_workspaces(&self) -> Result<()> {
+        let max_age = self.max_age;
+        let removed = tokio::task::spawn_blocking(move || sweep_orphan_workspaces(max_age))
+            .await
+            .unwrap_or(0);
+        if removed > 0 {
+            info!(count = removed, "Removed orphan workspace directories");
+        }
         Ok(())
     }
 
@@ -141,4 +159,67 @@ impl CleanupService {
         info!("Cleanup cycle completed");
         Ok(())
     }
+}
+
+const WORKSPACE_PREFIX: &str = "muli-workspace-";
+
+fn sweep_orphan_workspaces(max_age: Duration) -> usize {
+    let base = std::env::temp_dir();
+    let entries = match fs::read_dir(&base) {
+        Ok(e) => e,
+        Err(e) => {
+            warn!(path = %base.display(), error = %e, "Failed to read temp dir for workspace cleanup");
+            return 0;
+        }
+    };
+
+    let cutoff = SystemTime::now()
+        .checked_sub(max_age)
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let mut removed = 0usize;
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = match name.to_str() {
+            Some(n) if n.starts_with(WORKSPACE_PREFIX) => n.to_owned(),
+            _ => continue,
+        };
+
+        let path: PathBuf = entry.path();
+        let metadata = match entry.metadata() {
+            Ok(m) => m,
+            Err(e) => {
+                warn!(path = %path.display(), error = %e, "Failed to stat workspace candidate");
+                continue;
+            }
+        };
+
+        if !metadata.is_dir() {
+            continue;
+        }
+
+        let mtime = match metadata.modified() {
+            Ok(t) => t,
+            Err(e) => {
+                warn!(path = %path.display(), error = %e, "Failed to read mtime for workspace candidate");
+                continue;
+            }
+        };
+
+        if mtime >= cutoff {
+            continue;
+        }
+
+        match fs::remove_dir_all(&path) {
+            Ok(()) => {
+                debug!(path = %path.display(), name = %name, "Removed orphan workspace");
+                removed += 1;
+            }
+            Err(e) => {
+                warn!(path = %path.display(), error = %e, "Failed to remove orphan workspace");
+            }
+        }
+    }
+
+    removed
 }
