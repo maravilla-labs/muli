@@ -12,17 +12,18 @@ use muli_core::tenant::Tenant;
 use muli_core::traits::{
     ArtifactStore, CacheStore, CollaboratorStore, GitTokenStore, JobLogStore, JobStore,
     OrgMemberStore, OrgSecretStore, OrgStore, PipelineRunStore, PipelineSecretStore, PipelineStore,
-    PrCommentStore, PullRequestStore, RegistryTokenStore, RepositoryStore, SshKeyStore,
-    StepRunStore, TenantLimitsStore, TenantQuotaStore, TenantStore, TreeCommitCacheStore,
-    UserStore, WebhookStore,
+    PrCommentStore, PullRequestStore, RegistryTokenStore, ReleaseStore, RepositoryStore,
+    SshKeyStore, StepRunStore, TenantLimitsStore, TenantQuotaStore, TenantStore,
+    TreeCommitCacheStore, UserStore, WebhookStore,
 };
 use muli_store::sqlite::{
     SqliteArtifactStore, SqliteCacheStore, SqliteCollaboratorStore, SqliteGitTokenStore,
     SqliteJobLogStore, SqliteJobStore, SqliteOrgMemberStore, SqliteOrgSecretStore, SqliteOrgStore,
     SqlitePipelineRunStore, SqlitePipelineSecretStore, SqlitePipelineStore, SqlitePrCommentStore,
-    SqlitePullRequestStore, SqliteRegistryTokenStore, SqliteRepositoryStore, SqliteSshKeyStore,
-    SqliteStepRunStore, SqliteStoreFactory, SqliteTenantLimitsStore, SqliteTenantQuotaStore,
-    SqliteTenantStore, SqliteTreeCommitCacheStore, SqliteUserStore, SqliteWebhookStore,
+    SqlitePullRequestStore, SqliteRegistryTokenStore, SqliteReleaseStore, SqliteRepositoryStore,
+    SqliteSshKeyStore, SqliteStepRunStore, SqliteStoreFactory, SqliteTenantLimitsStore,
+    SqliteTenantQuotaStore, SqliteTenantStore, SqliteTreeCommitCacheStore, SqliteUserStore,
+    SqliteWebhookStore,
 };
 
 use crate::config::ServerConfig;
@@ -55,6 +56,7 @@ pub(crate) struct Stores {
     pub pipeline_secret_store: Arc<dyn PipelineSecretStore>,
     pub org_secret_store: Arc<dyn OrgSecretStore>,
     pub tenant_limits_store: Arc<dyn TenantLimitsStore>,
+    pub release_store: Arc<dyn ReleaseStore>,
 }
 
 /// Initialize all SQLite-backed stores from config.
@@ -112,6 +114,7 @@ pub(crate) async fn init_stores(config: &ServerConfig) -> anyhow::Result<Stores>
         pipeline_cache_store: Arc::new(SqliteCacheStore::new(factory.clone())),
         pipeline_secret_store: Arc::new(SqlitePipelineSecretStore::new(factory.clone())),
         org_secret_store: Arc::new(SqliteOrgSecretStore::new(factory.clone())),
+        release_store: Arc::new(SqliteReleaseStore::new(factory.clone())),
         tenant_limits_store: Arc::new(SqliteTenantLimitsStore::new(factory)),
     })
 }

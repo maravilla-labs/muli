@@ -4,8 +4,10 @@ Muli is a self-hostable developer infrastructure platform written in Rust.
 
 It combines:
 - containerized job execution
+- CI/CD pipelines (YAML DSL, DAG, matrix, artifacts, caching)
 - multi-tenant package registries (OCI/Docker, npm, Cargo, Maven)
 - multi-tenant git hosting (HTTP + SSH)
+- repository releases (tagged snapshots with downloadable assets)
 - user/org/tenant APIs
 
 ## Status
@@ -125,10 +127,11 @@ muli-server
 
 - [Documentation Index](docs/index.md)
 - [Quickstart](docs/quickstart.md)
+- [Pipelines](docs/pipelines.md)
+- [Releases](docs/releases.md)
 - [Operations Runbook](docs/operations.md)
 - [Security Model](docs/security-model.md)
 - [Release Policy](docs/release-policy.md)
-- [Feature Comparison](docs/feature-comparison.md)
 - [Vision](VISION.md)
 - [Changelog](CHANGELOG.md)
 

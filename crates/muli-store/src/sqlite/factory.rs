@@ -332,6 +332,26 @@ CREATE TABLE IF NOT EXISTS org_secrets (
   UNIQUE(org_id, name)
 );
 CREATE INDEX IF NOT EXISTS org_secrets_org ON org_secrets(org_id);
+
+CREATE TABLE IF NOT EXISTS releases (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  repo_id TEXT NOT NULL,
+  tag TEXT NOT NULL,
+  draft INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  full_json TEXT NOT NULL,
+  UNIQUE(repo_id, tag)
+);
+CREATE INDEX IF NOT EXISTS releases_repo ON releases(repo_id, created_at);
+
+CREATE TABLE IF NOT EXISTS release_assets (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  release_id TEXT NOT NULL,
+  full_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS release_assets_release ON release_assets(release_id);
 ";
 
 /// Central SQLite connection factory. Holds one connection per tenant DB

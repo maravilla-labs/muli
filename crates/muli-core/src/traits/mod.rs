@@ -8,6 +8,7 @@ mod job;
 mod org;
 mod pipeline;
 mod registry;
+mod release;
 mod tenant_limits;
 mod user;
 
@@ -22,5 +23,6 @@ pub use pipeline::{
     PipelineStore, StepRunStore,
 };
 pub use registry::{RegistryTokenStore, TenantQuotaStore, TenantStore};
+pub use release::ReleaseStore;
 pub use tenant_limits::TenantLimitsStore;
 pub use user::UserStore;

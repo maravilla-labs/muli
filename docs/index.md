@@ -25,7 +25,10 @@ Use this page as the entrypoint to Muli documentation.
 
 - [Pipelines](pipelines.md): YAML DSL reference, DAG execution, caching, artifacts, matrix builds, real-world examples
 
+## Repository Releases
+
+- [Releases](releases.md): tag-anchored releases with notes and downloadable assets, the `ReleaseService` API, visibility/access model
+
 ## Product Context
 
-- [Feature Comparison](feature-comparison.md)
 - [Vision](../VISION.md)

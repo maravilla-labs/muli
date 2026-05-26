@@ -24,15 +24,17 @@ use muli_proto::log_service_server::LogServiceServer;
 use muli_proto::org_service_server::OrgServiceServer;
 use muli_proto::pipeline_service_server::PipelineServiceServer;
 use muli_proto::registry_service_server::RegistryServiceServer;
+use muli_proto::release_service_server::ReleaseServiceServer;
 use muli_proto::tenant_service_server::TenantServiceServer;
 use muli_proto::user_service_server::UserServiceServer;
 
 use crate::config::ServerConfig;
 use crate::grpc::{
     AgentServiceImpl, AuthInterceptor, GitServiceImpl, HealthServiceImpl, JobServiceImpl,
-    LogServiceImpl, OrgServiceImpl, PipelineServiceImpl, RegistryServiceImpl, TenantServiceImpl,
-    UserServiceImpl,
+    LogServiceImpl, OrgServiceImpl, PipelineServiceImpl, RegistryServiceImpl, ReleaseServiceImpl,
+    TenantServiceImpl, UserServiceImpl,
 };
+use crate::release_storage::ReleaseAssetStorage;
 use crate::shutdown::shutdown_signal;
 use crate::stores::Stores;
 
@@ -145,6 +147,13 @@ pub(crate) async fn start_grpc(
             }),
     };
 
+    let release_service = ReleaseServiceImpl {
+        store: stores.release_store,
+        asset_storage: Arc::new(ReleaseAssetStorage::new(std::path::Path::new(
+            &config.data_dir,
+        ))),
+    };
+
     // Auth interceptor (no-op when MULI_API_KEY is unset)
     let auth = AuthInterceptor::new(config.api_key.clone(), config.default_tenant_id.clone());
     if config.api_key.is_some() {
@@ -226,6 +235,10 @@ pub(crate) async fn start_grpc(
         ))
         .add_service(TenantServiceServer::with_interceptor(
             tenant_service,
+            auth.clone(),
+        ))
+        .add_service(ReleaseServiceServer::with_interceptor(
+            release_service,
             auth.clone(),
         ))
         .add_service(PipelineServiceServer::with_interceptor(

@@ -1,0 +1,173 @@
+// Copyright 2026 Maravilla Labs
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+syntax = "proto3";
+
+package muli.v1;
+
+import "muli/v1/common.proto";
+
+// Release management service. A release is a tag-anchored, named snapshot of a
+// repository with optional notes and downloadable binary assets.
+//
+// Access control: releases and their assets inherit the repository's existing
+// gate (see GitRepository.is_private and the per-repo anonymous-pull setting).
+// Asset downloads are authorized identically to git read access — there is no
+// new public surface. Drafts are never exposed to unauthenticated listings.
+service ReleaseService {
+  rpc CreateRelease(CreateReleaseRequest) returns (Release);
+  rpc GetRelease(GetReleaseRequest) returns (Release);
+  rpc GetReleaseByTag(GetReleaseByTagRequest) returns (Release);
+  rpc ListReleases(ListReleasesRequest) returns (ListReleasesResponse);
+  rpc UpdateRelease(UpdateReleaseRequest) returns (Release);
+  rpc DeleteRelease(DeleteReleaseRequest) returns (DeleteReleaseResponse);
+
+  // Asset management
+  rpc UploadReleaseAsset(UploadReleaseAssetRequest) returns (ReleaseAsset);
+  rpc DownloadReleaseAsset(DownloadReleaseAssetRequest) returns (DownloadReleaseAssetResponse);
+  rpc ListReleaseAssets(ListReleaseAssetsRequest) returns (ListReleaseAssetsResponse);
+  rpc DeleteReleaseAsset(DeleteReleaseAssetRequest) returns (DeleteReleaseAssetResponse);
+}
+
+// A release: a tag-anchored, named snapshot with notes + downloadable assets.
+message Release {
+  string id = 1;
+  string tenant_id = 2;
+  string repo_id = 3;
+  // Git tag this release is anchored to (e.g. "v1.0.0").
+  string tag = 4;
+  // Branch or commit the tag points at (informational).
+  string target_commitish = 5;
+  string name = 6;
+  // Release notes / changelog (markdown).
+  string body = 7;
+  // Draft releases are unpublished and never trigger release pipelines.
+  bool draft = 8;
+  // Prerelease marks non-production releases (e.g. v1.0.0-rc1).
+  bool prerelease = 9;
+  string created_by = 10;
+  Timestamp created_at = 11;
+  Timestamp updated_at = 12;
+  // Set when the release transitions from draft to published.
+  optional Timestamp published_at = 13;
+  repeated ReleaseAsset assets = 14;
+}
+
+// A downloadable binary attached to a release.
+message ReleaseAsset {
+  string id = 1;
+  string release_id = 2;
+  string name = 3;
+  uint64 size = 4;
+  string sha256 = 5;
+  string content_type = 6;
+  // Internal storage key; downloads are served by the gateway under the same
+  // auth gate as git read.
+  string storage_key = 7;
+  Timestamp created_at = 8;
+  string tenant_id = 9;
+}
+
+// --- Release RPCs ---
+
+message CreateReleaseRequest {
+  string tenant_id = 1;
+  string repo_id = 2;
+  string tag = 3;
+  string target_commitish = 4;
+  string name = 5;
+  string body = 6;
+  bool draft = 7;
+  bool prerelease = 8;
+  string created_by = 9;
+  // When true and the tag does not yet exist, create it from target_commitish.
+  bool create_tag = 10;
+}
+
+message GetReleaseRequest {
+  string tenant_id = 1;
+  string repo_id = 2;
+  string release_id = 3;
+}
+
+message GetReleaseByTagRequest {
+  string tenant_id = 1;
+  string repo_id = 2;
+  string tag = 3;
+}
+
+message ListReleasesRequest {
+  string tenant_id = 1;
+  string repo_id = 2;
+  uint32 limit = 3;
+  uint32 offset = 4;
+  // When true, exclude drafts (used for unauthenticated / public listings).
+  bool published_only = 5;
+}
+
+message ListReleasesResponse {
+  repeated Release releases = 1;
+  uint32 total = 2;
+}
+
+message UpdateReleaseRequest {
+  string tenant_id = 1;
+  string repo_id = 2;
+  string release_id = 3;
+  optional string name = 4;
+  optional string body = 5;
+  optional bool draft = 6;
+  optional bool prerelease = 7;
+}
+
+message DeleteReleaseRequest {
+  string tenant_id = 1;
+  string repo_id = 2;
+  string release_id = 3;
+}
+
+message DeleteReleaseResponse {}
+
+// --- Asset RPCs ---
+
+// Uploads a single asset. `data` carries the full asset bytes; large-asset
+// streaming is a follow-up (the message size limit is configured server-side).
+message UploadReleaseAssetRequest {
+  string tenant_id = 1;
+  string repo_id = 2;
+  string release_id = 3;
+  string name = 4;
+  string content_type = 5;
+  bytes data = 6;
+}
+
+message DownloadReleaseAssetRequest {
+  string tenant_id = 1;
+  string repo_id = 2;
+  string asset_id = 3;
+}
+
+message DownloadReleaseAssetResponse {
+  bytes data = 1;
+  string content_type = 2;
+  string name = 3;
+}
+
+message ListReleaseAssetsRequest {
+  string tenant_id = 1;
+  string repo_id = 2;
+  string release_id = 3;
+}
+
+message ListReleaseAssetsResponse {
+  repeated ReleaseAsset assets = 1;
+}
+
+message DeleteReleaseAssetRequest {
+  string tenant_id = 1;
+  string repo_id = 2;
+  string release_id = 3;
+  string asset_id = 4;
+}
+
+message DeleteReleaseAssetResponse {}

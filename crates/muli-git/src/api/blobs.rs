@@ -292,7 +292,7 @@ pub fn remove_blob_from_tree(
 
     // Check if the subtree is now empty; if so, remove the directory entry too
     let new_subtree = repo.find_tree(new_subtree_oid).map_err(|e| e.to_string())?;
-    if new_subtree.len() == 0 {
+    if new_subtree.is_empty() {
         builder
             .remove(dir_name)
             .map_err(|e| format!("remove dir failed: {e}"))?;
