@@ -144,12 +144,11 @@ pub async fn list_commits(
                         touched = true;
                         // Follow rename: if this is a rename where new_file
                         // matches our tracked path, continue with old_file
-                        if delta.status() == git2::Delta::Renamed {
-                            if new_path == Some(fp.as_str()) {
-                                if let Some(old) = old_path {
-                                    current_path = Some(old.to_string());
-                                }
-                            }
+                        if delta.status() == git2::Delta::Renamed
+                            && new_path == Some(fp.as_str())
+                            && let Some(old) = old_path
+                        {
+                            current_path = Some(old.to_string());
                         }
                         break;
                     }
