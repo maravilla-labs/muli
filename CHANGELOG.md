@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.18] - 2026-05-26
+
+### Fixed
+
+- **Scoped npm package publish** — publishing a scoped package (e.g. `@scope/name`) failed with `500 failed to store tarball`. npm/pnpm key the `_attachments` entry by the full package name (`@scope/name-1.0.0.tgz`), and the embedded `/` was rejected by the tarball filename path-component guard. The publish handler now stores the tarball under its unscoped basename (`name-1.0.0.tgz`), matching the read path and the generated `dist.tarball` URL. Unscoped packages were unaffected.
+
 ## [0.4.16] - 2026-04-23
 
 ### Fixed
