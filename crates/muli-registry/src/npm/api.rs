@@ -101,6 +101,13 @@ async fn handle_publish(
 
     // Process each attachment (tarball) with per-tarball quota reservation
     for (filename, attachment) in &publish_req.attachments {
+        // npm/pnpm key scoped attachments by the full package name, e.g.
+        // "@solutas/shared-protocol-0.0.1.tgz". Strip the scope so the stored
+        // filename is the unscoped basename ("shared-protocol-0.0.1.tgz") that
+        // the read step and tarball URL below both expect — and so it passes
+        // the path-component validation in store_tarball (which rejects '/').
+        let stored_filename = filename.rsplit('/').next().unwrap_or(filename);
+
         let tarball_data = match base64::engine::general_purpose::STANDARD.decode(&attachment.data)
         {
             Ok(d) => d,
@@ -117,9 +124,14 @@ async fn handle_publish(
         }
 
         // Store tarball
-        if let Err(e) =
-            npm_storage::store_tarball(storage, &tenant.tenant_id, package, filename, &tarball_data)
-                .await
+        if let Err(e) = npm_storage::store_tarball(
+            storage,
+            &tenant.tenant_id,
+            package,
+            stored_filename,
+            &tarball_data,
+        )
+        .await
         {
             // Release reserved bytes on failure
             adjust_quota_usage(quota_store, &tenant.tenant_id, -(tarball_data.len() as i64));
