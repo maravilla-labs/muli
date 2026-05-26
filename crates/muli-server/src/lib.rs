@@ -14,6 +14,7 @@ mod pipeline_clone_url;
 pub(crate) mod pipeline_job_submitter;
 mod pipeline_trigger;
 pub mod recovery;
+pub mod release_storage;
 pub(crate) mod secret_resolver;
 pub mod shutdown;
 mod start_grpc;

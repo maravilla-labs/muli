@@ -51,7 +51,7 @@ muli-agent               (remote worker binary)
 
 ### Documentation
 
-- **`docs/`** — user-facing docs: `quickstart.md`, `operations.md` (production runbook), `pipelines.md` (CI/CD guide), `security-model.md`, `feature-comparison.md`.
+- **`docs/`** — user-facing docs: `quickstart.md`, `operations.md` (production runbook), `pipelines.md` (CI/CD guide), `releases.md` (repository releases), `security-model.md`.
 - **`.env.example`** — all environment variables with descriptions.
 - **`CONTRIBUTING.md`** — dev setup and PR guidelines.
 

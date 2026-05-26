@@ -14,6 +14,7 @@ pub mod org;
 pub mod pipeline;
 pub mod pr;
 pub mod registry;
+pub mod release;
 pub mod resource;
 pub mod service;
 pub mod tenant;
