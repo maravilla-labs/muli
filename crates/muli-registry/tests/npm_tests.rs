@@ -143,8 +143,10 @@ async fn test_npm_scoped_publish() {
                 "dist": { "tarball": "", "shasum": "" }
             }
         },
+        // npm/pnpm key scoped attachments by the full package name,
+        // including the scope and its '/'. Use the realistic key here.
         "_attachments": {
-            "my-lib-2.0.0.tgz": {
+            "@myorg/my-lib-2.0.0.tgz": {
                 "data": tarball_b64,
                 "length": tarball_data.len()
             }
