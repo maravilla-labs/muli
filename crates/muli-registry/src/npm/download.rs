@@ -159,20 +159,36 @@ pub async fn search(
         .unwrap_or_default();
 
     let text = query.text.to_lowercase();
-    let results: Vec<serde_json::Value> = packages
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    for name in packages
         .into_iter()
         .filter(|name| text.is_empty() || name.to_lowercase().contains(&text))
         .take(query.size)
-        .map(|name| {
-            serde_json::json!({
-                "package": {
-                    "name": name,
-                    "version": "0.0.0",
-                    "description": "",
+    {
+        // Surface the real latest version + description from the packument
+        // (`dist-tags.latest`, falling back to the highest version key) rather
+        // than a placeholder, so search/listing UIs show the actual version.
+        let (version, description) =
+            match npm_storage::read_packument(&storage, &tenant.tenant_id, &name).await {
+                Some(p) => {
+                    let v = p
+                        .dist_tags
+                        .get("latest")
+                        .cloned()
+                        .or_else(|| p.versions.keys().max().cloned())
+                        .unwrap_or_else(|| "0.0.0".to_string());
+                    (v, p.description.unwrap_or_default())
                 }
-            })
-        })
-        .collect();
+                None => ("0.0.0".to_string(), String::new()),
+            };
+        results.push(serde_json::json!({
+            "package": {
+                "name": name,
+                "version": version,
+                "description": description,
+            }
+        }));
+    }
 
     let body = serde_json::json!({
         "objects": results,

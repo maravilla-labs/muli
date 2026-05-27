@@ -190,15 +190,28 @@ pub async fn list_artifacts(
 
         for entry in subdirs {
             let entry_name = entry.file_name().to_string_lossy().to_string();
+            let group_id = group_parts.join(".");
 
-            // Check if this directory looks like an artifact dir:
-            // it should have version subdirectories (which themselves contain files)
-            let versions = list_versions(storage, tenant_id, &group_parts.join("."), &entry_name)
-                .await
-                .unwrap_or_default();
+            // A directory is an artifact only if its child dirs are real version
+            // dirs that actually contain files (jar/pom/...). A subdir holding
+            // only further directories is part of the group path, not an artifact
+            // — otherwise we'd stop one level too shallow (treating the artifact
+            // name as a version and the group's last segment as the artifact).
+            let candidate_versions =
+                list_versions(storage, tenant_id, &group_id, &entry_name)
+                    .await
+                    .unwrap_or_default();
+            let mut versions = Vec::new();
+            for v in candidate_versions {
+                let files = list_version_files(storage, tenant_id, &group_id, &entry_name, &v)
+                    .await
+                    .unwrap_or_default();
+                if !files.is_empty() {
+                    versions.push(v);
+                }
+            }
 
             if !versions.is_empty() {
-                let group_id = group_parts.join(".");
                 let latest_version = versions.last().cloned();
                 results.push(MavenArtifactSummary {
                     group_id,
