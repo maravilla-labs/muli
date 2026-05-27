@@ -154,6 +154,21 @@ pub struct MavenArtifactSummary {
     pub latest_version: Option<String>,
 }
 
+/// Whether a filename in a version directory is a real artifact file (jar, pom,
+/// module, etc.) rather than `maven-metadata.xml` or a checksum/signature
+/// sidecar. Used to distinguish true version dirs from the artifact-level dir
+/// (which only holds metadata) when walking the tree.
+fn is_maven_artifact_file(name: &str) -> bool {
+    if name.starts_with("maven-metadata.xml") {
+        return false;
+    }
+    !(name.ends_with(".sha1")
+        || name.ends_with(".md5")
+        || name.ends_with(".sha256")
+        || name.ends_with(".sha512")
+        || name.ends_with(".asc"))
+}
+
 /// List all Maven artifacts for a tenant.
 ///
 /// Walks `{root}/{tenant_id}/maven/` to find artifact directories
@@ -193,10 +208,12 @@ pub async fn list_artifacts(
             let group_id = group_parts.join(".");
 
             // A directory is an artifact only if its child dirs are real version
-            // dirs that actually contain files (jar/pom/...). A subdir holding
-            // only further directories is part of the group path, not an artifact
-            // — otherwise we'd stop one level too shallow (treating the artifact
-            // name as a version and the group's last segment as the artifact).
+            // dirs that hold an actual artifact file (jar/pom/...) — NOT just
+            // `maven-metadata.xml` + checksum sidecars, which muli also writes at
+            // the *artifact* level. Checking "has any file" is fooled by that
+            // artifact-level metadata and stops one level too shallow (treating
+            // the artifact name as a version and the group's last segment as the
+            // artifact); requiring a real artifact file avoids that.
             let candidate_versions =
                 list_versions(storage, tenant_id, &group_id, &entry_name)
                     .await
@@ -206,7 +223,7 @@ pub async fn list_artifacts(
                 let files = list_version_files(storage, tenant_id, &group_id, &entry_name, &v)
                     .await
                     .unwrap_or_default();
-                if !files.is_empty() {
+                if files.iter().any(|f| is_maven_artifact_file(f)) {
                     versions.push(v);
                 }
             }
