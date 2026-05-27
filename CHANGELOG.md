@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.20] - 2026-05-27
+
+### Fixed
+
+- **Maven `_list` artifact-level metadata** — the v0.4.19 fix still mis-parsed coordinates because muli writes a `maven-metadata.xml` (+ checksums) at the *artifact* level, so the "version dir contains files" check still matched the artifact dir and stopped one level too shallow. A directory now counts as a version only if it holds a real artifact file (jar/pom/module/…), excluding `maven-metadata.xml` and `.sha1/.md5/.sha256/.sha512/.asc` sidecars — yielding the correct `solutas:shared-protocol:0.0.2`.
+
 ## [0.4.19] - 2026-05-27
 
 ### Fixed
