@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.19] - 2026-05-27
+
+### Fixed
+
+- **Registry catalog listing (npm + Maven)** — the package-list/search endpoints returned wrong metadata (the per-tarball/per-artifact data was fine). npm `GET /-/v1/search` hardcoded `version: "0.0.0"` and an empty description instead of reading each packument; it now surfaces the real `dist-tags.latest` (falling back to the highest version key) and description. Maven `GET /-/maven/_list` mis-parsed coordinates — it counted any subdirectory as a "version" without checking it held files, stopping one level too shallow (reporting `group_id:"", artifact_id:"solutas", version:"shared-protocol"` for `solutas/shared-protocol/0.0.2/`); it now only treats a directory as a version when it actually contains files, yielding the correct `solutas:shared-protocol:0.0.2`.
+
 ## [0.4.18] - 2026-05-26
 
 ### Fixed

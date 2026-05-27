@@ -182,6 +182,23 @@ async fn test_npm_scoped_publish() {
     let (status, _, body) = reg.send(req).await;
     assert_eq!(status, 200);
     assert_eq!(body, tarball_data);
+
+    // Search must surface the real latest version (from the packument), not a
+    // hardcoded "0.0.0" placeholder.
+    let req = reg
+        .request("GET", "/-/v1/search?text=my-lib")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, body) = reg.send(req).await;
+    assert_eq!(status, 200);
+    let search: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let pkg = &search["objects"][0]["package"];
+    assert_eq!(pkg["name"], "@myorg/my-lib");
+    assert_eq!(
+        pkg["version"], "2.0.0",
+        "search should report the real latest version, got: {}",
+        pkg["version"]
+    );
 }
 
 // ---------------------------------------------------------------------------
