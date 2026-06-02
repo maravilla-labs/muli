@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use russh::ChannelId;
 use russh::server::Session;
-use russh::{ChannelId, CryptoVec};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
@@ -38,7 +38,7 @@ pub(super) async fn spawn_git_process(
         Ok(c) => c,
         Err(e) => {
             tracing::error!(error = %e, cmd = %git_cmd, "failed to spawn git process");
-            session.channel_failure(channel);
+            let _ = session.channel_failure(channel);
             return Ok(());
         }
     };
@@ -66,8 +66,8 @@ pub(super) async fn spawn_git_process(
             match stdout.read(&mut buf).await {
                 Ok(0) => break,
                 Ok(n) => {
-                    let cv = CryptoVec::from_slice(&buf[..n]);
-                    if handle.data(channel, cv).await.is_err() {
+                    // russh 0.50+: Handle::data takes `impl Into<bytes::Bytes>`.
+                    if handle.data(channel, buf[..n].to_vec()).await.is_err() {
                         break;
                     }
                 }
@@ -125,7 +125,7 @@ pub(super) async fn spawn_git_process(
         let _ = handle.close(channel).await;
     });
 
-    session.channel_success(channel);
+    let _ = session.channel_success(channel);
     processes.insert(channel, ProcessHandle { stdin_tx });
     Ok(())
 }

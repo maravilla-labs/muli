@@ -31,7 +31,6 @@ reqwest = { workspace = true }
 anyhow = { workspace = true }
 tokio-util = { workspace = true }
 russh = { workspace = true }
-russh-keys = { workspace = true }
 url = { workspace = true }
 http-body-util = { workspace = true }
 
