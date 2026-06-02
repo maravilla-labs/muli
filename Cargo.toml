@@ -109,8 +109,9 @@ git2 = "0.19"
 hmac = "0.12"
 
 # SSH
-russh = "0.46"
-russh-keys = "0.46"
+# russh 0.54.1+ fixes GHSA-h5rc-j5f5-3gcm (channel-window adjust overflow that
+# truncated large SSH clones). russh-keys was merged into russh::keys in 0.50+.
+russh = "0.61"
 
 # URL parsing
 url = "2.5"

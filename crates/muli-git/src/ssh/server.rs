@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use russh_keys::key::KeyPair;
+use russh::keys::PrivateKey;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -53,7 +53,7 @@ impl SshServer {
     pub async fn run_on(
         self,
         listener: TcpListener,
-        host_key: KeyPair,
+        host_key: PrivateKey,
         cancel: CancellationToken,
     ) -> anyhow::Result<()> {
         let config = Arc::new(russh::server::Config {
@@ -109,8 +109,17 @@ impl SshServer {
                     tokio::spawn(async move {
                         let _permit = permit; // held until session ends
                         tracing::debug!(%addr, "new SSH connection");
-                        if let Err(e) = russh::server::run_stream(config, stream, handler).await {
-                            tracing::debug!(%addr, error = %e, "SSH session ended");
+                        // russh 0.50+: run_stream returns a RunningSession future
+                        // that must be driven to completion to service the session.
+                        match russh::server::run_stream(config, stream, handler).await {
+                            Ok(session) => {
+                                if let Err(e) = session.await {
+                                    tracing::debug!(%addr, error = %e, "SSH session ended");
+                                }
+                            }
+                            Err(e) => {
+                                tracing::debug!(%addr, error = %e, "SSH session setup failed");
+                            }
                         }
                     });
                 }
@@ -120,15 +129,18 @@ impl SshServer {
     }
 }
 
-/// Load an Ed25519 host key from `path`, or generate one.
-pub async fn load_or_generate_host_key(path: &std::path::Path) -> anyhow::Result<KeyPair> {
+/// Load an Ed25519 host key from `path`, generating (and persisting) one with
+/// `ssh-keygen` if it does not yet exist.
+///
+/// The key is always persisted so the server keeps a stable host identity across
+/// restarts — an ephemeral in-memory key would make every client see a host-key
+/// change warning.
+pub async fn load_or_generate_host_key(path: &std::path::Path) -> anyhow::Result<PrivateKey> {
     if path.exists()
-        && let Ok(key) = russh_keys::load_secret_key(path, None)
+        && let Ok(key) = russh::keys::load_secret_key(path, None)
     {
         return Ok(key);
     }
-
-    let key = russh_keys::key::KeyPair::generate_ed25519();
 
     if let Some(parent) = path.parent() {
         let _ = tokio::fs::create_dir_all(parent).await;
@@ -143,11 +155,13 @@ pub async fn load_or_generate_host_key(path: &std::path::Path) -> anyhow::Result
         .await;
 
     if path.exists()
-        && let Ok(loaded) = russh_keys::load_secret_key(path, None)
+        && let Ok(loaded) = russh::keys::load_secret_key(path, None)
     {
         return Ok(loaded);
     }
 
-    tracing::warn!(path = %path.display(), "could not persist SSH host key");
-    Ok(key)
+    anyhow::bail!(
+        "could not load or generate SSH host key at {}",
+        path.display()
+    )
 }

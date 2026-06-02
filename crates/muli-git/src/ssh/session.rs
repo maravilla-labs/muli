@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use async_trait::async_trait;
+use russh::keys::{HashAlg, PublicKey};
 use russh::server::{Auth, Handler, Msg, Session};
 use russh::{Channel, ChannelId};
 use tokio::sync::mpsc;
@@ -50,21 +50,17 @@ pub(super) struct SshSessionHandler {
     pub processes: HashMap<ChannelId, ProcessHandle>,
 }
 
-#[async_trait]
 impl Handler for SshSessionHandler {
     type Error = anyhow::Error;
 
     async fn auth_publickey(
         &mut self,
         _user: &str,
-        public_key: &russh_keys::key::PublicKey,
+        public_key: &PublicKey,
     ) -> Result<Auth, Self::Error> {
-        let raw = public_key.fingerprint();
-        let fingerprint = if raw.starts_with("SHA256:") {
-            raw
-        } else {
-            format!("SHA256:{raw}")
-        };
+        // ssh-key formats a SHA-256 fingerprint as "SHA256:<base64-no-pad>",
+        // matching what `ssh-keygen -l -E sha256` and our stored keys use.
+        let fingerprint = public_key.fingerprint(HashAlg::Sha256).to_string();
 
         // Find the key across all tenants. The key's tenant_id tells us which
         // DB it lives in, which works for every deployment model:
@@ -88,23 +84,17 @@ impl Handler for SshSessionHandler {
                     }
                     None => {
                         tracing::info!(%fingerprint, "SSH key rejected: no user_id");
-                        Ok(Auth::Reject {
-                            proceed_with_methods: None,
-                        })
+                        Ok(Auth::reject())
                     }
                 }
             }
             Ok(None) => {
                 tracing::debug!(%fingerprint, "SSH key not found – rejecting");
-                Ok(Auth::Reject {
-                    proceed_with_methods: None,
-                })
+                Ok(Auth::reject())
             }
             Err(e) => {
                 tracing::error!(error = %e, "SSH key store error during auth");
-                Ok(Auth::Reject {
-                    proceed_with_methods: None,
-                })
+                Ok(Auth::reject())
             }
         }
     }
@@ -131,7 +121,7 @@ impl Handler for SshSessionHandler {
             Some(fp) => fp.to_string(),
             None => {
                 tracing::warn!("exec on unauthenticated SSH session");
-                session.channel_failure(channel);
+                let _ = session.channel_failure(channel);
                 return Ok(());
             }
         };
@@ -139,7 +129,7 @@ impl Handler for SshSessionHandler {
             Some(uid) => uid.to_string(),
             None => {
                 tracing::warn!("exec on SSH session without authenticated user_id");
-                session.channel_failure(channel);
+                let _ = session.channel_failure(channel);
                 return Ok(());
             }
         };
@@ -149,7 +139,7 @@ impl Handler for SshSessionHandler {
             Some(v) => v,
             None => {
                 tracing::debug!(%command, "unrecognised SSH command");
-                session.channel_failure(channel);
+                let _ = session.channel_failure(channel);
                 return Ok(());
             }
         };
@@ -174,7 +164,7 @@ impl Handler for SshSessionHandler {
             Some(v) => v,
             None => {
                 tracing::debug!(%path, "could not parse repo path");
-                session.channel_failure(channel);
+                let _ = session.channel_failure(channel);
                 return Ok(());
             }
         };
@@ -197,13 +187,13 @@ impl Handler for SshSessionHandler {
                         Ok(Some(_)) => default_tid.clone(),
                         _ => {
                             tracing::debug!(%namespace, %repo_name, "repository not found in any tenant");
-                            session.channel_failure(channel);
+                            let _ = session.channel_failure(channel);
                             return Ok(());
                         }
                     }
                 } else {
                     tracing::debug!(%namespace, %repo_name, "repository not found and no default tenant configured");
-                    session.channel_failure(channel);
+                    let _ = session.channel_failure(channel);
                     return Ok(());
                 }
             }
@@ -216,7 +206,7 @@ impl Handler for SshSessionHandler {
             Some(tid) => tid.to_string(),
             None => {
                 tracing::warn!("exec without key tenant_id on session");
-                session.channel_failure(channel);
+                let _ = session.channel_failure(channel);
                 return Ok(());
             }
         };
@@ -228,12 +218,12 @@ impl Handler for SshSessionHandler {
             Ok(Some(key)) => key,
             Ok(None) => {
                 tracing::info!(%fingerprint, %key_tenant_id, "SSH key not found – rejecting");
-                session.channel_failure(channel);
+                let _ = session.channel_failure(channel);
                 return Ok(());
             }
             Err(e) => {
                 tracing::error!(error = %e, "SSH key store error during authorization");
-                session.channel_failure(channel);
+                let _ = session.channel_failure(channel);
                 return Ok(());
             }
         };
@@ -253,23 +243,23 @@ impl Handler for SshSessionHandler {
                     }
                     Ok(None) => {
                         tracing::info!(%user_id, org = %namespace, "SSH rejected: not an org member");
-                        session.channel_failure(channel);
+                        let _ = session.channel_failure(channel);
                         return Ok(());
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "org member store error");
-                        session.channel_failure(channel);
+                        let _ = session.channel_failure(channel);
                         return Ok(());
                     }
                 },
                 Ok(None) => {
                     tracing::info!(org = %namespace, %tenant_id, "SSH rejected: org not found in cross-tenant check");
-                    session.channel_failure(channel);
+                    let _ = session.channel_failure(channel);
                     return Ok(());
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "org store error");
-                    session.channel_failure(channel);
+                    let _ = session.channel_failure(channel);
                     return Ok(());
                 }
             }
@@ -278,7 +268,7 @@ impl Handler for SshSessionHandler {
         // 7. Check permissions for push
         if git_cmd == "git-receive-pack" && !ssh_key.has_permission(GitPermission::Push) {
             tracing::info!("SSH push rejected: key lacks Push permission");
-            session.channel_failure(channel);
+            let _ = session.channel_failure(channel);
             return Ok(());
         }
 
@@ -314,19 +304,19 @@ impl Handler for SshSessionHandler {
                         is_private = %repo.is_private,
                         "SSH rejected: not owner or collaborator"
                     );
-                    session.channel_failure(channel);
+                    let _ = session.channel_failure(channel);
                     return Ok(());
                 }
                 repo
             }
             Ok(None) => {
                 tracing::debug!(%namespace, %repo_name, "repo not found during ACL check");
-                session.channel_failure(channel);
+                let _ = session.channel_failure(channel);
                 return Ok(());
             }
             Err(e) => {
                 tracing::error!(error = %e, "repo store error during SSH ACL check");
-                session.channel_failure(channel);
+                let _ = session.channel_failure(channel);
                 return Ok(());
             }
         };
@@ -344,7 +334,7 @@ impl Handler for SshSessionHandler {
                             %tenant_id, %repo_name,
                             "SSH push rejected: tenant storage quota exceeded"
                         );
-                        session.channel_failure(channel);
+                        let _ = session.channel_failure(channel);
                         return Ok(());
                     }
                 }

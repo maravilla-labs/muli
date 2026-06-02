@@ -8,8 +8,8 @@
 
 use std::sync::Arc;
 
+use russh::ChannelId;
 use russh::server::Session;
-use russh::{ChannelId, CryptoVec};
 
 use muli_core::traits::{OrgStore, RepositoryStore};
 
@@ -33,7 +33,7 @@ pub async fn handle_lfs_authenticate(
         Some(v) => v,
         None => {
             tracing::debug!(%args, "invalid git-lfs-authenticate args");
-            session.channel_failure(channel);
+            let _ = session.channel_failure(channel);
             return Ok(());
         }
     };
@@ -42,7 +42,7 @@ pub async fn handle_lfs_authenticate(
         Some(v) => v,
         None => {
             tracing::debug!(%repo_path, "could not parse LFS repo path");
-            session.channel_failure(channel);
+            let _ = session.channel_failure(channel);
             return Ok(());
         }
     };
@@ -61,12 +61,12 @@ pub async fn handle_lfs_authenticate(
                 Ok(Some(_)) => default_tid.to_string(),
                 _ => {
                     tracing::debug!(%namespace, %repo_name, "LFS: repo not found");
-                    session.channel_failure(channel);
+                    let _ = session.channel_failure(channel);
                     return Ok(());
                 }
             },
             None => {
-                session.channel_failure(channel);
+                let _ = session.channel_failure(channel);
                 return Ok(());
             }
         },
@@ -83,7 +83,7 @@ pub async fn handle_lfs_authenticate(
     });
 
     let response_bytes = serde_json::to_vec(&response)?;
-    session.data(channel, CryptoVec::from_slice(&response_bytes));
+    let _ = session.data(channel, response_bytes);
     let handle = session.handle();
     let _ = handle.exit_status_request(channel, 0).await;
     let _ = handle.eof(channel).await;

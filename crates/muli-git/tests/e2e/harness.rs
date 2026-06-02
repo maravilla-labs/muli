@@ -314,8 +314,19 @@ pub struct TestServerWithSsh {
 pub async fn start_server_with_ssh() -> TestServerWithSsh {
     let srv = start_server().await;
 
-    // Generate a temporary host key for this test run
-    let host_key = russh_keys::key::KeyPair::generate_ed25519();
+    // Generate a temporary Ed25519 host key for this test run via ssh-keygen,
+    // then load it (russh 0.50+ uses ssh-key `PrivateKey`; no in-crate keygen).
+    let host_key = {
+        let key_dir = TempDir::new().expect("host key tempdir");
+        let key_path = key_dir.path().join("host_ed25519");
+        let status = std::process::Command::new("ssh-keygen")
+            .args(["-t", "ed25519", "-N", "", "-q", "-f"])
+            .arg(&key_path)
+            .status()
+            .expect("ssh-keygen host key");
+        assert!(status.success(), "ssh-keygen host key failed");
+        russh::keys::load_secret_key(&key_path, None).expect("load host key")
+    };
 
     let org_store: Arc<dyn OrgStore> = Arc::new(MemoryOrgStore::new());
     let org_member_store: Arc<dyn OrgMemberStore> = Arc::new(MemoryOrgMemberStore::new());
