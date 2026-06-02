@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.21] - 2026-06-02
+
+### Fixed
+
+- **Large git clones/fetches over SSH truncated** with `fetch-pack: unexpected disconnect while reading sideband packet` / `early EOF`. Root cause was russh's missing overflow check in channel window adjustment ([GHSA-h5rc-j5f5-3gcm](https://github.com/advisories/GHSA-h5rc-j5f5-3gcm), fixed in russh 0.54.1): the recipient window size could wrap to a small value and stall the channel mid-pack, truncating the stream. Small repos won the race and worked; large or bursty repos (many loose objects) failed regardless of user. Upgraded russh 0.46 → 0.61.1 (also brings later channel EOF/race and security fixes) and migrated the embedded SSH server to the new API (`russh::keys`/`ssh-key` types, native-async `Handler`, `RunningSession`, `bytes::Bytes` channel data). Public-key fingerprints, collaborator ACL, and clone/push over HTTP and SSH are unchanged (verified by the e2e suite).
+
 ## [0.4.20] - 2026-05-27
 
 ### Fixed
