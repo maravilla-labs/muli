@@ -33,8 +33,8 @@ use tracing::{error, info, warn};
 use muli_core::pipeline::PipelineTrigger;
 use muli_core::traits::{
     ArtifactStore, GitTokenStore, JobStore, OrgSecretStore, OrgStore, PipelineRunStore,
-    PipelineSecretStore, PipelineStore, PullRequestStore, ReleaseStore, RepositoryStore,
-    StepRunStore, TenantLimitsStore,
+    PipelineSecretStore, PipelineStore, PullRequestStore, RegistryTokenStore, ReleaseStore,
+    RepositoryStore, StepRunStore, TenantLimitsStore,
 };
 use muli_git::api::PipelineTriggerHook;
 use muli_git::hooks::webhook_http_client;
@@ -76,6 +76,12 @@ pub struct PipelineTriggerImpl {
     /// Byte storage for job artifacts — read server-side to build a release's
     /// archive asset and changelog notes.
     artifact_storage: Arc<ArtifactStorage>,
+    /// Registry token store — mints/revokes the short-lived, Push-scoped ambient
+    /// publish token injected into jobs that opt into `registry: write`.
+    registry_token_store: Arc<dyn RegistryTokenStore>,
+    /// Base domain for the embedded registry. The per-run registry URL is
+    /// `https://{tenant}.{registry_base_domain}` (host-based tenant routing).
+    registry_base_domain: String,
 }
 
 impl PipelineTriggerImpl {
@@ -102,6 +108,8 @@ impl PipelineTriggerImpl {
         release_store: Arc<dyn ReleaseStore>,
         release_asset_storage: Arc<ReleaseAssetStorage>,
         artifact_storage: Arc<ArtifactStorage>,
+        registry_token_store: Arc<dyn RegistryTokenStore>,
+        registry_base_domain: String,
     ) -> Self {
         Self {
             git_storage,
@@ -127,6 +135,8 @@ impl PipelineTriggerImpl {
             release_store,
             release_asset_storage,
             artifact_storage,
+            registry_token_store,
+            registry_base_domain,
         }
     }
 

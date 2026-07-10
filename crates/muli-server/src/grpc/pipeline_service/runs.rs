@@ -433,6 +433,8 @@ impl PipelineServiceImpl {
                         &pipeline_def,
                         &bg_steps,
                         clone_url_str.as_deref(),
+                        None,
+                        None,
                     )
                     .await
                 {

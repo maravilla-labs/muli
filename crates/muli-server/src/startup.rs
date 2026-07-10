@@ -199,6 +199,8 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
                     std::path::Path::new(&config.data_dir),
                 )),
                 artifact_storage.clone(),
+                stores.registry_token_store.clone(),
+                config.registry_domain.clone(),
             )))
         } else {
             None

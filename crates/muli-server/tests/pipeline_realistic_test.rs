@@ -259,7 +259,7 @@ steps:
     eprintln!("\n========== STARTING REALISTIC CI PIPELINE ==========\n");
 
     let result = executor
-        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .execute(&mut run, &pipeline_def, &step_runs, None, None, None)
         .await
         .unwrap();
 

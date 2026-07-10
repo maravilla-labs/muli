@@ -27,7 +27,7 @@ use crate::dag::graph::DagGraph;
 use crate::trigger::matcher::matches_any_path;
 use crate::yaml::expression::{ExpressionContext, evaluate_condition};
 use crate::yaml::interpolation::interpolate;
-use crate::yaml::schema::{JobDef, PipelineDef, ResourceDef, StepDef};
+use crate::yaml::schema::{JobDef, PipelineDef, RegistryAccess, ResourceDef, StepDef};
 
 /// Abstraction for submitting jobs to the scheduler.
 /// Implemented by the server layer to avoid coupling muli-pipeline to muli-queue.
@@ -70,13 +70,29 @@ impl DagExecutor {
         pipeline_def: &PipelineDef,
         step_runs: &[StepRun],
         clone_url: Option<&str>,
+        registry_url: Option<&str>,
+        registry_token: Option<&str>,
     ) -> Result<PipelineRunState> {
         if !pipeline_def.jobs.is_empty() {
-            self.execute_jobs(run, pipeline_def, step_runs, clone_url)
-                .await
+            self.execute_jobs(
+                run,
+                pipeline_def,
+                step_runs,
+                clone_url,
+                registry_url,
+                registry_token,
+            )
+            .await
         } else {
-            self.execute_steps(run, pipeline_def, step_runs, clone_url)
-                .await
+            self.execute_steps(
+                run,
+                pipeline_def,
+                step_runs,
+                clone_url,
+                registry_url,
+                registry_token,
+            )
+            .await
         }
     }
 
@@ -88,6 +104,8 @@ impl DagExecutor {
         pipeline_def: &PipelineDef,
         step_runs: &[StepRun],
         clone_url: Option<&str>,
+        registry_url: Option<&str>,
+        registry_token: Option<&str>,
     ) -> Result<PipelineRunState> {
         self.mark_run_started(run).await?;
 
@@ -128,7 +146,16 @@ impl DagExecutor {
         let build_fn = |orig: &str, sr_name: &str| -> Option<Job> {
             let def = pipeline_def.jobs.get(orig)?;
             let sr = *step_run_map.get(sr_name)?;
-            Some(self.build_job_from_jobdef(run, pipeline_def, orig, def, clone_url, sr))
+            Some(self.build_job_from_jobdef(
+                run,
+                pipeline_def,
+                orig,
+                def,
+                clone_url,
+                registry_url,
+                registry_token,
+                sr,
+            ))
         };
 
         let (had_failure, had_stop_failure) = self
@@ -153,6 +180,8 @@ impl DagExecutor {
         pipeline_def: &PipelineDef,
         step_runs: &[StepRun],
         clone_url: Option<&str>,
+        registry_url: Option<&str>,
+        registry_token: Option<&str>,
     ) -> Result<PipelineRunState> {
         self.mark_run_started(run).await?;
 
@@ -190,7 +219,15 @@ impl DagExecutor {
         let build_fn = |orig: &str, sr_name: &str| -> Option<Job> {
             let def = *step_def_map.get(orig)?;
             let sr = *step_run_map.get(sr_name)?;
-            Some(self.build_job(run, pipeline_def, def, clone_url, sr))
+            Some(self.build_job(
+                run,
+                pipeline_def,
+                def,
+                clone_url,
+                registry_url,
+                registry_token,
+                sr,
+            ))
         };
 
         let (had_failure, had_stop_failure) = self
@@ -523,6 +560,8 @@ impl DagExecutor {
         job_name: &str,
         job_def: &JobDef,
         clone_url: Option<&str>,
+        registry_url: Option<&str>,
+        registry_token: Option<&str>,
         step_run: &StepRun,
     ) -> Job {
         let env_vars = build_env_vars(
@@ -532,6 +571,10 @@ impl DagExecutor {
             "PIPELINE_JOB_NAME",
             job_name,
             None, // jobs mode: checkout is host-side, no PIPELINE_CLONE_URL
+            registry_url,
+            // Least privilege: only a job that opted into `registry: write`
+            // receives the ambient publish token.
+            job_registry_token(job_def, registry_token),
         );
 
         let checkout = clone_url.map(|url| CheckoutSpec {
@@ -609,6 +652,8 @@ impl DagExecutor {
         pipeline_def: &PipelineDef,
         step_def: &StepDef,
         clone_url: Option<&str>,
+        registry_url: Option<&str>,
+        registry_token: Option<&str>,
         step_run: &StepRun,
     ) -> Job {
         let env_vars = build_env_vars(
@@ -618,6 +663,8 @@ impl DagExecutor {
             "PIPELINE_STEP_NAME",
             &step_def.name,
             clone_url,
+            registry_url,
+            registry_token,
         );
 
         let mut commands = Vec::new();
@@ -695,6 +742,8 @@ impl DagExecutor {
 
 /// Build the env var list: pipeline → item → run → builtins.
 /// `clone_url` is only set in steps mode (adds PIPELINE_CLONE_URL).
+/// `registry_url` (when set) adds `MULI_REGISTRY_URL` for any job; `registry_token`
+/// (passed only for `registry: write` jobs) adds `MULI_REGISTRY_TOKEN`.
 fn build_env_vars(
     pipeline_env: &std::collections::HashMap<String, String>,
     item_env: &std::collections::HashMap<String, String>,
@@ -702,6 +751,8 @@ fn build_env_vars(
     name_key: &str,
     name_val: &str,
     clone_url: Option<&str>,
+    registry_url: Option<&str>,
+    registry_token: Option<&str>,
 ) -> Vec<EnvVar> {
     let mut env: Vec<EnvVar> = Vec::new();
 
@@ -754,6 +805,23 @@ fn build_env_vars(
             value: url.to_string(),
         });
     }
+    // Ambient registry access. The URL is harmless (just a host) and is injected
+    // for every job; the Push-scoped token is injected only when the caller
+    // passed it (i.e. the job opted into `registry: write`).
+    if let Some(url) = registry_url {
+        env.retain(|e| e.name != "MULI_REGISTRY_URL");
+        env.push(EnvVar {
+            name: "MULI_REGISTRY_URL".into(),
+            value: url.to_string(),
+        });
+    }
+    if let Some(token) = registry_token {
+        env.retain(|e| e.name != "MULI_REGISTRY_TOKEN");
+        env.push(EnvVar {
+            name: "MULI_REGISTRY_TOKEN".into(),
+            value: token.to_string(),
+        });
+    }
 
     // Interpolate ${{ secrets.X }} and ${{ env.X }} in all env var values.
     // Build lookup maps from the assembled env vars (secrets are in run.env_vars).
@@ -767,6 +835,16 @@ fn build_env_vars(
     }
 
     env
+}
+
+/// The registry token a job should receive. Only a job that opted into
+/// `registry: write` gets the ambient publish credential — a write token must
+/// not sit in jobs that didn't ask for it (least privilege).
+fn job_registry_token<'a>(job_def: &JobDef, registry_token: Option<&'a str>) -> Option<&'a str> {
+    match job_def.registry {
+        Some(RegistryAccess::Write) => registry_token,
+        _ => None,
+    }
 }
 
 /// Parse CPU/memory/timeout from an optional ResourceDef, applying defaults.
@@ -894,6 +972,83 @@ mod tests {
             },
             String::new(),
         )
+    }
+
+    fn job_with_registry(registry: Option<RegistryAccess>) -> JobDef {
+        JobDef {
+            image: None,
+            needs: vec![],
+            commands: vec![],
+            steps: vec![],
+            env: HashMap::new(),
+            paths: vec![],
+            cache: None,
+            artifacts: None,
+            resources: None,
+            matrix: None,
+            condition: None,
+            failure_strategy: None,
+            timeout: None,
+            release: None,
+            registry,
+        }
+    }
+
+    /// A job that opts into `registry: write` receives both the registry URL and
+    /// the ambient publish token; a job that did not opt in gets the (harmless)
+    /// URL but never the token.
+    #[test]
+    fn build_env_vars_injects_registry_token_only_for_opted_in_job() {
+        let run = run_with_ref("refs/tags/v1.0.0");
+        let pipeline_env = HashMap::new();
+        let url = Some("https://acme.localhost");
+        let token = Some("reg-secret-token");
+
+        let opted = job_with_registry(Some(RegistryAccess::Write));
+        let env = build_env_vars(
+            &pipeline_env,
+            &opted.env,
+            &run,
+            "PIPELINE_JOB_NAME",
+            "publish",
+            None,
+            url,
+            job_registry_token(&opted, token),
+        );
+        assert!(
+            env.iter()
+                .any(|e| e.name == "MULI_REGISTRY_URL" && e.value == "https://acme.localhost"),
+            "opted-in job should receive MULI_REGISTRY_URL"
+        );
+        assert!(
+            env.iter()
+                .any(|e| e.name == "MULI_REGISTRY_TOKEN" && e.value == "reg-secret-token"),
+            "opted-in job should receive MULI_REGISTRY_TOKEN"
+        );
+
+        let plain = job_with_registry(None);
+        let env = build_env_vars(
+            &pipeline_env,
+            &plain.env,
+            &run,
+            "PIPELINE_JOB_NAME",
+            "build",
+            None,
+            url,
+            job_registry_token(&plain, token),
+        );
+        assert!(
+            env.iter().any(|e| e.name == "MULI_REGISTRY_URL"),
+            "the URL is harmless and may be present for any job"
+        );
+        assert!(
+            !env.iter().any(|e| e.name == "MULI_REGISTRY_TOKEN"),
+            "a job that did not opt in must NOT receive MULI_REGISTRY_TOKEN"
+        );
+
+        // `registry: read` is reserved and grants no write token in E1.
+        let reader = job_with_registry(Some(RegistryAccess::Read));
+        assert!(job_registry_token(&reader, token).is_none());
     }
 
     #[test]

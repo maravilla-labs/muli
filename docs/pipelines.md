@@ -210,6 +210,7 @@ jobs:
 | `failure_strategy` | string | no | What to do when job fails: `stop` (default), `continue`, `ignore` |
 | `timeout` | integer | no | Maximum execution time in seconds (default: 1800) |
 | `release` | object | no | Record a repository release when the run succeeds (see [Declarative release](#declarative-release)) |
+| `registry` | string | no | `write` to receive ambient credentials for publishing to the embedded registry (see [Publishing to the embedded registry](#publishing-to-the-embedded-registry)) |
 
 ### Steps (legacy)
 
@@ -467,6 +468,50 @@ payload.
 
 ---
 
+## Publishing to the embedded registry
+
+A job can publish packages to the handle's own embedded registry with no manual
+token setup — the ambient-credentials model used by hosted CI. Opt in with
+`registry: write`:
+
+```yaml
+jobs:
+  publish:
+    image: node:22-alpine
+    needs: [build]
+    registry: write        # opt into ambient publish credentials
+    commands:
+      - npm config set //${MULI_REGISTRY_URL#https://}/:_authToken "$MULI_REGISTRY_TOKEN"
+      - npm publish --registry "$MULI_REGISTRY_URL"
+```
+
+When **any** job in the run sets `registry: write`, the engine mints **one**
+short-lived, `Push`-scoped registry token for the run's handle and injects it —
+only into jobs that opted in — as `MULI_REGISTRY_TOKEN`. Every job additionally
+receives `MULI_REGISTRY_URL` (the base URL is harmless on its own). The token is
+revoked as soon as the run finishes.
+
+| Variable | Present in | Meaning |
+|----------|-----------|---------|
+| `MULI_REGISTRY_URL` | every job (when a `write` job exists) | Base URL of the embedded registry for this handle, `https://{handle}.{base_domain}` |
+| `MULI_REGISTRY_TOKEN` | only `registry: write` jobs | Short-lived credential authorised to publish to the handle |
+
+**One token, every format.** The registry is host-based (the handle is taken
+from the request `Host`), and a single auth layer backs all formats — npm
+(`/-/npm`), Cargo (`/api/v1/crates` + sparse index), Maven (`/-/maven`), and OCI
+(`/v2`). So the same `MULI_REGISTRY_TOKEN` authenticates `npm publish`,
+`cargo publish`, `mvn deploy`, and `docker push` against `MULI_REGISTRY_URL`;
+each client just needs its own two-line auth config written from those two
+variables.
+
+**Least privilege.** A job that does not set `registry: write` never receives
+`MULI_REGISTRY_TOKEN`, so a write credential cannot leak into build/test jobs
+that did not ask for it. The token is `Push`-scoped for the whole handle (not a
+single package) — mitigated by the short TTL and post-run revocation. `registry:
+read` is reserved for a future pull-only credential and grants no token today.
+
+---
+
 ## Built-in Environment Variables
 
 Every job automatically receives these environment variables:
@@ -481,6 +526,8 @@ Every job automatically receives these environment variables:
 | `PIPELINE_JOB_NAME` | `build` | Name of the current job (jobs format) |
 | `PIPELINE_STEP_NAME` | `build` | Name of the current step (steps format) |
 | `PIPELINE_CLONE_URL` | `http://...` | Git clone URL (steps format only, when auto-checkout is enabled) |
+| `MULI_REGISTRY_URL` | `https://acme.example.com` | Base URL of the handle's embedded registry (only when a job in the run opts into `registry: write`) |
+| `MULI_REGISTRY_TOKEN` | `a1b2c3…` | Short-lived Push-scoped registry credential (only in jobs that set `registry: write`) |
 
 Additionally, pipeline-level `env`, job-level `env`, and vault secrets are injected.
 

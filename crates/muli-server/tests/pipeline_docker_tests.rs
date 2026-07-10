@@ -170,7 +170,7 @@ steps:
     let executor = DagExecutor::new(rs.clone(), ss.clone(), js.clone(), submitter);
 
     let result = executor
-        .execute(&mut run, &pipeline_def, &[sr.clone()], None)
+        .execute(&mut run, &pipeline_def, &[sr.clone()], None, None, None)
         .await
         .unwrap();
 
@@ -278,7 +278,7 @@ steps:
     let executor = DagExecutor::new(rs.clone(), ss.clone(), js.clone(), submitter);
 
     let result = executor
-        .execute(&mut run, &pipeline_def, &[sr], None)
+        .execute(&mut run, &pipeline_def, &[sr], None, None, None)
         .await
         .unwrap();
     cancel.cancel();
@@ -362,7 +362,7 @@ steps:
     let executor = DagExecutor::new(rs.clone(), ss.clone(), js.clone(), submitter);
 
     let result = executor
-        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .execute(&mut run, &pipeline_def, &step_runs, None, None, None)
         .await
         .unwrap();
     cancel.cancel();

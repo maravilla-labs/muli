@@ -112,6 +112,22 @@ pub struct JobDef {
     /// (tag + notes + an archive asset) server-side. No release credential is
     /// injected into the job container — the release is created by the engine.
     pub release: Option<ReleaseDef>,
+    /// Opt-in ambient registry credentials. `registry: write` makes the engine
+    /// mint a short-lived, Push-scoped token for the run and inject it into this
+    /// job as `MULI_REGISTRY_TOKEN`, so it can publish to the handle's embedded
+    /// registry with no manual token setup. Omitted → no registry credential.
+    #[serde(default)]
+    pub registry: Option<RegistryAccess>,
+}
+
+/// Level of registry access a job opts into. A `write` job receives an ambient
+/// `MULI_REGISTRY_TOKEN` (Push-scoped); `read` is reserved for a future
+/// pull-only credential and grants no publish token today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegistryAccess {
+    Read,
+    Write,
 }
 
 /// Declarative `release:` block on a job. Executed in-process after the run
@@ -376,5 +392,45 @@ jobs:
 "#;
         let def: PipelineDef = serde_yaml::from_str(yaml).unwrap();
         assert!(def.jobs.get("build").unwrap().release.is_none());
+    }
+
+    /// `RegistryAccess` round-trips through serde with snake_case values.
+    #[test]
+    fn registry_access_roundtrip() {
+        assert_eq!(
+            serde_json::to_value(RegistryAccess::Write).unwrap(),
+            serde_json::json!("write")
+        );
+        assert_eq!(
+            serde_json::to_value(RegistryAccess::Read).unwrap(),
+            serde_json::json!("read")
+        );
+        let back: RegistryAccess = serde_json::from_value(serde_json::json!("read")).unwrap();
+        assert_eq!(back, RegistryAccess::Read);
+        let back: RegistryAccess = serde_json::from_value(serde_json::json!("write")).unwrap();
+        assert_eq!(back, RegistryAccess::Write);
+    }
+
+    /// A job opts into ambient publish credentials with `registry: write`;
+    /// a job that omits `registry:` leaves the field `None`.
+    #[test]
+    fn job_registry_write_parses_from_yaml() {
+        let yaml = r#"
+name: p
+jobs:
+  publish:
+    image: node
+    commands: ["npm publish"]
+    registry: write
+  build:
+    image: node
+    commands: ["npm run build"]
+"#;
+        let def: PipelineDef = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            def.jobs.get("publish").unwrap().registry,
+            Some(RegistryAccess::Write)
+        );
+        assert_eq!(def.jobs.get("build").unwrap().registry, None);
     }
 }

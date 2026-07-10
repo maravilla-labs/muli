@@ -50,9 +50,9 @@ use muli_store::memory::MemoryCollaboratorStore;
 use muli_store::sqlite::{
     SqliteArtifactStore, SqliteCacheStore, SqliteGitTokenStore, SqliteJobLogStore, SqliteJobStore,
     SqliteOrgSecretStore, SqliteOrgStore, SqlitePipelineRunStore, SqlitePipelineSecretStore,
-    SqlitePipelineStore, SqlitePrCommentStore, SqlitePullRequestStore, SqliteReleaseStore,
-    SqliteRepositoryStore, SqliteSshKeyStore, SqliteStepRunStore, SqliteStoreFactory,
-    SqliteWebhookStore,
+    SqlitePipelineStore, SqlitePrCommentStore, SqlitePullRequestStore, SqliteRegistryTokenStore,
+    SqliteReleaseStore, SqliteRepositoryStore, SqliteSshKeyStore, SqliteStepRunStore,
+    SqliteStoreFactory, SqliteWebhookStore,
 };
 
 use muli_proto::{GetPipelineRunRequest, ListPipelineRunsRequest, StreamStepLogsRequest};
@@ -233,6 +233,7 @@ impl CheckoutE2eEnv {
         let release_asset_storage = Arc::new(ReleaseAssetStorage::new(release_asset_dir.path()));
         let trigger_artifact_dir = TempDir::new().expect("trigger artifact tempdir");
         let trigger_artifact_storage = Arc::new(ArtifactStorage::new(trigger_artifact_dir.path()));
+        let registry_token_store = Arc::new(SqliteRegistryTokenStore::new(factory.clone()));
         let pipeline_trigger = Arc::new(PipelineTriggerImpl::new(
             storage.clone(),
             repo_store.clone(),
@@ -255,6 +256,8 @@ impl CheckoutE2eEnv {
             release_store,
             release_asset_storage,
             trigger_artifact_storage,
+            registry_token_store,
+            "localhost".to_string(),
         ));
 
         let app = git_router(GitRouterConfig {
@@ -939,6 +942,8 @@ jobs:
             &pipeline_def,
             std::slice::from_ref(&step),
             Some(&bad_clone_url),
+            None,
+            None,
         )
         .await
         .unwrap();

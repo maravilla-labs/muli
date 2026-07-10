@@ -167,7 +167,7 @@ steps:
     );
 
     let result = executor
-        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .execute(&mut run, &pipeline_def, &step_runs, None, None, None)
         .await
         .unwrap();
 
@@ -264,7 +264,7 @@ steps:
     );
 
     let result = executor
-        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .execute(&mut run, &pipeline_def, &step_runs, None, None, None)
         .await
         .unwrap();
     assert_eq!(result, PipelineRunState::Failed);
@@ -369,7 +369,7 @@ steps:
     );
 
     let result = executor
-        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .execute(&mut run, &pipeline_def, &step_runs, None, None, None)
         .await
         .unwrap();
     assert_eq!(result, PipelineRunState::Degraded);
@@ -439,7 +439,7 @@ steps:
     );
 
     let result = executor
-        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .execute(&mut run, &pipeline_def, &step_runs, None, None, None)
         .await
         .unwrap();
     assert_eq!(result, PipelineRunState::Succeeded);
@@ -516,7 +516,7 @@ steps:
     );
 
     let result = executor
-        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .execute(&mut run, &pipeline_def, &step_runs, None, None, None)
         .await
         .unwrap();
 
@@ -591,7 +591,7 @@ steps:
     );
 
     executor
-        .execute(&mut run, &pipeline_def, &[sr.clone()], None)
+        .execute(&mut run, &pipeline_def, &[sr.clone()], None, None, None)
         .await
         .unwrap();
 
@@ -699,7 +699,7 @@ steps:
     );
 
     let result = executor
-        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .execute(&mut run, &pipeline_def, &step_runs, None, None, None)
         .await
         .unwrap();
     assert_eq!(result, PipelineRunState::Succeeded);
@@ -830,7 +830,7 @@ jobs:
     );
 
     let result = executor
-        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .execute(&mut run, &pipeline_def, &step_runs, None, None, None)
         .await
         .unwrap();
     assert_eq!(result, PipelineRunState::Succeeded);
@@ -892,7 +892,7 @@ jobs:
     );
 
     executor
-        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .execute(&mut run, &pipeline_def, &step_runs, None, None, None)
         .await
         .unwrap();
 
@@ -971,7 +971,7 @@ jobs:
     );
 
     let result = executor
-        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .execute(&mut run, &pipeline_def, &step_runs, None, None, None)
         .await
         .unwrap();
     assert_eq!(result, PipelineRunState::Succeeded);
@@ -1034,7 +1034,7 @@ jobs:
     );
 
     let result = executor
-        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .execute(&mut run, &pipeline_def, &step_runs, None, None, None)
         .await
         .unwrap();
     assert_eq!(result, PipelineRunState::Succeeded);
@@ -1106,7 +1106,7 @@ jobs:
     );
 
     executor
-        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .execute(&mut run, &pipeline_def, &step_runs, None, None, None)
         .await
         .unwrap();
 
@@ -1196,7 +1196,7 @@ jobs:
     );
 
     executor
-        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .execute(&mut run, &pipeline_def, &step_runs, None, None, None)
         .await
         .unwrap();
 
@@ -1265,7 +1265,7 @@ jobs:
     );
 
     executor
-        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .execute(&mut run, &pipeline_def, &step_runs, None, None, None)
         .await
         .unwrap();
 
@@ -1335,7 +1335,7 @@ jobs:
 
     let clone_url = "https://x-token:secret@git.example.com/t1/ns/repo.git";
     executor
-        .execute(&mut run, &pipeline_def, &step_runs, Some(clone_url))
+        .execute(&mut run, &pipeline_def, &step_runs, Some(clone_url), None, None)
         .await
         .unwrap();
 
@@ -1397,7 +1397,7 @@ jobs:
     );
 
     let result = executor
-        .execute(&mut run, &pipeline_def, &step_runs, None)
+        .execute(&mut run, &pipeline_def, &step_runs, None, None, None)
         .await
         .unwrap();
     assert_eq!(result, PipelineRunState::Failed);
