@@ -235,7 +235,11 @@ impl PipelineTriggerImpl {
                     tenant_id.to_string(),
                     token_hash,
                     prefix,
-                    vec![RegistryPermission::Push],
+                    // Pull + Push: publishing tools read before they write (e.g.
+                    // `npm info` / `changeset publish` fetch existing versions to
+                    // decide what to publish), so a write credential that cannot
+                    // read gets a 403 on the pre-publish GET.
+                    vec![RegistryPermission::Pull, RegistryPermission::Push],
                     format!("CI run {}", run.id),
                     Some(Utc::now() + chrono::Duration::minutes(10)),
                 );
