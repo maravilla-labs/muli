@@ -258,6 +258,7 @@ impl CheckoutE2eEnv {
             trigger_artifact_storage,
             registry_token_store,
             "localhost".to_string(),
+            false,
         ));
 
         let app = git_router(GitRouterConfig {

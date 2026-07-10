@@ -35,6 +35,10 @@ pub struct ServerConfig {
     pub registry_enabled: bool,
     pub registry_port: u16,
     pub registry_domain: String,
+    /// When true, an org-owned repo's CI publish credential targets the org's own
+    /// registry tenant (its handle) instead of the shared git tenant. Off by
+    /// default. Mirrors the control plane's `muli_registry_tenant_per_handle`.
+    pub registry_tenant_per_handle: bool,
     /// Explicit registry data path. When `None`, derived as `{data_dir}/registry`.
     pub registry_root: Option<String>,
     pub registry_max_size_gb: f64,
@@ -117,6 +121,10 @@ impl std::fmt::Debug for ServerConfig {
             .field("registry_enabled", &self.registry_enabled)
             .field("registry_port", &self.registry_port)
             .field("registry_domain", &self.registry_domain)
+            .field(
+                "registry_tenant_per_handle",
+                &self.registry_tenant_per_handle,
+            )
             .field("registry_root", &self.registry_root)
             .field("registry_max_size_gb", &self.registry_max_size_gb)
             .field("registry_max_blob_size_mb", &self.registry_max_blob_size_mb)
@@ -202,6 +210,7 @@ impl Default for ServerConfig {
             registry_enabled: false,
             registry_port: 5000,
             registry_domain: "localhost".to_string(),
+            registry_tenant_per_handle: false,
             registry_root: None,
             registry_max_size_gb: 50.0,
             registry_max_blob_size_mb: 5120,

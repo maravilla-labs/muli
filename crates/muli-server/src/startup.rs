@@ -201,6 +201,7 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
                 artifact_storage.clone(),
                 stores.registry_token_store.clone(),
                 config.registry_domain.clone(),
+                config.registry_tenant_per_handle,
             )))
         } else {
             None

@@ -19,6 +19,7 @@ mod discovery;
 mod expand;
 mod git_meta;
 mod plan;
+mod registry_tenant;
 mod release;
 mod run;
 mod webhook;
@@ -82,6 +83,11 @@ pub struct PipelineTriggerImpl {
     /// Base domain for the embedded registry. The per-run registry URL is
     /// `https://{tenant}.{registry_base_domain}` (host-based tenant routing).
     registry_base_domain: String,
+    /// When true, an org-owned repo's ambient registry credential targets the
+    /// org's own registry tenant (its handle = the repo namespace) instead of the
+    /// shared git tenant. Off by default; a repo publishes to its git tenant until
+    /// this is enabled. See `registry_tenant.rs`.
+    registry_tenant_per_handle: bool,
 }
 
 impl PipelineTriggerImpl {
@@ -110,6 +116,7 @@ impl PipelineTriggerImpl {
         artifact_storage: Arc<ArtifactStorage>,
         registry_token_store: Arc<dyn RegistryTokenStore>,
         registry_base_domain: String,
+        registry_tenant_per_handle: bool,
     ) -> Self {
         Self {
             git_storage,
@@ -137,6 +144,7 @@ impl PipelineTriggerImpl {
             artifact_storage,
             registry_token_store,
             registry_base_domain,
+            registry_tenant_per_handle,
         }
     }
 

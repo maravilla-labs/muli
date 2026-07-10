@@ -99,7 +99,7 @@ impl PipelineTriggerImpl {
             .values()
             .any(|j| j.registry == Some(RegistryAccess::Write));
         let (registry_token_id, registry_token_plaintext, registry_url) = if wants_registry_write {
-            self.mint_registry_token(tenant_id, run).await
+            self.mint_registry_token(tenant_id, repo, run).await
         } else {
             (None, None, None)
         };
@@ -216,9 +216,15 @@ impl PipelineTriggerImpl {
     /// revocation; all `None` on failure (a mint failure must not abort the run).
     async fn mint_registry_token(
         &self,
-        tenant_id: &str,
+        git_tenant: &str,
+        repo: &Repository,
         run: &PipelineRun,
     ) -> (Option<String>, Option<String>, Option<String>) {
+        // An org-owned repo publishes to its OWN registry tenant (the org handle),
+        // not the shared git tenant — see `registry_tenant.rs`. The token's
+        // tenant_id and the URL host must both be this tenant so the registry's
+        // `token.tenant == host.tenant` check passes.
+        let registry_tenant = self.resolve_registry_tenant(git_tenant, repo).to_string();
         let plaintext = format!(
             "{}{}",
             uuid::Uuid::new_v4().simple(),
@@ -232,7 +238,7 @@ impl PipelineTriggerImpl {
             Ok(Ok(token_hash)) => {
                 let prefix = token_hash::token_prefix(&plaintext);
                 let token = RegistryToken::new(
-                    tenant_id.to_string(),
+                    registry_tenant.clone(),
                     token_hash,
                     prefix,
                     // Pull + Push: publishing tools read before they write (e.g.
@@ -246,7 +252,8 @@ impl PipelineTriggerImpl {
                 let token_id = token.id.clone();
                 match self.registry_token_store.create_token(&token).await {
                     Ok(_) => {
-                        let url = format!("https://{}.{}", tenant_id, self.registry_base_domain);
+                        let url =
+                            format!("https://{}.{}", registry_tenant, self.registry_base_domain);
                         (Some(token_id), Some(plaintext), Some(url))
                     }
                     Err(e) => {
