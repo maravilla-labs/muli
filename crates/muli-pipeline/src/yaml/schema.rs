@@ -58,6 +58,10 @@ pub struct PushTrigger {
     pub branches: Vec<String>,
     #[serde(default)]
     pub paths: Vec<String>,
+    /// Tag name globs (GitHub-style `on.push.tags`). When non-empty, the trigger
+    /// fires on a tag push whose name matches one of these globs.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

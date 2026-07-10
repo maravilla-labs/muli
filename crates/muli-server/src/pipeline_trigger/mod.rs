@@ -264,25 +264,41 @@ impl PipelineTriggerHook for PipelineTriggerImpl {
         new_sha: &str,
         ref_name: &str,
     ) {
-        let branch = ref_name
-            .strip_prefix("refs/heads/")
-            .unwrap_or(ref_name)
-            .to_string();
         let changed_paths = self
             .resolve_push_changed_paths(tenant_id, repo_id, old_sha, new_sha)
             .await;
 
-        info!(
-            tenant_id = %tenant_id,
-            repo_id = %repo_id,
-            commit_sha = %new_sha,
-            branch = %branch,
-            "pipeline trigger: push event"
-        );
-
-        let event = PipelineEvent::Push {
-            branch: branch.clone(),
-            changed_paths: changed_paths.clone(),
+        // A tag push (`refs/tags/*`) is a distinct event from a branch push
+        // (`refs/heads/*`). The `PipelineTrigger` recorded on the run carries the
+        // full ref either way; only the matching `PipelineEvent` differs.
+        let event = if let Some(tag) = ref_name.strip_prefix("refs/tags/") {
+            info!(
+                tenant_id = %tenant_id,
+                repo_id = %repo_id,
+                commit_sha = %new_sha,
+                tag = %tag,
+                "pipeline trigger: tag push event"
+            );
+            PipelineEvent::Tag {
+                tag: tag.to_string(),
+                changed_paths: changed_paths.clone(),
+            }
+        } else {
+            let branch = ref_name
+                .strip_prefix("refs/heads/")
+                .unwrap_or(ref_name)
+                .to_string();
+            info!(
+                tenant_id = %tenant_id,
+                repo_id = %repo_id,
+                commit_sha = %new_sha,
+                branch = %branch,
+                "pipeline trigger: push event"
+            );
+            PipelineEvent::Push {
+                branch,
+                changed_paths: changed_paths.clone(),
+            }
         };
 
         let trigger = PipelineTrigger::Push {

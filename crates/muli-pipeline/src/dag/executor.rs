@@ -802,9 +802,13 @@ fn compute_final_state(had_failure: bool, had_stop_failure: bool) -> PipelineRun
 
 fn make_expr_ctx(run: &PipelineRun) -> ExpressionContext {
     ExpressionContext {
-        branch: run.ref_name.replace("refs/heads/", ""),
+        branch: run
+            .ref_name
+            .strip_prefix("refs/heads/")
+            .unwrap_or("")
+            .to_string(),
         event: trigger_event_str(&run.trigger),
-        tag: None,
+        tag: run.ref_name.strip_prefix("refs/tags/").map(str::to_string),
     }
 }
 
@@ -849,6 +853,11 @@ fn find_original_name<'a>(sr_name: &str, original_names: &[&'a str]) -> Option<&
 
 fn trigger_event_str(trigger: &PipelineTrigger) -> String {
     match trigger {
+        // A push carrying a `refs/tags/*` ref is a tag event, so `event == 'tag'`
+        // conditions resolve correctly. Branch pushes stay "push".
+        PipelineTrigger::Push { ref_name, .. } if ref_name.starts_with("refs/tags/") => {
+            "tag".into()
+        }
         PipelineTrigger::Push { .. } => "push".into(),
         PipelineTrigger::PullRequest { .. } => "pull_request".into(),
         PipelineTrigger::Manual { .. } => "manual".into(),
@@ -864,5 +873,44 @@ fn changed_paths_for_trigger(trigger: &PipelineTrigger) -> Option<&[String]> {
         PipelineTrigger::Manual { .. }
         | PipelineTrigger::Schedule { .. }
         | PipelineTrigger::Retry { .. } => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run_with_ref(ref_name: &str) -> PipelineRun {
+        PipelineRun::new(
+            "pipe".to_string(),
+            "tenant".to_string(),
+            "repo".to_string(),
+            1,
+            "deadbeef".to_string(),
+            ref_name.to_string(),
+            PipelineTrigger::Push {
+                ref_name: ref_name.to_string(),
+                changed_paths: vec![],
+            },
+            String::new(),
+        )
+    }
+
+    #[test]
+    fn make_expr_ctx_populates_tag_for_tag_ref() {
+        let run = run_with_ref("refs/tags/v1.2.3");
+        let ctx = make_expr_ctx(&run);
+        assert_eq!(ctx.tag.as_deref(), Some("v1.2.3"));
+        assert_eq!(ctx.event, "tag");
+        assert_eq!(ctx.branch, "");
+    }
+
+    #[test]
+    fn make_expr_ctx_populates_branch_for_branch_ref() {
+        let run = run_with_ref("refs/heads/main");
+        let ctx = make_expr_ctx(&run);
+        assert_eq!(ctx.tag, None);
+        assert_eq!(ctx.event, "push");
+        assert_eq!(ctx.branch, "main");
     }
 }

@@ -12,6 +12,10 @@ pub enum PipelineEvent {
         branch: String,
         changed_paths: Vec<String>,
     },
+    Tag {
+        tag: String,
+        changed_paths: Vec<String>,
+    },
     PullRequest {
         target_branch: String,
         event: String,
@@ -30,11 +34,32 @@ pub fn matches_trigger(trigger: &TriggerDef, event: &PipelineEvent) -> bool {
             changed_paths,
         } => {
             if let Some(push) = &trigger.push {
-                let branch_match = push.branches.is_empty()
-                    || push.branches.iter().any(|b| matches_glob(b, branch));
-                let path_match =
-                    push.paths.is_empty() || matches_any_path(&push.paths, changed_paths);
-                branch_match && path_match
+                // A tags-only trigger (tags set, no branches) does not fire on
+                // ordinary branch pushes.
+                if !push.tags.is_empty() && push.branches.is_empty() {
+                    false
+                } else {
+                    let branch_match = push.branches.is_empty()
+                        || push.branches.iter().any(|b| matches_glob(b, branch));
+                    let path_match =
+                        push.paths.is_empty() || matches_any_path(&push.paths, changed_paths);
+                    branch_match && path_match
+                }
+            } else {
+                false
+            }
+        }
+        PipelineEvent::Tag { tag, changed_paths } => {
+            if let Some(push) = &trigger.push {
+                if push.tags.is_empty() {
+                    // A branch-only push trigger never fires on tags.
+                    false
+                } else {
+                    let tag_match = push.tags.iter().any(|t| matches_glob(t, tag));
+                    let path_match =
+                        push.paths.is_empty() || matches_any_path(&push.paths, changed_paths);
+                    tag_match && path_match
+                }
             } else {
                 false
             }
@@ -88,6 +113,7 @@ mod tests {
             push: Some(PushTrigger {
                 branches: vec!["main".into()],
                 paths: vec![],
+                tags: vec![],
             }),
             ..Default::default()
         };
@@ -113,6 +139,7 @@ mod tests {
             push: Some(PushTrigger {
                 branches: vec![],
                 paths: vec!["src/**".into()],
+                tags: vec![],
             }),
             ..Default::default()
         };
@@ -187,6 +214,7 @@ mod tests {
             push: Some(PushTrigger {
                 branches: vec!["feature/*".into()],
                 paths: vec![],
+                tags: vec![],
             }),
             ..Default::default()
         };
@@ -213,6 +241,7 @@ mod tests {
             push: Some(PushTrigger {
                 branches: vec![],
                 paths: vec![],
+                tags: vec![],
             }),
             ..Default::default()
         };
@@ -264,6 +293,7 @@ mod tests {
             push: Some(PushTrigger {
                 branches: vec!["*".into()],
                 paths: vec![],
+                tags: vec![],
             }),
             ..Default::default()
         };
@@ -282,6 +312,7 @@ mod tests {
             push: Some(PushTrigger {
                 branches: vec![],
                 paths: vec!["src/**".into()],
+                tags: vec![],
             }),
             ..Default::default()
         };
@@ -304,6 +335,108 @@ mod tests {
             &PipelineEvent::Push {
                 branch: "main".into(),
                 changed_paths: vec!["docs/readme.md".into()]
+            }
+        ));
+    }
+
+    #[test]
+    fn test_tag_matches_glob() {
+        let trigger = TriggerDef {
+            push: Some(PushTrigger {
+                branches: vec![],
+                paths: vec![],
+                tags: vec!["v*".into()],
+            }),
+            ..Default::default()
+        };
+        assert!(matches_trigger(
+            &trigger,
+            &PipelineEvent::Tag {
+                tag: "v1.0.0".into(),
+                changed_paths: vec![]
+            }
+        ));
+        assert!(!matches_trigger(
+            &trigger,
+            &PipelineEvent::Tag {
+                tag: "nightly".into(),
+                changed_paths: vec![]
+            }
+        ));
+    }
+
+    #[test]
+    fn test_branch_push_does_not_fire_tags_trigger() {
+        // A tags-only trigger must not match an ordinary branch push.
+        let trigger = TriggerDef {
+            push: Some(PushTrigger {
+                branches: vec![],
+                paths: vec![],
+                tags: vec!["v*".into()],
+            }),
+            ..Default::default()
+        };
+        assert!(!matches_trigger(
+            &trigger,
+            &PipelineEvent::Push {
+                branch: "main".into(),
+                changed_paths: vec![]
+            }
+        ));
+    }
+
+    #[test]
+    fn test_tag_event_does_not_fire_branch_only_trigger() {
+        // A branch-only trigger must not match a tag push.
+        let trigger = TriggerDef {
+            push: Some(PushTrigger {
+                branches: vec!["main".into()],
+                paths: vec![],
+                tags: vec![],
+            }),
+            ..Default::default()
+        };
+        assert!(!matches_trigger(
+            &trigger,
+            &PipelineEvent::Tag {
+                tag: "v1.0.0".into(),
+                changed_paths: vec![]
+            }
+        ));
+    }
+
+    #[test]
+    fn test_tags_and_branches_coexist() {
+        // Both branches and tags configured: fires on matching branch pushes
+        // AND matching tag pushes.
+        let trigger = TriggerDef {
+            push: Some(PushTrigger {
+                branches: vec!["main".into()],
+                paths: vec![],
+                tags: vec!["v*".into()],
+            }),
+            ..Default::default()
+        };
+        assert!(matches_trigger(
+            &trigger,
+            &PipelineEvent::Push {
+                branch: "main".into(),
+                changed_paths: vec![]
+            }
+        ));
+        assert!(matches_trigger(
+            &trigger,
+            &PipelineEvent::Tag {
+                tag: "v2.3.4".into(),
+                changed_paths: vec![]
+            }
+        ));
+        // A non-matching branch still doesn't fire.
+        assert!(!matches_trigger(
+            &trigger,
+            &PipelineEvent::Push {
+                branch: "develop".into(),
+                changed_paths: vec![]
             }
         ));
     }
