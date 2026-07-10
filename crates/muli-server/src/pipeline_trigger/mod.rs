@@ -19,6 +19,7 @@ mod discovery;
 mod expand;
 mod git_meta;
 mod plan;
+mod release;
 mod run;
 mod webhook;
 
@@ -32,15 +33,17 @@ use tracing::{error, info, warn};
 use muli_core::pipeline::PipelineTrigger;
 use muli_core::traits::{
     ArtifactStore, GitTokenStore, JobStore, OrgSecretStore, OrgStore, PipelineRunStore,
-    PipelineSecretStore, PipelineStore, PullRequestStore, RepositoryStore, StepRunStore,
-    TenantLimitsStore,
+    PipelineSecretStore, PipelineStore, PullRequestStore, ReleaseStore, RepositoryStore,
+    StepRunStore, TenantLimitsStore,
 };
 use muli_git::api::PipelineTriggerHook;
 use muli_git::hooks::webhook_http_client;
 use muli_git::storage::FilesystemStorage;
+use muli_pipeline::artifact::storage::ArtifactStorage;
 use muli_pipeline::dag::executor::JobSubmitter;
 use muli_pipeline::trigger::matcher::PipelineEvent;
 
+use crate::release_storage::ReleaseAssetStorage;
 use discovery::Discovery;
 
 pub struct PipelineTriggerImpl {
@@ -66,6 +69,13 @@ pub struct PipelineTriggerImpl {
     org_store: Arc<dyn OrgStore>,
     encryption_key: Option<[u8; 32]>,
     artifact_store: Arc<dyn ArtifactStore>,
+    /// Release metadata store — records created by declarative `release:` blocks.
+    release_store: Arc<dyn ReleaseStore>,
+    /// Byte storage for release assets (the archive attached to a release).
+    release_asset_storage: Arc<ReleaseAssetStorage>,
+    /// Byte storage for job artifacts — read server-side to build a release's
+    /// archive asset and changelog notes.
+    artifact_storage: Arc<ArtifactStorage>,
 }
 
 impl PipelineTriggerImpl {
@@ -89,6 +99,9 @@ impl PipelineTriggerImpl {
         org_store: Arc<dyn OrgStore>,
         encryption_key: Option<[u8; 32]>,
         artifact_store: Arc<dyn ArtifactStore>,
+        release_store: Arc<dyn ReleaseStore>,
+        release_asset_storage: Arc<ReleaseAssetStorage>,
+        artifact_storage: Arc<ArtifactStorage>,
     ) -> Self {
         Self {
             git_storage,
@@ -111,6 +124,9 @@ impl PipelineTriggerImpl {
             org_store,
             encryption_key,
             artifact_store,
+            release_store,
+            release_asset_storage,
+            artifact_storage,
         }
     }
 

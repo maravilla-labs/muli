@@ -60,7 +60,9 @@ impl PipelineTriggerImpl {
 
     /// Deliver the `pipeline.completed` webhook. `state` is the lowercased
     /// execution state (or `"failed"`); `error` carries the failure message when
-    /// execution errored.
+    /// execution errored. `release` is the `{ id, tag, asset_ids }` summary of a
+    /// release recorded by a declarative `release:` block, when one ran.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn deliver_completed(
         &self,
         tenant_id: &str,
@@ -70,6 +72,7 @@ impl PipelineTriggerImpl {
         state: &str,
         error: Option<&str>,
         artifacts_json: &serde_json::Value,
+        release: Option<&serde_json::Value>,
     ) {
         let mut payload = serde_json::json!({
             "run_id": run.id,
@@ -82,9 +85,12 @@ impl PipelineTriggerImpl {
             "webhook": run.webhook_data,
             "artifacts": artifacts_json,
         });
-        if let Some(err) = error {
-            if let Some(obj) = payload.as_object_mut() {
+        if let Some(obj) = payload.as_object_mut() {
+            if let Some(err) = error {
                 obj.insert("error".to_string(), serde_json::json!(err));
+            }
+            if let Some(rel) = release {
+                obj.insert("release".to_string(), rel.clone());
             }
         }
         self.deliver_pipeline_webhook(

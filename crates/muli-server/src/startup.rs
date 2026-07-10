@@ -194,6 +194,11 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
                 stores.org_store.clone(),
                 encryption_key,
                 stores.artifact_store.clone(),
+                stores.release_store.clone(),
+                Arc::new(crate::release_storage::ReleaseAssetStorage::new(
+                    std::path::Path::new(&config.data_dir),
+                )),
+                artifact_storage.clone(),
             )))
         } else {
             None

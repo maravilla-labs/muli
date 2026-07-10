@@ -8,7 +8,7 @@ use chrono::Utc;
 use tracing::{error, info, warn};
 
 use muli_core::git::{GitPermission, GitToken, Repository};
-use muli_core::pipeline::{Pipeline, PipelineRun, StepRun};
+use muli_core::pipeline::{Pipeline, PipelineRun, PipelineRunState, StepRun};
 use muli_core::token_hash;
 use muli_pipeline::dag::executor::DagExecutor;
 use muli_pipeline::yaml::schema::PipelineDef;
@@ -129,6 +129,14 @@ impl PipelineTriggerImpl {
 
         match exec_result {
             Ok(state) => {
+                // Declarative `release:` blocks run in-process, only on a fully
+                // successful run, before the completion webhook so their summary
+                // rides along in the payload.
+                let releases = if state == PipelineRunState::Succeeded {
+                    self.run_releases(tenant_id, repo, run, pipeline_def).await
+                } else {
+                    Vec::new()
+                };
                 self.deliver_completed(
                     tenant_id,
                     repo_id,
@@ -137,12 +145,14 @@ impl PipelineTriggerImpl {
                     &format!("{state:?}").to_lowercase(),
                     None,
                     &artifacts_json,
+                    releases.first(),
                 )
                 .await;
                 info!(
                     run_id = %run.id,
                     state = ?state,
                     steps = all_steps.len(),
+                    releases = releases.len(),
                     path = %config_path,
                     "pipeline run #{} executing",
                     run.run_number,
@@ -157,6 +167,7 @@ impl PipelineTriggerImpl {
                     "failed",
                     Some(&e.to_string()),
                     &artifacts_json,
+                    None,
                 )
                 .await;
                 error!(error = %e, "pipeline trigger: DAG execution failed");

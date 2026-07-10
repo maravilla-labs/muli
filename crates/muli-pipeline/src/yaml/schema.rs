@@ -108,6 +108,46 @@ pub struct JobDef {
     pub condition: Option<String>,
     pub failure_strategy: Option<String>,
     pub timeout: Option<u64>,
+    /// Declarative release: when the run succeeds, record a repository release
+    /// (tag + notes + an archive asset) server-side. No release credential is
+    /// injected into the job container — the release is created by the engine.
+    pub release: Option<ReleaseDef>,
+}
+
+/// Declarative `release:` block on a job. Executed in-process after the run
+/// succeeds; see `pipeline_trigger/release.rs`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseDef {
+    /// Release tag. Interpolated (`$PIPELINE_*`). Defaults to the run's
+    /// `refs/tags/*` ref when the run was a tag push.
+    pub tag: Option<String>,
+    /// Display name. Interpolated; defaults to the tag when absent.
+    pub name: Option<String>,
+    /// Where the release notes come from.
+    pub notes: Option<NotesDef>,
+    /// Create the release as an unpublished draft.
+    pub draft: Option<bool>,
+    /// Mark as a prerelease (e.g. `v1.0.0-rc1`).
+    pub prerelease: Option<bool>,
+    /// Create the git tag at the run's commit if the run wasn't a tag push.
+    pub create_tag: Option<bool>,
+    /// Globs matched against job names; each matching job's artifact archive is
+    /// attached as a single release asset. Per-file distribution is the
+    /// registry's job, not a release concern.
+    #[serde(default)]
+    pub assets: Vec<String>,
+}
+
+/// Source of a release's notes. Internally tagged by `from:`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "from", rename_all = "snake_case")]
+pub enum NotesDef {
+    /// Read a changelog file the job produced (from its artifact archive).
+    Changelog { file: String },
+    /// Server-computed `git log` since the previous tag.
+    GitLog,
+    /// Literal text, with `$PIPELINE_*` interpolation.
+    Inline { text: String },
 }
 
 impl JobDef {
@@ -251,4 +291,90 @@ pub struct ArtifactUploadDef {
 pub struct ResourceDef {
     pub cpu: Option<String>,
     pub memory: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `from:` internal tag must round-trip for every notes variant.
+    #[test]
+    fn notes_changelog_roundtrip() {
+        let notes = NotesDef::Changelog {
+            file: "CHANGELOG.md".to_string(),
+        };
+        let json = serde_json::to_value(&notes).unwrap();
+        assert_eq!(json, serde_json::json!({ "from": "changelog", "file": "CHANGELOG.md" }));
+        let back: NotesDef = serde_json::from_value(json).unwrap();
+        assert!(matches!(back, NotesDef::Changelog { file } if file == "CHANGELOG.md"));
+    }
+
+    #[test]
+    fn notes_git_log_roundtrip() {
+        let notes = NotesDef::GitLog;
+        let json = serde_json::to_value(&notes).unwrap();
+        assert_eq!(json, serde_json::json!({ "from": "git_log" }));
+        let back: NotesDef = serde_json::from_value(json).unwrap();
+        assert!(matches!(back, NotesDef::GitLog));
+    }
+
+    #[test]
+    fn notes_inline_roundtrip() {
+        let notes = NotesDef::Inline {
+            text: "Release $PIPELINE_TAG".to_string(),
+        };
+        let json = serde_json::to_value(&notes).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "from": "inline", "text": "Release $PIPELINE_TAG" })
+        );
+        let back: NotesDef = serde_json::from_value(json).unwrap();
+        assert!(matches!(back, NotesDef::Inline { text } if text == "Release $PIPELINE_TAG"));
+    }
+
+    /// A job carrying a `release:` block parses from real pipeline YAML.
+    #[test]
+    fn job_release_parses_from_yaml() {
+        let yaml = r#"
+name: release-pipeline
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  publish:
+    image: alpine
+    commands: ["true"]
+    release:
+      tag: "$PIPELINE_TAG"
+      name: "Release $PIPELINE_TAG"
+      draft: false
+      prerelease: false
+      create_tag: true
+      assets: ["build"]
+      notes:
+        from: changelog
+        file: CHANGELOG.md
+"#;
+        let def: PipelineDef = serde_yaml::from_str(yaml).unwrap();
+        let job = def.jobs.get("publish").expect("publish job");
+        let rel = job.release.as_ref().expect("release def");
+        assert_eq!(rel.tag.as_deref(), Some("$PIPELINE_TAG"));
+        assert_eq!(rel.create_tag, Some(true));
+        assert_eq!(rel.assets, vec!["build".to_string()]);
+        assert!(matches!(&rel.notes, Some(NotesDef::Changelog { file }) if file == "CHANGELOG.md"));
+    }
+
+    /// A job without a `release:` block leaves the field `None`.
+    #[test]
+    fn job_without_release_is_none() {
+        let yaml = r#"
+name: p
+jobs:
+  build:
+    image: alpine
+    commands: ["make"]
+"#;
+        let def: PipelineDef = serde_yaml::from_str(yaml).unwrap();
+        assert!(def.jobs.get("build").unwrap().release.is_none());
+    }
 }

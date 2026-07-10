@@ -29,7 +29,7 @@ use muli_core::service::RepositoryService;
 use muli_core::traits::{
     ArtifactStore, CacheStore, CollaboratorStore, GitTokenStore, JobLogStore, JobStore,
     OrgSecretStore, OrgStore, PipelineRunStore, PipelineSecretStore, PipelineStore,
-    PullRequestStore, RepositoryStore, StepRunStore,
+    PullRequestStore, ReleaseStore, RepositoryStore, StepRunStore,
 };
 use muli_engine::docker::logs::{
     LogCollector, LogLine as EngineLogLine, LogStream as EngineLogStream,
@@ -45,12 +45,14 @@ use muli_pipeline::yaml::validation::validate_pipeline;
 use muli_queue::{ConcurrencyLimiter, PriorityQueue, Scheduler};
 use muli_server::PipelineTriggerImpl;
 use muli_server::grpc::PipelineServiceImpl;
+use muli_server::release_storage::ReleaseAssetStorage;
 use muli_store::memory::MemoryCollaboratorStore;
 use muli_store::sqlite::{
     SqliteArtifactStore, SqliteCacheStore, SqliteGitTokenStore, SqliteJobLogStore, SqliteJobStore,
     SqliteOrgSecretStore, SqliteOrgStore, SqlitePipelineRunStore, SqlitePipelineSecretStore,
-    SqlitePipelineStore, SqlitePrCommentStore, SqlitePullRequestStore, SqliteRepositoryStore,
-    SqliteSshKeyStore, SqliteStepRunStore, SqliteStoreFactory, SqliteWebhookStore,
+    SqlitePipelineStore, SqlitePrCommentStore, SqlitePullRequestStore, SqliteReleaseStore,
+    SqliteRepositoryStore, SqliteSshKeyStore, SqliteStepRunStore, SqliteStoreFactory,
+    SqliteWebhookStore,
 };
 
 use muli_proto::{GetPipelineRunRequest, ListPipelineRunsRequest, StreamStepLogsRequest};
@@ -222,6 +224,15 @@ impl CheckoutE2eEnv {
             .with_collaborator_store(collaborator_store);
         let tenant_config = TenantConfig::new("localhost").with_default_tenant(TENANT);
         let repo_service = Arc::new(RepositoryService::new(repo_store.clone(), storage.clone()));
+        // Release + artifact byte stores for the trigger's declarative `release:`
+        // path. Unexercised here (no pipeline in this suite declares a release),
+        // but required by the constructor.
+        let release_store: Arc<dyn ReleaseStore> =
+            Arc::new(SqliteReleaseStore::new(factory.clone()));
+        let release_asset_dir = TempDir::new().expect("release asset tempdir");
+        let release_asset_storage = Arc::new(ReleaseAssetStorage::new(release_asset_dir.path()));
+        let trigger_artifact_dir = TempDir::new().expect("trigger artifact tempdir");
+        let trigger_artifact_storage = Arc::new(ArtifactStorage::new(trigger_artifact_dir.path()));
         let pipeline_trigger = Arc::new(PipelineTriggerImpl::new(
             storage.clone(),
             repo_store.clone(),
@@ -241,6 +252,9 @@ impl CheckoutE2eEnv {
             org_store.clone(),
             None,
             artifact_store.clone(),
+            release_store,
+            release_asset_storage,
+            trigger_artifact_storage,
         ));
 
         let app = git_router(GitRouterConfig {
