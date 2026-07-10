@@ -93,14 +93,22 @@ tenant + repo.
 ## Relationship to pipelines
 
 Releases pair naturally with [pipelines](pipelines.md): a tagged release can
-build and publish artifacts, then attach them as release assets. First-class
-**`on: release`** and **`on: push: tags:`** pipeline triggers — so cutting a
-release runs a release pipeline automatically — are planned (today a
-push-triggered pipeline can branch on the tag via an `if:` expression such as
-`if: tag == 'v1.0.0'`).
+build and publish artifacts, then attach them as release assets. This is
+first-class and automatic:
+
+- **Tag triggers.** A pipeline runs on a tag push via
+  [`on: { push: { tags: [...] } }`](pipelines.md#triggers-on). Inside the run,
+  `if: tag == 'v1.0.0'` (and `tag != ''`) evaluate correctly.
+- **Declarative `release:`.** A job's [`release:`](pipelines.md#declarative-release)
+  block records a release server-side when the run succeeds — the tag, notes
+  (from a changelog file, a server-computed `git log`, or inline text), and the
+  job's artifact archive as a single downloadable asset. No release credential
+  is injected into the job container: the release is created by the engine, which
+  already holds the release store. Re-running the same tag is idempotent.
 
 ## Status
 
 The release **engine** (model, storage, and the `ReleaseService` gRPC API
-including asset upload/download) is implemented. Tag/release pipeline triggers
-and the public anonymous-pull asset-download path are planned follow-ups.
+including asset upload/download) is implemented, along with tag-push pipeline
+triggers and the declarative `release:` job keyword. The public anonymous-pull
+asset-download path is a planned follow-up.

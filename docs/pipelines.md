@@ -122,6 +122,7 @@ on:
   push:
     branches: [main, develop, "release/*"]
     paths: ["src/**", "Cargo.toml"]
+    tags: ["v*"]              # fire on a matching tag push
 
   pull_request:
     branches: [main]
@@ -136,10 +137,28 @@ on:
 
 | Trigger | Fields | Description |
 |---------|--------|-------------|
-| `push` | `branches`, `paths` | Fires on git push. Branches support glob patterns (`*`, `**`). Paths filter by changed files. Empty lists match all. |
+| `push` | `branches`, `paths`, `tags` | Fires on git push. `branches`/`tags` support glob patterns (`*`, `**`); `paths` filters by changed files. Empty lists match all. See tag semantics below. |
 | `pull_request` | `branches`, `events` | Fires on PR events against target branches. Events: `opened`, `synchronize`, `closed`. |
 | `manual` | boolean | When `true`, the pipeline can be triggered via the API or UI. |
 | `schedule` | list of `{cron}` | Cron-based scheduling (UTC). Standard 5-field cron syntax. |
+
+**Tag pushes (`on.push.tags`).** When `tags` is non-empty, a push of a matching
+git tag (`git push origin v1.0.0`, ref `refs/tags/v1.0.0`) fires the pipeline.
+Tag matching is independent of branch matching:
+
+- A **branch** push never fires a tags-only trigger, and a **tag** push never
+  fires a branches-only trigger.
+- `branches` and `tags` may coexist in the same `push` block — the pipeline then
+  runs on matching branch pushes *and* matching tag pushes.
+- On a tag run, `PIPELINE_EVENT` is `tag`, `PIPELINE_REF` is the full
+  `refs/tags/<name>` ref, `PIPELINE_BRANCH` is empty, and the `if:` condition
+  context exposes the tag (see [Conditions](#conditions-if)).
+
+```yaml
+on:
+  push:
+    tags: ["v*"]             # v1.0.0, v2.3.4-rc1, …
+```
 
 **Glob patterns:**
 - `main` — exact match
@@ -190,6 +209,7 @@ jobs:
 | `if` | string | no | Condition expression — skip job if false |
 | `failure_strategy` | string | no | What to do when job fails: `stop` (default), `continue`, `ignore` |
 | `timeout` | integer | no | Maximum execution time in seconds (default: 1800) |
+| `release` | object | no | Record a repository release when the run succeeds (see [Declarative release](#declarative-release)) |
 
 ### Steps (legacy)
 
@@ -321,12 +341,17 @@ if: "branch == 'main' && event == 'push'"
 
 Simple expressions supporting:
 - `branch == 'value'` / `branch != 'value'`
-- `event == 'push'` / `event == 'pull_request'` / `event == 'manual'`
-- `tag == 'v1.0'`
+- `event == 'push'` / `event == 'pull_request'` / `event == 'manual'` / `event == 'tag'`
+- `tag == 'v1.0'` / `tag != ''`
 - `&&` for AND (up to 10 conditions)
 
 When a condition evaluates to false, the job is **skipped** (not failed).
 Unknown expressions default to true (job runs).
+
+On a tag push (`on.push.tags`), the condition context is populated from the ref:
+`event` is `tag`, and `tag` holds the tag name (`refs/tags/v1.0.0` → `v1.0.0`),
+so `if: tag == 'v1.0.0'` and `if: event == 'tag'` gate jobs to release runs. On a
+branch push `tag` is empty (`tag == ''`).
 
 ### Failure Strategy
 
@@ -362,6 +387,84 @@ services:
 Service containers run alongside your job containers on the same Docker network.
 Access them via their name as hostname (e.g., `postgres:5432`).
 
+### Declarative release
+
+A job may carry a `release:` block. When the pipeline run **succeeds**, the
+engine records a [repository release](releases.md) — a git tag plus notes plus
+the job's artifact archive as a single downloadable asset. This runs
+server-side, after the run: **no release credential is injected into the job
+container.**
+
+```yaml
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  publish:
+    commands:
+      - cargo build --release
+      - cp target/release/myapp ./myapp
+    artifacts:
+      paths: [myapp]                 # the archive attached to the release
+    release:
+      tag: "$PIPELINE_TAG"           # optional; defaults to the pushed tag
+      name: "myapp $PIPELINE_TAG"
+      notes:
+        from: changelog
+        file: CHANGELOG.md
+      draft: false
+      prerelease: false
+      create_tag: false
+      assets: ["myapp"]              # job archives to attach as release assets
+    if: "event == 'tag'"
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `tag` | string | the pushed `refs/tags/*` tag | Release tag. Supports `$PIPELINE_*` interpolation. If omitted and the run is not a tag push, the release is skipped (with a logged warning) unless `create_tag` supplies one. |
+| `name` | string | empty | Display title. Supports `$PIPELINE_*` interpolation. |
+| `notes` | object | none | Release notes source (see below). |
+| `draft` | bool | `false` | Create the release as an unpublished draft. |
+| `prerelease` | bool | `false` | Mark as a prerelease (e.g. `v1.0.0-rc1`). |
+| `create_tag` | bool | `false` | If the run was not a tag push, create the git tag at the run's commit before recording the release (idempotent — a pre-existing tag is fine). |
+| `assets` | list | `[]` | Names of the job archive(s) to attach as release assets. Per-file distribution is the registry's job, not a release concern. |
+
+**Notes sources (`notes.from`).** The `notes` block is internally tagged by
+`from:`:
+
+| `from:` | Extra field | Notes body |
+|---------|-------------|------------|
+| `changelog` | `file` | The named file read from the job's uploaded artifact archive (e.g. `CHANGELOG.md`). A missing file falls back to empty notes with a warning. |
+| `git_log` | — | Server-computed `git log` from the previous tag to the run's commit. Computed server-side because the job's checkout is shallow (`--depth 1`, no tags). |
+| `inline` | `text` | Literal text, with `$PIPELINE_*` interpolation. |
+
+```yaml
+release:
+  tag: "$PIPELINE_TAG"
+  notes:
+    from: git_log            # commits since the previous tag
+```
+
+```yaml
+release:
+  tag: "$PIPELINE_TAG"
+  notes:
+    from: inline
+    text: "Release $PIPELINE_TAG built from $PIPELINE_SHA"
+```
+
+Interpolation in `tag`, `name`, and inline `notes.text` exposes `PIPELINE_TAG`,
+`PIPELINE_SHA`, `PIPELINE_REF`, `PIPELINE_BRANCH`, `PIPELINE_RUN_ID`,
+`PIPELINE_RUN_NUMBER`, `PIPELINE_COMMIT_MESSAGE`, `PIPELINE_COMMIT_AUTHOR`, and
+`PIPELINE_REPO`.
+
+**Idempotency.** Re-running the same tag does not duplicate the release: if a
+release already exists for the resolved tag, the existing one is returned
+unchanged. When a release is created (or matched), a `release` object
+(`{ id, tag, asset_ids }`) is folded into the `pipeline.completed` webhook
+payload.
+
 ---
 
 ## Built-in Environment Variables
@@ -374,7 +477,7 @@ Every job automatically receives these environment variables:
 | `PIPELINE_REF` | `refs/heads/main` | Full git ref that triggered the run |
 | `PIPELINE_SHA` | `abc123def456` | Commit SHA being built |
 | `PIPELINE_BRANCH` | `main` | Branch name (extracted from ref) |
-| `PIPELINE_EVENT` | `push` | Trigger type: `push`, `pull_request`, `manual`, `schedule`, `retry` |
+| `PIPELINE_EVENT` | `push` | Trigger type: `push`, `pull_request`, `manual`, `schedule`, `tag`, `retry` |
 | `PIPELINE_JOB_NAME` | `build` | Name of the current job (jobs format) |
 | `PIPELINE_STEP_NAME` | `build` | Name of the current step (steps format) |
 | `PIPELINE_CLONE_URL` | `http://...` | Git clone URL (steps format only, when auto-checkout is enabled) |
