@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::error::Result;
-use crate::registry::model::{RegistryToken, TenantQuota};
+use crate::registry::model::{RegistryToken, RegistryVisibilityLevel, TenantQuota};
 use crate::tenant::Tenant;
 
 /// Persistent storage for registry authentication tokens.
@@ -59,6 +59,20 @@ pub trait TenantQuotaStore: Send + Sync {
     /// If no quota is configured for the tenant, the reservation always succeeds
     /// without modifying the store (unlimited).
     async fn try_reserve(&self, tenant_id: &str, additional_bytes: u64) -> Result<bool>;
+}
+
+/// Persistent storage for per-tenant registry read visibility.
+#[async_trait]
+pub trait RegistryVisibilityStore: Send + Sync {
+    /// Get a tenant's visibility. `None` means no record → treat as `Private`.
+    async fn get_visibility(&self, tenant_id: &str) -> Result<Option<RegistryVisibilityLevel>>;
+
+    /// Set (create or update) a tenant's visibility.
+    async fn set_visibility(
+        &self,
+        tenant_id: &str,
+        visibility: RegistryVisibilityLevel,
+    ) -> Result<()>;
 }
 
 /// Persistent storage for tenants (global, not scoped to a tenant DB).

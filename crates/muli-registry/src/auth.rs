@@ -15,8 +15,8 @@ use muli_core::auth::extract_any_token;
 use muli_core::token_hash;
 use tracing::{debug, warn};
 
-use muli_core::registry::model::RegistryPermission;
-use muli_core::traits::RegistryTokenStore;
+use muli_core::registry::model::{RegistryPermission, RegistryVisibilityLevel};
+use muli_core::traits::{RegistryTokenStore, RegistryVisibilityStore};
 
 use crate::metrics::RegistryMetrics;
 use crate::tenant::TenantContext;
@@ -25,19 +25,35 @@ use crate::tenant::TenantContext;
 #[derive(Clone)]
 pub struct RegistryAuth {
     pub token_store: Arc<dyn RegistryTokenStore>,
-    pub anonymous_pull: bool,
+    /// Per-tenant read visibility. A `Public` tenant serves reads with no token;
+    /// `Authenticated`/`Private` still require a valid tenant token (the breadth of
+    /// who is *issued* one is decided upstream at token issuance). When `None`, all
+    /// tenants use `default_visibility` — i.e. exactly today's behaviour.
+    pub visibility_store: Option<Arc<dyn RegistryVisibilityStore>>,
+    /// Fallback visibility when a tenant has no record (default `Private`).
+    pub default_visibility: RegistryVisibilityLevel,
 }
 
 impl RegistryAuth {
+    /// Construct with no visibility store — every tenant is `Private` (today's
+    /// behaviour). Opt into per-tenant visibility with `with_visibility`.
     pub fn new(token_store: Arc<dyn RegistryTokenStore>) -> Self {
         Self {
             token_store,
-            anonymous_pull: false,
+            visibility_store: None,
+            default_visibility: RegistryVisibilityLevel::Private,
         }
     }
 
-    pub fn with_anonymous_pull(mut self, allow: bool) -> Self {
-        self.anonymous_pull = allow;
+    /// Enable per-tenant read visibility, with `default` used when a tenant has no
+    /// stored record.
+    pub fn with_visibility(
+        mut self,
+        store: Arc<dyn RegistryVisibilityStore>,
+        default: RegistryVisibilityLevel,
+    ) -> Self {
+        self.visibility_store = Some(store);
+        self.default_visibility = default;
         self
     }
 }
@@ -80,17 +96,32 @@ pub async fn auth_middleware(request: Request, next: Next) -> Response {
 
     debug!(%method, %path, "auth: processing request");
 
-    // Allow anonymous pull if configured
-    if auth.anonymous_pull && is_read {
-        return next.run(request).await;
-    }
-
     let tenant_ctx = request.extensions().get::<TenantContext>().cloned();
 
     let tenant_id = tenant_ctx
         .as_ref()
         .map(|t| t.tenant_id.as_str())
         .unwrap_or("unknown");
+
+    // A Public registry serves READS with no token. Writes always fall through to
+    // the token path below. `Authenticated`/`Private` also fall through — their
+    // breadth is enforced at token issuance, not here — so from muli's side they
+    // are "a valid tenant token is required", exactly as before this feature.
+    if is_read {
+        let visibility = match &auth.visibility_store {
+            Some(store) => store
+                .get_visibility(tenant_id)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or(auth.default_visibility),
+            None => auth.default_visibility,
+        };
+        if visibility == RegistryVisibilityLevel::Public {
+            debug!(tenant_id, "auth: anonymous read allowed (public registry)");
+            return next.run(request).await;
+        }
+    }
 
     // Extract token (Bearer, Basic, or raw)
     let plaintext = match extract_any_token(request.headers()) {

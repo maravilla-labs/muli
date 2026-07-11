@@ -17,6 +17,54 @@ pub enum RegistryPermission {
     Admin,
 }
 
+/// Read-access visibility for a tenant's registry. Governs who may PULL; PUSH
+/// always requires a tenant token with the Push permission regardless of this.
+///
+/// muli only acts on `Public` (it allows anonymous reads). `Authenticated` and
+/// `Private` are both "a valid tenant token is required" from muli's side — the
+/// breadth of who is *issued* such a token is decided upstream at token issuance
+/// (the control plane hands an authenticated user a Pull-only token when the level
+/// is `Authenticated`). Storing the exact level here keeps muli the source of truth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegistryVisibilityLevel {
+    /// Members only (a valid tenant token). The default and today's behaviour.
+    #[default]
+    Private,
+    /// Any authenticated user — enforced at token issuance, not by muli.
+    Authenticated,
+    /// Anyone, no token: muli serves anonymous reads for this tenant.
+    Public,
+}
+
+impl RegistryVisibilityLevel {
+    /// Stable string form for storage/wire.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Private => "private",
+            Self::Authenticated => "authenticated",
+            Self::Public => "public",
+        }
+    }
+
+    /// Parse from the stored/wire string. Unknown values FAIL CLOSED to `Private`
+    /// so a corrupt or future value can never accidentally open a registry.
+    pub fn parse_lenient(s: &str) -> Self {
+        match s {
+            "authenticated" => Self::Authenticated,
+            "public" => Self::Public,
+            _ => Self::Private,
+        }
+    }
+}
+
+/// Per-tenant registry read visibility.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistryVisibility {
+    pub tenant_id: String,
+    pub visibility: RegistryVisibilityLevel,
+}
+
 /// A scoped authentication token for registry access.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistryToken {

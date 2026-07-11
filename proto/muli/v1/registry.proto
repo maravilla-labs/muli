@@ -15,6 +15,8 @@ service RegistryService {
   rpc GetRegistryUsage(GetRegistryUsageRequest) returns (GetRegistryUsageResponse);
   rpc SetTenantQuota(SetTenantQuotaRequest) returns (SetTenantQuotaResponse);
   rpc GetTenantQuota(GetTenantQuotaRequest) returns (GetTenantQuotaResponse);
+  rpc SetRegistryVisibility(SetRegistryVisibilityRequest) returns (SetRegistryVisibilityResponse);
+  rpc GetRegistryVisibility(GetRegistryVisibilityRequest) returns (GetRegistryVisibilityResponse);
 }
 
 enum RegistryPermission {
@@ -98,4 +100,21 @@ message GetTenantQuotaRequest {
 message GetTenantQuotaResponse {
   uint64 max_storage_bytes = 1;
   uint64 current_usage_bytes = 2;
+}
+
+// Read visibility for a tenant's registry: "private" | "authenticated" | "public".
+// Unknown values are treated as "private" by the server (fail closed).
+message SetRegistryVisibilityRequest {
+  string tenant_id = 1;
+  string visibility = 2;
+}
+
+message SetRegistryVisibilityResponse {}
+
+message GetRegistryVisibilityRequest {
+  string tenant_id = 1;
+}
+
+message GetRegistryVisibilityResponse {
+  string visibility = 1;
 }

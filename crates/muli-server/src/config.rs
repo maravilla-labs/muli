@@ -39,6 +39,11 @@ pub struct ServerConfig {
     /// registry tenant (its handle) instead of the shared git tenant. Off by
     /// default. Mirrors the control plane's `muli_registry_tenant_per_handle`.
     pub registry_tenant_per_handle: bool,
+    /// Fallback read visibility for a tenant with no stored record:
+    /// `private` (default) | `authenticated` | `public`. Per-tenant records
+    /// (set by the control plane) override this. Unknown values fail closed to
+    /// `private`.
+    pub registry_default_visibility: String,
     /// Explicit registry data path. When `None`, derived as `{data_dir}/registry`.
     pub registry_root: Option<String>,
     pub registry_max_size_gb: f64,
@@ -124,6 +129,10 @@ impl std::fmt::Debug for ServerConfig {
             .field(
                 "registry_tenant_per_handle",
                 &self.registry_tenant_per_handle,
+            )
+            .field(
+                "registry_default_visibility",
+                &self.registry_default_visibility,
             )
             .field("registry_root", &self.registry_root)
             .field("registry_max_size_gb", &self.registry_max_size_gb)
@@ -211,6 +220,7 @@ impl Default for ServerConfig {
             registry_port: 5000,
             registry_domain: "localhost".to_string(),
             registry_tenant_per_handle: false,
+            registry_default_visibility: "private".to_string(),
             registry_root: None,
             registry_max_size_gb: 50.0,
             registry_max_blob_size_mb: 5120,

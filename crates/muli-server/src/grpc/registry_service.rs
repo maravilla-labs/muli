@@ -9,16 +9,18 @@ use chrono::{Duration, Utc};
 use tonic::{Request, Response, Status};
 use tracing::info;
 
-use muli_core::registry::model::RegistryToken;
-use muli_core::traits::{RegistryTokenStore, TenantQuotaStore};
+use muli_core::registry::model::{RegistryToken, RegistryVisibilityLevel};
+use muli_core::traits::{RegistryTokenStore, RegistryVisibilityStore, TenantQuotaStore};
 
 use muli_proto::registry_service_server::RegistryService;
 use muli_proto::{
     CreateRegistryTokenRequest, CreateRegistryTokenResponse, GetRegistryUsageRequest,
-    GetRegistryUsageResponse, GetTenantQuotaRequest, GetTenantQuotaResponse,
-    ListRegistryTokensRequest, ListRegistryTokensResponse, RegistryTokenInfo,
-    RevokeRegistryTokenRequest, RevokeRegistryTokenResponse, RotateRegistryTokenRequest,
-    RotateRegistryTokenResponse, SetTenantQuotaRequest, SetTenantQuotaResponse,
+    GetRegistryUsageResponse, GetRegistryVisibilityRequest, GetRegistryVisibilityResponse,
+    GetTenantQuotaRequest, GetTenantQuotaResponse, ListRegistryTokensRequest,
+    ListRegistryTokensResponse, RegistryTokenInfo, RevokeRegistryTokenRequest,
+    RevokeRegistryTokenResponse, RotateRegistryTokenRequest, RotateRegistryTokenResponse,
+    SetRegistryVisibilityRequest, SetRegistryVisibilityResponse, SetTenantQuotaRequest,
+    SetTenantQuotaResponse,
 };
 
 use super::conversions::{core_registry_permission_to_proto, proto_registry_permission_to_core};
@@ -29,6 +31,7 @@ use super::util::{
 pub struct RegistryServiceImpl {
     pub token_store: Arc<dyn RegistryTokenStore>,
     pub quota_store: Arc<dyn TenantQuotaStore>,
+    pub visibility_store: Arc<dyn RegistryVisibilityStore>,
 }
 
 impl RegistryServiceImpl {
@@ -327,5 +330,51 @@ impl RegistryService for RegistryServiceImpl {
                 current_usage_bytes: 0,
             })),
         }
+    }
+
+    async fn set_registry_visibility(
+        &self,
+        request: Request<SetRegistryVisibilityRequest>,
+    ) -> Result<Response<SetRegistryVisibilityResponse>, Status> {
+        // Reachable only with the control-plane API key (gRPC auth interceptor);
+        // the control plane authorizes the org before calling this. Unknown
+        // visibility strings fail closed to `private`.
+        let caller_tenant = extract_tenant_id(&request)?;
+        let req = request.into_inner();
+        if req.tenant_id.is_empty() {
+            return Err(Status::invalid_argument("tenant_id is required"));
+        }
+        let visibility = RegistryVisibilityLevel::parse_lenient(&req.visibility);
+
+        self.visibility_store
+            .set_visibility(&req.tenant_id, visibility)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to set visibility: {e}")))?;
+
+        info!(
+            operation = "set_registry_visibility",
+            tenant_id = %req.tenant_id,
+            caller_tenant = %caller_tenant,
+            visibility = visibility.as_str(),
+            "audit: registry visibility set"
+        );
+
+        Ok(Response::new(SetRegistryVisibilityResponse {}))
+    }
+
+    async fn get_registry_visibility(
+        &self,
+        request: Request<GetRegistryVisibilityRequest>,
+    ) -> Result<Response<GetRegistryVisibilityResponse>, Status> {
+        let (_caller_tenant, req) = validate_tenant(request, |r| &r.tenant_id)?;
+        let visibility = self
+            .visibility_store
+            .get_visibility(&req.tenant_id)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to get visibility: {e}")))?
+            .unwrap_or_default();
+        Ok(Response::new(GetRegistryVisibilityResponse {
+            visibility: visibility.as_str().to_string(),
+        }))
     }
 }

@@ -81,6 +81,7 @@ pub(crate) async fn start_grpc(
     let registry_service = RegistryServiceImpl {
         token_store: stores.registry_token_store,
         quota_store: stores.tenant_quota_store.clone(),
+        visibility_store: stores.registry_visibility_store.clone(),
     };
 
     let repo_service = Arc::new(muli_core::service::RepositoryService::new(

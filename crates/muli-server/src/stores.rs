@@ -12,8 +12,8 @@ use muli_core::tenant::Tenant;
 use muli_core::traits::{
     ArtifactStore, CacheStore, CollaboratorStore, GitTokenStore, JobLogStore, JobStore,
     OrgMemberStore, OrgSecretStore, OrgStore, PipelineRunStore, PipelineSecretStore, PipelineStore,
-    PrCommentStore, PullRequestStore, RegistryTokenStore, ReleaseStore, RepositoryStore,
-    SshKeyStore, StepRunStore, TenantLimitsStore, TenantQuotaStore, TenantStore,
+    PrCommentStore, PullRequestStore, RegistryTokenStore, RegistryVisibilityStore, ReleaseStore,
+    RepositoryStore, SshKeyStore, StepRunStore, TenantLimitsStore, TenantQuotaStore, TenantStore,
     TreeCommitCacheStore, UserStore, WebhookStore,
 };
 use muli_store::sqlite::{
@@ -22,8 +22,8 @@ use muli_store::sqlite::{
     SqlitePipelineRunStore, SqlitePipelineSecretStore, SqlitePipelineStore, SqlitePrCommentStore,
     SqlitePullRequestStore, SqliteRegistryTokenStore, SqliteReleaseStore, SqliteRepositoryStore,
     SqliteSshKeyStore, SqliteStepRunStore, SqliteStoreFactory, SqliteTenantLimitsStore,
-    SqliteTenantQuotaStore, SqliteTenantStore, SqliteTreeCommitCacheStore, SqliteUserStore,
-    SqliteWebhookStore,
+    SqliteRegistryVisibilityStore, SqliteTenantQuotaStore, SqliteTenantStore,
+    SqliteTreeCommitCacheStore, SqliteUserStore, SqliteWebhookStore,
 };
 
 use crate::config::ServerConfig;
@@ -35,6 +35,7 @@ pub(crate) struct Stores {
     pub job_log_store: Arc<dyn JobLogStore>,
     pub agent_registry: Arc<muli_store::sqlite::SqliteAgentStore>,
     pub registry_token_store: Arc<dyn RegistryTokenStore>,
+    pub registry_visibility_store: Arc<dyn RegistryVisibilityStore>,
     pub tenant_quota_store: Arc<dyn TenantQuotaStore>,
     pub git_token_store: Arc<dyn GitTokenStore>,
     pub repo_store: Arc<dyn RepositoryStore>,
@@ -94,6 +95,7 @@ pub(crate) async fn init_stores(config: &ServerConfig) -> anyhow::Result<Stores>
         job_log_store: Arc::new(SqliteJobLogStore::new(factory.clone())),
         agent_registry: Arc::new(muli_store::sqlite::SqliteAgentStore::new(factory.clone())),
         registry_token_store: Arc::new(SqliteRegistryTokenStore::new(factory.clone())),
+        registry_visibility_store: Arc::new(SqliteRegistryVisibilityStore::new(factory.clone())),
         tenant_quota_store: Arc::new(SqliteTenantQuotaStore::new(factory.clone())),
         git_token_store: Arc::new(SqliteGitTokenStore::new(factory.clone())),
         repo_store: Arc::new(SqliteRepositoryStore::new(factory.clone())),

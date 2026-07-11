@@ -105,6 +105,11 @@ CREATE TABLE IF NOT EXISTS tenant_quotas (
   current_usage_bytes INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS registry_visibility (
+  tenant_id TEXT PRIMARY KEY,
+  visibility TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS tenants (
   id        TEXT PRIMARY KEY,
   name      TEXT NOT NULL,

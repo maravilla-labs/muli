@@ -22,7 +22,9 @@ pub use pipeline::{
     ArtifactStore, CacheStore, OrgSecretStore, PipelineRunStore, PipelineSecretStore,
     PipelineStore, StepRunStore,
 };
-pub use registry::{RegistryTokenStore, TenantQuotaStore, TenantStore};
+pub use registry::{
+    RegistryTokenStore, RegistryVisibilityStore, TenantQuotaStore, TenantStore,
+};
 pub use release::ReleaseStore;
 pub use tenant_limits::TenantLimitsStore;
 pub use user::UserStore;

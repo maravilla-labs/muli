@@ -134,6 +134,7 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
         start_registry(
             &config,
             &stores.registry_token_store,
+            &stores.registry_visibility_store,
             &stores.tenant_quota_store,
             &cancel,
         )
@@ -347,6 +348,7 @@ async fn start_metrics(config: &ServerConfig, cancel: &CancellationToken) -> any
 async fn start_registry(
     config: &ServerConfig,
     registry_token_store: &Arc<dyn muli_core::traits::RegistryTokenStore>,
+    registry_visibility_store: &Arc<dyn muli_core::traits::RegistryVisibilityStore>,
     tenant_quota_store: &Arc<dyn muli_core::traits::TenantQuotaStore>,
     cancel: &CancellationToken,
 ) -> anyhow::Result<()> {
@@ -363,7 +365,11 @@ async fn start_registry(
     if let Some(ref dt) = config.default_tenant_id {
         tenant_config = tenant_config.with_default_tenant(dt.as_str());
     }
-    let registry_auth = muli_registry::RegistryAuth::new(registry_token_store.clone());
+    let default_visibility = muli_core::registry::model::RegistryVisibilityLevel::parse_lenient(
+        &config.registry_default_visibility,
+    );
+    let registry_auth = muli_registry::RegistryAuth::new(registry_token_store.clone())
+        .with_visibility(registry_visibility_store.clone(), default_visibility);
     let registry_config = muli_registry::api::RegistryConfig {
         npm_enabled: config.npm_enabled,
         cargo_enabled: config.cargo_enabled,
