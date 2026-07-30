@@ -57,6 +57,9 @@ pub struct PipelineServiceImpl {
     pub token_store: Arc<dyn GitTokenStore>,
     pub git_base_url: String,
     pub org_secret_store: Arc<dyn OrgSecretStore>,
+    /// Shared with the git push hooks. A manual trigger runs the exact same
+    /// phases as a push-triggered one; `None` when pipelines or git are disabled.
+    pub pipeline_trigger: Option<Arc<crate::pipeline_trigger::PipelineTriggerImpl>>,
     pub encryption_key: Option<[u8; 32]>,
 }
 

@@ -50,9 +50,10 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
         &std::path::PathBuf::from(&config.data_dir),
     ));
 
-    let artifact_manager = Arc::new(muli_pipeline::artifact::manager::ArtifactManager::new(
-        artifact_storage.clone(),
-    ).with_artifact_store(stores.artifact_store.clone()));
+    let artifact_manager = Arc::new(
+        muli_pipeline::artifact::manager::ArtifactManager::new(artifact_storage.clone())
+            .with_artifact_store(stores.artifact_store.clone()),
+    );
 
     let executor = Arc::new(
         DockerExecutor::new(docker.clone(), resource_manager.clone())
@@ -172,8 +173,10 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
     // Parse encryption key for pipeline secrets
     let encryption_key = parse_encryption_key(&config);
 
-    // Pipeline trigger
-    let pipeline_trigger: Option<Arc<dyn muli_git::api::PipelineTriggerHook>> =
+    // Pipeline trigger. Kept as the concrete type: the git hooks take it as a
+    // `PipelineTriggerHook`, and the gRPC pipeline service calls its manual-trigger
+    // entry point directly so push and manual runs share one execution path.
+    let pipeline_trigger_impl: Option<Arc<crate::pipeline_trigger::PipelineTriggerImpl>> =
         if config.pipeline_enabled && config.git_enabled {
             info!("Pipeline triggering enabled");
             Some(Arc::new(crate::pipeline_trigger::PipelineTriggerImpl::new(
@@ -207,6 +210,10 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
         } else {
             None
         };
+    let pipeline_trigger: Option<Arc<dyn muli_git::api::PipelineTriggerHook>> =
+        pipeline_trigger_impl
+            .clone()
+            .map(|t| t as Arc<dyn muli_git::api::PipelineTriggerHook>);
 
     let repo_service = Arc::new(muli_core::service::RepositoryService::new(
         stores.repo_store.clone(),
@@ -305,6 +312,7 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
         git_storage,
         pipeline_job_submitter,
         artifact_storage,
+        pipeline_trigger_impl,
         cancel,
     )
     .await?;

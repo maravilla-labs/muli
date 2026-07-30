@@ -18,13 +18,14 @@ mod admission;
 mod discovery;
 mod expand;
 mod git_meta;
+mod manual;
 mod plan;
 mod registry_tenant;
 mod release;
 mod run;
 mod webhook;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -47,6 +48,8 @@ use muli_pipeline::trigger::matcher::PipelineEvent;
 use crate::release_storage::ReleaseAssetStorage;
 use discovery::Discovery;
 
+pub use manual::ManualRun;
+
 pub struct PipelineTriggerImpl {
     git_storage: Arc<FilesystemStorage>,
     repo_store: Arc<dyn RepositoryStore>,
@@ -63,7 +66,7 @@ pub struct PipelineTriggerImpl {
     allow_localhost_webhooks: bool,
     /// Base URL for the git HTTP service (e.g. "http://localhost:7000").
     git_base_url: String,
-    /// Per-repo last-trigger time for rate limiting.
+    /// Per-ref last-trigger time for rate limiting.
     last_trigger: DashMap<String, Instant>,
     secret_store: Arc<dyn PipelineSecretStore>,
     org_secret_store: Arc<dyn OrgSecretStore>,
@@ -199,7 +202,7 @@ impl PipelineTriggerImpl {
         trigger: PipelineTrigger,
     ) {
         // Phase 0-0b: admission control (rate limit + tenant enforcement).
-        if !self.admission_allows(tenant_id, repo_id).await {
+        if !self.admission_allows(tenant_id, repo_id, ref_name).await {
             return;
         }
 
@@ -222,6 +225,10 @@ impl PipelineTriggerImpl {
             let Some(pipeline_def) = plan::parse_config(&pipeline_file, &event) else {
                 continue;
             };
+
+            // A pipeline matched: start this ref's rate-limit window. Refs that
+            // match nothing never consume their budget.
+            self.note_trigger(tenant_id, repo_id, ref_name);
 
             // Phase 6b: dedupe pipelines by name within a single commit.
             if !seen_pipeline_names.insert(pipeline_def.name.clone()) {
@@ -261,13 +268,15 @@ impl PipelineTriggerImpl {
                     &pipeline_file,
                     &commit_message,
                     &commit_author,
+                    HashMap::new(),
                 )
                 .await
             else {
                 continue;
             };
 
-            self.deliver_started(tenant_id, repo_id, &run, &pipeline).await;
+            self.deliver_started(tenant_id, repo_id, &run, &pipeline)
+                .await;
 
             // Phase 9: expand steps/jobs into StepRun records.
             let all_steps = self.expand_steps(tenant_id, &pipeline_def, &run).await;

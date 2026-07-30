@@ -164,12 +164,21 @@ message PipelineRunEvent {
 message TriggerPipelineRequest {
   string tenant_id = 1;
   string repo_id = 2;
+  // A branch, a tag, or a fully-qualified ref ("refs/tags/v1.0.0"). Empty means
+  // the repository's HEAD. The resolved ref is recorded on the run, so a manual
+  // run of a tag reads as a tag run.
   string branch = 3;
+  // Optional. When empty, the ref above is resolved to its current commit.
   string commit_sha = 4;
   // Additional environment variables to inject into step Jobs.
   // Callers (e.g. flightdeck) can pass secrets here; muli also resolves
   // its own PipelineSecretStore secrets at execution time.
   map<string, string> env_vars = 5;
+  // Identity recorded on the run. Defaults to the calling tenant when empty.
+  string triggered_by = 6;
+  // Optional. Selects one pipeline by name when the repo defines several under
+  // .maravilla/pipeline/. Empty runs the first one enabled for manual triggers.
+  string pipeline_name = 7;
 }
 
 message PipelineRunResponse {

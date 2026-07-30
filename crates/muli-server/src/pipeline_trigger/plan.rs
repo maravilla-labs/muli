@@ -134,8 +134,13 @@ impl PipelineTriggerImpl {
         pipeline_file: &PipelineFile,
         commit_message: &str,
         commit_author: &str,
+        caller_env: HashMap<String, String>,
     ) -> Option<PipelineRun> {
-        let run_number = match self.run_store.next_run_number(tenant_id, &pipeline.id).await {
+        let run_number = match self
+            .run_store
+            .next_run_number(tenant_id, &pipeline.id)
+            .await
+        {
             Ok(n) => n,
             Err(e) => {
                 error!(error = %e, "pipeline trigger: failed to get next run number");
@@ -161,7 +166,9 @@ impl PipelineTriggerImpl {
             _ => tenant_id.to_string(),
         };
 
-        // Resolve secrets for push-triggered pipelines
+        // Resolve secrets. `caller_env` carries variables supplied by the caller
+        // of a manual trigger (flightdeck's build vars + vault values); it is
+        // empty for push/PR triggers.
         let org_id = self
             .org_store
             .get_org_by_handle(tenant_id, &repo.namespace)
@@ -177,7 +184,7 @@ impl PipelineTriggerImpl {
             repo_id,
             org_id.as_deref(),
             self.encryption_key.as_ref(),
-            HashMap::new(),
+            caller_env,
         )
         .await
         {

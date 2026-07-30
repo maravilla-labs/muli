@@ -11,7 +11,7 @@ use tracing::info;
 
 use muli_core::git::{GitPermission, GitToken};
 use muli_core::pipeline::{
-    Pipeline, PipelineRun as DomainRun, PipelineRunState as DomainRunState, PipelineTrigger,
+    PipelineRun as DomainRun, PipelineRunState as DomainRunState, PipelineTrigger,
 };
 use muli_core::token_hash;
 use muli_proto::{
@@ -23,9 +23,10 @@ use muli_core::pipeline::StepRunState as DomainStepState;
 
 use super::PipelineServiceImpl;
 use super::conversions::{proto_to_run_state, run_to_proto};
-use super::helpers::{create_steps_from_yaml, resolve_env_vars};
+use super::helpers::create_steps_from_yaml;
 use crate::grpc::util::validate_tenant;
 use crate::pipeline_clone_url::{CiCloneUrlTarget, build_ci_clone_url};
+use crate::pipeline_trigger::ManualRun;
 
 impl PipelineServiceImpl {
     pub async fn trigger_pipeline_impl(
@@ -37,90 +38,50 @@ impl PipelineServiceImpl {
         if req.repo_id.is_empty() {
             return Err(Status::invalid_argument("repo_id is required"));
         }
-        if req.branch.is_empty() && req.commit_sha.is_empty() {
-            return Err(Status::invalid_argument("branch or commit_sha is required"));
-        }
+        // A manual run goes through the same phases as a push-triggered one:
+        // read `.maravilla/pipeline.yml` at the resolved commit, match it against
+        // the `manual` trigger, persist the run *with* its YAML plus its steps,
+        // and hand it to the DAG executor. Nothing is created when no pipeline
+        // opted in, so a rejected trigger leaves no empty run behind.
+        let trigger = self.pipeline_trigger.as_ref().ok_or_else(|| {
+            Status::failed_precondition("pipeline execution is not enabled on this server")
+        })?;
 
-        // Find or create pipeline for this repo
-        let pipelines = self
-            .pipeline_store
-            .get_by_repo(&caller_tenant, &req.repo_id)
-            .await
-            .map_err(|e| Status::internal(format!("Failed to get pipelines: {e}")))?;
-
-        let pipeline = if let Some(p) = pipelines.first() {
-            p.clone()
+        let triggered_by = if req.triggered_by.is_empty() {
+            caller_tenant.clone()
         } else {
-            // Create a default pipeline record
-            let p = Pipeline::new(
-                req.tenant_id.clone(),
-                req.repo_id.clone(),
-                "default".to_string(),
-                String::new(),
-            );
-            self.pipeline_store
-                .upsert_pipeline(&p)
-                .await
-                .map_err(|e| Status::internal(format!("Failed to create pipeline: {e}")))?;
-            p
+            req.triggered_by.clone()
         };
+        let pipeline_name = (!req.pipeline_name.is_empty()).then_some(req.pipeline_name.as_str());
 
-        // Look up the repo's org for org-level secret scoping
-        let org_id =
-            resolve_org_id_for_repo(self.repo_store.as_ref(), &caller_tenant, &req.repo_id).await;
-
-        // Resolve env vars (muli secrets + caller env_vars)
-        let env_vars = resolve_env_vars(
-            &self.secret_store,
-            &self.org_secret_store,
-            &caller_tenant,
-            &req.repo_id,
-            org_id.as_deref(),
-            self.encryption_key.as_ref(),
-            req.env_vars,
-        )
-        .await?;
-
-        // Get next run number
-        let run_number = self
-            .run_store
-            .next_run_number(&caller_tenant, &pipeline.id)
-            .await
-            .map_err(|e| Status::internal(format!("Failed to get run number: {e}")))?;
-
-        // Create the pipeline run
-        let ref_name = format!("refs/heads/{}", req.branch);
-        let trigger = PipelineTrigger::Manual {
-            triggered_by: caller_tenant.clone(),
-        };
-        let mut run = DomainRun::new(
-            pipeline.id.clone(),
-            req.tenant_id.clone(),
-            req.repo_id.clone(),
-            run_number,
-            req.commit_sha.clone(),
-            ref_name,
-            trigger,
-            String::new(), // yaml_content will be populated by trigger hook
-        );
-        run.env_vars = env_vars;
-        run.triggered_by = caller_tenant.clone();
-
-        self.run_store
-            .create_run(&run)
-            .await
-            .map_err(|e| Status::internal(format!("Failed to create run: {e}")))?;
+        let ManualRun {
+            pipeline,
+            run,
+            steps,
+        } = trigger
+            .trigger_manual(
+                &caller_tenant,
+                &req.repo_id,
+                &req.branch,
+                Some(req.commit_sha.as_str()),
+                &triggered_by,
+                req.env_vars.clone(),
+                pipeline_name,
+            )
+            .await?;
 
         info!(
             operation = "trigger_pipeline",
             tenant_id = %caller_tenant,
             repo_id = %req.repo_id,
-            run_number = run_number,
+            pipeline = %pipeline.name,
+            run_number = run.run_number,
+            steps = steps.len(),
             "audit: pipeline triggered via gRPC"
         );
 
         Ok(Response::new(PipelineRunResponse {
-            run: Some(run_to_proto(&run, Some(&pipeline.name), &[])),
+            run: Some(run_to_proto(&run, Some(&pipeline.name), &steps)),
         }))
     }
 
@@ -345,6 +306,15 @@ impl PipelineServiceImpl {
             )));
         }
 
+        // Runs created before manual triggers read the repo's config have no YAML
+        // recorded, so there is nothing to re-expand. Retrying one used to produce
+        // another empty, never-executing run.
+        if original.yaml_content.is_empty() {
+            return Err(Status::failed_precondition(
+                "run has no recorded pipeline config; trigger a new run instead",
+            ));
+        }
+
         // Get next run number
         let run_number = self
             .run_store
@@ -374,17 +344,13 @@ impl PipelineServiceImpl {
             .map_err(|e| Status::internal(format!("Failed to create retry run: {e}")))?;
 
         // Re-create steps from the original YAML
-        let steps = if !original.yaml_content.is_empty() {
-            create_steps_from_yaml(
-                &original.yaml_content,
-                &new_run.id,
-                &caller_tenant,
-                &self.step_store,
-            )
-            .await?
-        } else {
-            vec![]
-        };
+        let steps = create_steps_from_yaml(
+            &original.yaml_content,
+            &new_run.id,
+            &caller_tenant,
+            &self.step_store,
+        )
+        .await?;
 
         // Spawn DAG execution in background (don't block the gRPC response)
         {
@@ -531,18 +497,6 @@ async fn build_ci_clone_url_for_repo(
     );
 
     Some((clone_url, Some(token_id)))
-}
-
-/// Look up the org ID for a repo's namespace. Returns `None` if the namespace
-/// doesn't correspond to an organization (e.g. it's a user handle).
-async fn resolve_org_id_for_repo(
-    repo_store: &dyn muli_core::traits::RepositoryStore,
-    _tenant_id: &str,
-    repo_id: &str,
-) -> Option<String> {
-    // Return the repo namespace as org handle; the caller uses this for org secret lookup.
-    let repo = repo_store.get_repository(repo_id).await.ok()??;
-    Some(repo.namespace.clone())
 }
 
 fn ci_clone_url_target(

@@ -50,6 +50,7 @@ pub(crate) async fn start_grpc(
     git_storage: Arc<muli_git::storage::FilesystemStorage>,
     pipeline_job_submitter: Arc<dyn muli_pipeline::JobSubmitter>,
     artifact_storage: Arc<muli_pipeline::artifact::storage::ArtifactStorage>,
+    pipeline_trigger: Option<Arc<crate::pipeline_trigger::PipelineTriggerImpl>>,
     cancel: CancellationToken,
 ) -> anyhow::Result<()> {
     let job_service = JobServiceImpl {
@@ -138,6 +139,7 @@ pub(crate) async fn start_grpc(
         token_store: git_token_store,
         git_base_url: config.effective_git_base_url(),
         org_secret_store: stores.org_secret_store,
+        pipeline_trigger,
         encryption_key: config
             .pipeline_secret_encryption_key
             .as_ref()

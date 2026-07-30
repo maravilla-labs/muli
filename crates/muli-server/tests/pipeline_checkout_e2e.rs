@@ -34,6 +34,7 @@ use muli_core::traits::{
 use muli_engine::docker::logs::{
     LogCollector, LogLine as EngineLogLine, LogStream as EngineLogStream,
 };
+use muli_git::api::PipelineTriggerHook;
 use muli_git::auth::{GitAuth, hash_token, token_prefix};
 use muli_git::storage::FilesystemStorage;
 use muli_git::tenant::TenantConfig;
@@ -55,7 +56,9 @@ use muli_store::sqlite::{
     SqliteStoreFactory, SqliteWebhookStore,
 };
 
-use muli_proto::{GetPipelineRunRequest, ListPipelineRunsRequest, StreamStepLogsRequest};
+use muli_proto::{
+    GetPipelineRunRequest, ListPipelineRunsRequest, StreamStepLogsRequest, TriggerPipelineRequest,
+};
 
 use common::{dummy_executor, run_job, with_tenant};
 
@@ -97,6 +100,7 @@ struct CheckoutE2eEnv {
     org_secret_store: Arc<dyn OrgSecretStore>,
     _org_store: Arc<dyn OrgStore>,
     job_submitter: Arc<dyn JobSubmitter>,
+    pipeline_trigger: Arc<PipelineTriggerImpl>,
     artifact_storage: Arc<ArtifactStorage>,
     git_root: TempDir,
     _store_dir: TempDir,
@@ -274,7 +278,7 @@ impl CheckoutE2eEnv {
             cache_store: None,
             allow_localhost_webhooks: true,
             lfs_storage: None,
-            pipeline_trigger: Some(pipeline_trigger),
+            pipeline_trigger: Some(pipeline_trigger.clone() as Arc<dyn PipelineTriggerHook>),
             repo_service,
             quota_store: None,
         });
@@ -307,6 +311,7 @@ impl CheckoutE2eEnv {
             org_secret_store,
             _org_store: org_store,
             job_submitter,
+            pipeline_trigger,
             artifact_storage,
             git_root,
             _store_dir: store_dir,
@@ -386,6 +391,7 @@ fn pipeline_service(env: &CheckoutE2eEnv) -> PipelineServiceImpl {
         token_store: env.token_store.clone(),
         git_base_url: format!("http://{}", env.addr),
         org_secret_store: env.org_secret_store.clone(),
+        pipeline_trigger: Some(env.pipeline_trigger.clone()),
         encryption_key: None,
     }
 }
@@ -1494,4 +1500,325 @@ async fn test_stream_step_logs_replays_completed_step_logs_and_closes() {
         .await
         .unwrap();
     assert!(end.is_none(), "completed step stream should close");
+}
+
+// ── Manual triggers ──────────────────────────────────────────────────────────
+//
+// These exercise the phases a manual trigger shares with a push trigger: read
+// the config at the resolved ref, match `on: manual`, persist the run *with* its
+// YAML, and expand its steps. Execution itself is spawned, so no Docker is
+// needed — the assertions are on what the RPC returns synchronously.
+
+/// These tests never run a container, but the shared harness builds a
+/// `DockerClient` up front, so they skip alongside the rest of the suite when no
+/// daemon is reachable.
+async fn manual_trigger_prereqs_available() -> bool {
+    if !muli_test::docker_helpers::docker_available().await {
+        eprintln!("SKIP: Docker not available");
+        return false;
+    }
+    let git = Command::new("git")
+        .arg("--version")
+        .output()
+        .await
+        .map(|out| out.status.success())
+        .unwrap_or(false);
+    if !git {
+        eprintln!("SKIP: git binary not found");
+    }
+    git
+}
+
+/// Clone the repo, drop `pipeline_yaml` into `.maravilla/pipeline.yml`, commit
+/// and push `main`. Returns the working directory (kept alive by the caller).
+async fn seed_pipeline_repo(
+    env: &CheckoutE2eEnv,
+    repo: &Repository,
+    pipeline_yaml: &str,
+) -> TempDir {
+    let work_dir = TempDir::new().unwrap();
+    let url = env.git_url(&repo.name, OWNER_TOKEN);
+    git(work_dir.path(), &["clone", "--no-local", &url, "."]).await;
+    git(work_dir.path(), &["config", "user.email", "ci@muli.test"]).await;
+    git(work_dir.path(), &["config", "user.name", "Muli CI"]).await;
+
+    write_file(
+        work_dir.path().join("README.md").as_path(),
+        "hello manual\n",
+    );
+    write_file(
+        work_dir.path().join(".maravilla/pipeline.yml").as_path(),
+        pipeline_yaml,
+    );
+
+    git(work_dir.path(), &["add", "."]).await;
+    git(work_dir.path(), &["commit", "-m", "add pipeline"]).await;
+    git(
+        work_dir.path(),
+        &["push", "--set-upstream", "origin", "main"],
+    )
+    .await;
+
+    work_dir
+}
+
+const MANUAL_PIPELINE_YAML: &str = r#"
+name: manual-ci
+on:
+  manual: true
+jobs:
+  build:
+    image: alpine:latest
+    commands:
+      - echo "MANUAL_OK"
+"#;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_manual_trigger_records_yaml_and_creates_steps() {
+    if !manual_trigger_prereqs_available().await {
+        return;
+    }
+    let Some(env) = CheckoutE2eEnv::start().await else {
+        return;
+    };
+    let repo = env.create_private_repo("manual-trigger").await;
+    let _work_dir = seed_pipeline_repo(&env, &repo, MANUAL_PIPELINE_YAML).await;
+
+    let service = pipeline_service(&env);
+    let response = service
+        .trigger_pipeline_impl(with_tenant(
+            TriggerPipelineRequest {
+                tenant_id: TENANT.into(),
+                repo_id: repo.id.clone(),
+                branch: "main".into(),
+                triggered_by: "ada@example.com".into(),
+                ..Default::default()
+            },
+            TENANT,
+        ))
+        .await
+        .expect("manual trigger succeeds");
+
+    let run = response.into_inner().run.expect("run returned");
+    assert_eq!(
+        run.pipeline_name, "manual-ci",
+        "real pipeline name, not a stub"
+    );
+    assert!(!run.steps.is_empty(), "manual run must expand its jobs");
+    assert_eq!(run.ref_name, "refs/heads/main");
+    assert!(!run.commit_sha.is_empty(), "branch HEAD must be resolved");
+    assert_eq!(run.triggered_by, "ada@example.com");
+
+    // The stored run carries the YAML, so a later retry can re-expand it.
+    let stored = env
+        .run_store
+        .get_run(TENANT, &run.id)
+        .await
+        .expect("get run")
+        .expect("run exists");
+    assert!(!stored.yaml_content.is_empty());
+    assert!(matches!(stored.trigger, PipelineTrigger::Manual { .. }));
+
+    // Exactly one pipeline record, named after the config.
+    let pipelines = env
+        .pipeline_store
+        .get_by_repo(TENANT, &repo.id)
+        .await
+        .unwrap();
+    assert_eq!(pipelines.len(), 1);
+    assert_eq!(pipelines[0].name, "manual-ci");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_manual_trigger_rejected_when_no_pipeline_opts_in_and_creates_no_run() {
+    if !manual_trigger_prereqs_available().await {
+        return;
+    }
+    let Some(env) = CheckoutE2eEnv::start().await else {
+        return;
+    };
+    let repo = env.create_private_repo("manual-not-enabled").await;
+    let _work_dir = seed_pipeline_repo(
+        &env,
+        &repo,
+        r#"
+name: tags-only
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  build:
+    image: alpine:latest
+    commands:
+      - echo "hi"
+"#,
+    )
+    .await;
+
+    let service = pipeline_service(&env);
+    let status = service
+        .trigger_pipeline_impl(with_tenant(
+            TriggerPipelineRequest {
+                tenant_id: TENANT.into(),
+                repo_id: repo.id.clone(),
+                branch: "main".into(),
+                ..Default::default()
+            },
+            TENANT,
+        ))
+        .await
+        .expect_err("manual trigger must be refused");
+
+    assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+    assert!(
+        status.message().contains("manual"),
+        "message should point at `on: manual: true`, got: {}",
+        status.message()
+    );
+
+    // Crucially: no orphaned Pending run left behind.
+    let runs = env
+        .run_store
+        .list_by_repo(TENANT, &repo.id, None, 20, 0)
+        .await
+        .expect("list runs");
+    assert!(runs.is_empty(), "a refused trigger must persist nothing");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_manual_trigger_resolves_a_tag_ref() {
+    if !manual_trigger_prereqs_available().await {
+        return;
+    }
+    let Some(env) = CheckoutE2eEnv::start().await else {
+        return;
+    };
+    let repo = env.create_private_repo("manual-tag").await;
+    let work_dir = seed_pipeline_repo(&env, &repo, MANUAL_PIPELINE_YAML).await;
+
+    // Annotated tag: the run must record the tag's *commit*, not the tag object.
+    git(
+        work_dir.path(),
+        &["tag", "-a", "v1.0.0", "-m", "release 1.0.0"],
+    )
+    .await;
+    git(work_dir.path(), &["push", "origin", "v1.0.0"]).await;
+    let expected_sha = git_stdout(work_dir.path(), &["rev-parse", "v1.0.0^{commit}"]).await;
+
+    let service = pipeline_service(&env);
+    let run = service
+        .trigger_pipeline_impl(with_tenant(
+            TriggerPipelineRequest {
+                tenant_id: TENANT.into(),
+                repo_id: repo.id.clone(),
+                branch: "v1.0.0".into(),
+                ..Default::default()
+            },
+            TENANT,
+        ))
+        .await
+        .expect("manual trigger on a tag succeeds")
+        .into_inner()
+        .run
+        .expect("run returned");
+
+    assert_eq!(run.ref_name, "refs/tags/v1.0.0");
+    assert_eq!(run.commit_sha, expected_sha);
+    assert!(!run.steps.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_tag_push_right_after_a_branch_push_still_triggers_its_pipeline() {
+    if !manual_trigger_prereqs_available().await {
+        return;
+    }
+    let Some(env) = CheckoutE2eEnv::start().await else {
+        return;
+    };
+    let repo = env.create_private_repo("tag-and-branch-push").await;
+
+    // The config matches BOTH the branch push and the tag push. Pushing the tag
+    // right after the branch — the normal release flow — must still build the
+    // tag: the trigger rate limit is scoped per ref, so the branch push no longer
+    // swallows the tag push that follows within its window.
+    let work_dir = TempDir::new().unwrap();
+    let url = env.git_url(&repo.name, OWNER_TOKEN);
+    git(work_dir.path(), &["clone", "--no-local", &url, "."]).await;
+    git(work_dir.path(), &["config", "user.email", "ci@muli.test"]).await;
+    git(work_dir.path(), &["config", "user.name", "Muli CI"]).await;
+    write_file(work_dir.path().join("README.md").as_path(), "hello tags\n");
+    write_file(
+        work_dir.path().join(".maravilla/pipeline.yml").as_path(),
+        r#"
+name: release-on-tag
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+jobs:
+  release:
+    image: alpine:latest
+    commands:
+      - echo "RELEASE_OK"
+"#,
+    );
+    git(work_dir.path(), &["add", "."]).await;
+    git(work_dir.path(), &["commit", "-m", "add tag pipeline"]).await;
+    git(work_dir.path(), &["tag", "v2.0.0"]).await;
+
+    git(
+        work_dir.path(),
+        &["push", "--set-upstream", "origin", "main"],
+    )
+    .await;
+    let branch_run =
+        wait_for_run_with_ref(&env, &repo.id, "refs/heads/main", Duration::from_secs(30))
+            .await
+            .expect("branch push creates a run");
+
+    // Well inside the rate-limit window that used to be shared repo-wide.
+    git(work_dir.path(), &["push", "origin", "v2.0.0"]).await;
+
+    let tag_run =
+        wait_for_run_with_ref(&env, &repo.id, "refs/tags/v2.0.0", Duration::from_secs(30))
+            .await
+            .expect("tag push must build even when it follows a branch push immediately");
+    assert!(!tag_run.yaml_content.is_empty());
+    assert_ne!(tag_run.id, branch_run.id);
+}
+
+/// Poll until a run for `ref_name` exists (any state).
+async fn wait_for_run_with_ref(
+    env: &CheckoutE2eEnv,
+    repo_id: &str,
+    ref_name: &str,
+    timeout: Duration,
+) -> Option<PipelineRun> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let runs = env
+            .run_store
+            .list_by_repo(TENANT, repo_id, None, 20, 0)
+            .await
+            .expect("list runs");
+        if let Some(run) = runs.into_iter().find(|run| run.ref_name == ref_name) {
+            return Some(run);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// Run a git command and return its trimmed stdout.
+async fn git_stdout(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .await
+        .expect("run git");
+    assert!(out.status.success(), "git {args:?} failed");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
 }

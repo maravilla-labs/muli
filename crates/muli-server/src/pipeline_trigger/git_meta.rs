@@ -132,6 +132,63 @@ pub(crate) fn resolve_commit_info(repo_path: &Path, commit_sha: &str) -> (String
     .unwrap_or_default()
 }
 
+/// Resolve a user-supplied ref to `(fully-qualified ref name, commit SHA)`.
+///
+/// Accepts, in order: an empty string (the repo's `HEAD`), a fully-qualified
+/// `refs/…` name, a branch (`refs/heads/{input}`), a tag (`refs/tags/{input}`,
+/// annotated tags peeled to their commit), and finally a raw revision such as a
+/// commit SHA — in which case the returned ref name is empty because the commit
+/// belongs to no particular ref.
+pub(crate) fn resolve_ref(
+    repo_path: &Path,
+    ref_input: &str,
+) -> muli_core::error::Result<(String, String)> {
+    let repo = git2::Repository::open(repo_path)
+        .map_err(|e| MuliError::Pipeline(format!("cannot open repo: {e}")))?;
+
+    let peel = |reference: git2::Reference| -> Option<String> {
+        reference.peel_to_commit().ok().map(|c| c.id().to_string())
+    };
+
+    if ref_input.is_empty() {
+        let head = repo
+            .head()
+            .map_err(|e| MuliError::Pipeline(format!("repository has no commits: {e}")))?;
+        let name = head.name().unwrap_or_default().to_string();
+        let sha = peel(head)
+            .ok_or_else(|| MuliError::Pipeline("cannot resolve HEAD commit".to_string()))?;
+        return Ok((name, sha));
+    }
+
+    let candidates = if ref_input.starts_with("refs/") {
+        vec![ref_input.to_string()]
+    } else {
+        vec![
+            format!("refs/heads/{ref_input}"),
+            format!("refs/tags/{ref_input}"),
+        ]
+    };
+
+    for candidate in candidates {
+        if let Ok(reference) = repo.find_reference(&candidate)
+            && let Some(sha) = peel(reference)
+        {
+            return Ok((candidate, sha));
+        }
+    }
+
+    // Not a ref — fall back to any revision git understands (commit SHA, short
+    // SHA, `HEAD~1`, …). There is no ref name to report in that case.
+    let object = repo
+        .revparse_single(ref_input)
+        .map_err(|e| MuliError::Pipeline(format!("ref '{ref_input}' not found: {e}")))?;
+    let commit = object
+        .peel_to_commit()
+        .map_err(|e| MuliError::Pipeline(format!("'{ref_input}' is not a commit: {e}")))?;
+
+    Ok((String::new(), commit.id().to_string()))
+}
+
 /// Resolve the HEAD commit SHA for a branch in a bare repository.
 pub(crate) fn resolve_branch_head(
     repo_path: &Path,

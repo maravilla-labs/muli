@@ -1,7 +1,7 @@
 // Copyright 2026 Maravilla Labs
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Admission control for pipeline triggers: per-repo rate limiting and tenant
+//! Admission control for pipeline triggers: per-ref rate limiting and tenant
 //! suspension / daily-run / concurrent-pipeline enforcement.
 
 use std::time::Instant;
@@ -10,26 +10,50 @@ use tracing::warn;
 
 use super::PipelineTriggerImpl;
 
-/// Minimum interval between pipeline triggers for the same repo (rate limit).
+/// Minimum interval between pipeline triggers for the same ref (rate limit).
 pub(crate) const MIN_TRIGGER_INTERVAL_SECS: u64 = 5;
 
 impl PipelineTriggerImpl {
+    /// Rate-limit key. Scoped to the **ref**, not the repo: a single
+    /// `git push --follow-tags` fires one concurrent `on_push` per ref, so a
+    /// repo-wide key made the branch push and the tag push cancel each other out
+    /// (whichever lost the race was silently dropped).
+    fn rate_limit_key(tenant_id: &str, repo_id: &str, ref_name: &str) -> String {
+        format!("{tenant_id}/{repo_id}/{ref_name}")
+    }
+
+    /// Record that this ref produced a run, starting its rate-limit window.
+    ///
+    /// Called only once a pipeline actually matched the event — a push to a ref
+    /// no pipeline cares about must not consume that ref's budget.
+    pub(crate) fn note_trigger(&self, tenant_id: &str, repo_id: &str, ref_name: &str) {
+        self.last_trigger.insert(
+            Self::rate_limit_key(tenant_id, repo_id, ref_name),
+            Instant::now(),
+        );
+    }
+
     /// Run admission checks (rate limit + tenant enforcement). Returns `true` when
     /// the trigger is allowed to proceed, `false` when it should be dropped.
-    pub(crate) async fn admission_allows(&self, tenant_id: &str, repo_id: &str) -> bool {
-        // 0. Rate limit: skip if triggered too recently for this repo
-        let repo_key = format!("{tenant_id}/{repo_id}");
-        if let Some(last) = self.last_trigger.get(&repo_key) {
-            if last.elapsed().as_secs() < MIN_TRIGGER_INTERVAL_SECS {
-                warn!(
-                    repo_id = %repo_id,
-                    "pipeline trigger rate-limited (< {}s since last trigger)",
-                    MIN_TRIGGER_INTERVAL_SECS,
-                );
-                return false;
-            }
+    pub(crate) async fn admission_allows(
+        &self,
+        tenant_id: &str,
+        repo_id: &str,
+        ref_name: &str,
+    ) -> bool {
+        // 0. Rate limit: skip if this ref was triggered too recently.
+        let key = Self::rate_limit_key(tenant_id, repo_id, ref_name);
+        if let Some(last) = self.last_trigger.get(&key)
+            && last.elapsed().as_secs() < MIN_TRIGGER_INTERVAL_SECS
+        {
+            warn!(
+                repo_id = %repo_id,
+                ref_name = %ref_name,
+                "pipeline trigger rate-limited (< {}s since last trigger for this ref)",
+                MIN_TRIGGER_INTERVAL_SECS,
+            );
+            return false;
         }
-        self.last_trigger.insert(repo_key, Instant::now());
 
         // 0b. Tenant enforcement checks
         if let Some(ref limits_store) = self.tenant_limits_store {

@@ -3,13 +3,12 @@
 
 //! Shared helper functions for pipeline service RPCs.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use tonic::Status;
 
 use muli_core::pipeline::{FailureStrategy as DomainFailureStrategy, StepRun as DomainStep};
-use muli_core::traits::{OrgSecretStore, PipelineSecretStore, StepRunStore};
+use muli_core::traits::StepRunStore;
 
 /// Parse YAML, expand matrix, create StepRun records for a run.
 pub async fn create_steps_from_yaml(
@@ -78,28 +77,4 @@ pub async fn create_steps_from_yaml(
         }
     }
     Ok(all_steps)
-}
-
-/// Resolve muli-native pipeline secrets and merge with caller env_vars.
-///
-/// Delegates to [`crate::secret_resolver::resolve_env_vars`] for the actual merge logic.
-pub async fn resolve_env_vars(
-    secret_store: &Arc<dyn PipelineSecretStore>,
-    org_secret_store: &Arc<dyn OrgSecretStore>,
-    tenant_id: &str,
-    repo_id: &str,
-    org_id: Option<&str>,
-    encryption_key: Option<&[u8; 32]>,
-    caller_env_vars: HashMap<String, String>,
-) -> Result<HashMap<String, String>, Status> {
-    crate::secret_resolver::resolve_env_vars(
-        secret_store,
-        org_secret_store,
-        tenant_id,
-        repo_id,
-        org_id,
-        encryption_key,
-        caller_env_vars,
-    )
-    .await
 }
