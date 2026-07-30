@@ -348,19 +348,29 @@ impl DagExecutor {
                 .map(|substep| JobSubstepRun::new(substep.name.clone()))
                 .collect();
 
-            self.step_store
-                .update_step_state(tenant_id, &sr.id, StepRunState::Running)
-                .await?;
+            // Seed the substep rows *before* submitting. The scheduler can start
+            // the container immediately, and substep progress is applied by name
+            // against these rows — a marker arriving before they exist used to be
+            // dropped, leaving the first substep stuck Pending on a finished job.
+            if let Some(mut step) = self.step_store.get_step(tenant_id, &sr.id).await? {
+                step.state = StepRunState::Running;
+                step.started_at = Some(Utc::now());
+                step.error_message = None;
+                if step.substeps.is_empty() {
+                    step.substeps = initial_substeps.clone();
+                }
+                step.updated_at = Utc::now();
+                self.step_store.update_step(&step).await?;
+            } else {
+                self.step_store
+                    .update_step_state(tenant_id, &sr.id, StepRunState::Running)
+                    .await?;
+            }
 
             match self.job_submitter.submit(job).await {
                 Ok(job_id) => {
                     if let Some(mut step) = self.step_store.get_step(tenant_id, &sr.id).await? {
                         step.job_id = Some(job_id.clone());
-                        step.started_at = Some(Utc::now());
-                        step.error_message = None;
-                        if step.substeps.is_empty() {
-                            step.substeps = initial_substeps.clone();
-                        }
                         step.updated_at = Utc::now();
                         self.step_store.update_step(&step).await?;
                     }

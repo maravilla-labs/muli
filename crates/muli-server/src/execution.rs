@@ -343,6 +343,15 @@ async fn update_pipeline_substeps(
             continue;
         };
 
+        // A marker for a substep the step does not know about yet (or at all —
+        // a runner may emit sections the plan did not predict) creates the row
+        // rather than dropping the progress on the floor.
+        if !step.substeps.iter().any(|entry| entry.name == substep_name) {
+            step.substeps.push(muli_core::pipeline::JobSubstepRun::new(
+                substep_name.to_string(),
+            ));
+            changed = true;
+        }
         let Some(substep) = step
             .substeps
             .iter_mut()
