@@ -12,6 +12,11 @@ use muli_proto::{GetStepLogsRequest, GetStepLogsResponse, LogLine, StreamStepLog
 use super::PipelineServiceImpl;
 use crate::grpc::util::validate_tenant;
 
+/// How long a log subscriber waits for a starting job to register its log
+/// collector before falling back to whatever is in durable storage.
+const COLLECTOR_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+const COLLECTOR_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
 fn proto_log_line(
     line: String,
     stream: String,
@@ -141,7 +146,26 @@ impl PipelineServiceImpl {
 
         let (tx, rx) = mpsc::channel(256);
 
-        if let Some(collector) = self.log_collectors.get(&job_id).map(|c| c.value().clone()) {
+        // A subscriber can arrive between the job being recorded and the
+        // scheduler starting it, when no collector exists yet. Give a
+        // not-yet-terminal job a short grace period to register one rather than
+        // closing the stream immediately — otherwise a viewer who opens the page
+        // early gets a dead stream and sees nothing until the run ends.
+        let mut collector = self.log_collectors.get(&job_id).map(|c| c.value().clone());
+        if collector.is_none() {
+            let deadline = std::time::Instant::now() + COLLECTOR_WAIT;
+            while collector.is_none() && std::time::Instant::now() < deadline {
+                match self.job_store.get_job(&job_id).await {
+                    Ok(Some(job)) if !job.state.is_terminal() => {}
+                    // Terminal or missing: stored logs are all there is.
+                    _ => break,
+                }
+                tokio::time::sleep(COLLECTOR_POLL).await;
+                collector = self.log_collectors.get(&job_id).map(|c| c.value().clone());
+            }
+        }
+
+        if let Some(collector) = collector {
             let job_id_clone = job_id.clone();
             let max_log_lines = self.max_log_lines;
 

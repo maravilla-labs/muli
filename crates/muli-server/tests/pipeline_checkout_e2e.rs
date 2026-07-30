@@ -1822,3 +1822,109 @@ async fn git_stdout(dir: &Path, args: &[&str]) -> String {
     assert!(out.status.success(), "git {args:?} failed");
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
+
+/// Does a step's log stream deliver lines *while the job is still running*, or
+/// only once it finishes? The job prints one line a second for 10s; the stream
+/// must hand us output well before the run reaches a terminal state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_step_logs_arrive_while_the_job_is_still_running() {
+    if !manual_trigger_prereqs_available().await {
+        return;
+    }
+    let docker = muli_test::docker_helpers::require_docker().await;
+    muli_test::docker_helpers::ensure_test_image(&docker, "alpine:latest").await;
+
+    let Some(env) = CheckoutE2eEnv::start().await else {
+        return;
+    };
+    let repo = env.create_private_repo("live-log-stream").await;
+    let _work_dir = seed_pipeline_repo(
+        &env,
+        &repo,
+        r#"
+name: slow-ci
+on:
+  push:
+    branches: [main]
+jobs:
+  tick:
+    image: alpine:latest
+    commands:
+      - for i in $(seq 1 10); do echo "tick $i"; sleep 1; done
+"#,
+    )
+    .await;
+
+    // Wait for the step to be submitted (job_id set), then subscribe.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    let step_name = loop {
+        assert!(tokio::time::Instant::now() < deadline, "job never started");
+        let runs = env
+            .run_store
+            .list_by_repo(TENANT, &repo.id, None, 5, 0)
+            .await
+            .expect("list runs");
+        if let Some(run) = runs.first() {
+            let steps = env.step_store.list_by_run(TENANT, &run.id).await.unwrap();
+            if let Some(step) = steps.iter().find(|s| s.job_id.is_some()) {
+                break (run.id.clone(), step.step_name.clone());
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    let (run_id, step_name) = step_name;
+
+    let service = pipeline_service(&env);
+    let mut stream = service
+        .stream_step_logs_impl(with_tenant(
+            StreamStepLogsRequest {
+                tenant_id: TENANT.into(),
+                run_id: run_id.clone(),
+                step_name: step_name.clone(),
+                ..Default::default()
+            },
+            TENANT,
+        ))
+        .await
+        .expect("subscribe to step logs")
+        .into_inner();
+
+    // Read until the third tick, then check the job was still running when it
+    // landed. Anything buffered until completion fails this.
+    let mut ticks = Vec::new();
+    let mut state_at_third_tick = None;
+    let collect_until = tokio::time::Instant::now() + Duration::from_secs(60);
+    while tokio::time::Instant::now() < collect_until && state_at_third_tick.is_none() {
+        match tokio::time::timeout(Duration::from_secs(5), stream.next()).await {
+            Ok(Some(Ok(line))) => {
+                if line.line.contains("tick ") {
+                    ticks.push(line.line.clone());
+                    if ticks.len() == 3 {
+                        state_at_third_tick = Some(
+                            env.run_store
+                                .get_run(TENANT, &run_id)
+                                .await
+                                .unwrap()
+                                .unwrap()
+                                .state,
+                        );
+                    }
+                }
+            }
+            Ok(Some(Err(e))) => panic!("stream error: {e}"),
+            Ok(None) => break,
+            Err(_) => {}
+        }
+    }
+
+    let state = state_at_third_tick.unwrap_or_else(|| {
+        panic!(
+            "never received 3 ticks; got {} line(s): {ticks:?}",
+            ticks.len()
+        )
+    });
+    assert!(
+        !state.is_terminal(),
+        "log lines only surfaced after the run finished (state={state:?}) — the stream is buffering, not live"
+    );
+}
