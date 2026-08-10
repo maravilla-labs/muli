@@ -25,6 +25,14 @@ service ReleaseService {
   // Asset management
   rpc UploadReleaseAsset(UploadReleaseAssetRequest) returns (ReleaseAsset);
   rpc DownloadReleaseAsset(DownloadReleaseAssetRequest) returns (DownloadReleaseAssetResponse);
+  // Streaming download. Prefer this over the unary form above: that one carries the
+  // whole asset in ONE message, so it is bounded by the gRPC decode limit (4 MB by
+  // default) and holds the entire file in memory on both peers. A service binary is
+  // routinely 12-17 MB.
+  //
+  // The unary RPC is kept so muli and its callers can be deployed in either order;
+  // remove it once no caller uses it.
+  rpc DownloadReleaseAssetStream(DownloadReleaseAssetRequest) returns (stream ReleaseAssetChunk);
   rpc ListReleaseAssets(ListReleaseAssetsRequest) returns (ListReleaseAssetsResponse);
   rpc DeleteReleaseAsset(DeleteReleaseAssetRequest) returns (DeleteReleaseAssetResponse);
 }
@@ -151,6 +159,18 @@ message DownloadReleaseAssetResponse {
   bytes data = 1;
   string content_type = 2;
   string name = 3;
+}
+
+// One frame of a streamed asset download.
+//
+// The FIRST message carries the metadata and no data, so a proxy can set its
+// response headers before forwarding any bytes; every later message carries only
+// data. Consumers must not assume metadata is repeated.
+message ReleaseAssetChunk {
+  bytes data = 1;
+  string content_type = 2;
+  string name = 3;
+  uint64 size = 4;
 }
 
 message ListReleaseAssetsRequest {

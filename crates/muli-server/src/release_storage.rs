@@ -56,6 +56,36 @@ impl ReleaseAssetStorage {
         Ok((data.len() as u64, hex::encode(hasher.finalize())))
     }
 
+    /// Open an asset for streaming, returning the handle and its size.
+    ///
+    /// Preferred over [`Self::download`] for serving: that reads the whole file into
+    /// memory, so a concurrent burst of downloads scales RAM with asset size times
+    /// callers. This hands back a handle the caller can read incrementally.
+    pub async fn open(
+        &self,
+        tenant_id: &str,
+        release_id: &str,
+        asset_id: &str,
+    ) -> Result<(fs::File, u64)> {
+        validate_component(tenant_id)?;
+        validate_component(release_id)?;
+        validate_component(asset_id)?;
+        let file_path = self
+            .base_dir
+            .join(tenant_id)
+            .join(release_id)
+            .join(asset_id);
+        let file = fs::File::open(&file_path)
+            .await
+            .map_err(|e| MuliError::Storage(format!("open asset: {e}")))?;
+        let size = file
+            .metadata()
+            .await
+            .map_err(|e| MuliError::Storage(format!("stat asset: {e}")))?
+            .len();
+        Ok((file, size))
+    }
+
     /// Read asset bytes.
     pub async fn download(
         &self,

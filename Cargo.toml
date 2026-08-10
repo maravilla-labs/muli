@@ -37,7 +37,9 @@ muli-test = { path = "crates/muli-test" }
 # Async runtime
 tokio = { version = "1.40", features = ["full"] }
 tokio-stream = "0.1"
-tokio-util = "0.7"
+# `io` provides ReaderStream, which is what lets a release asset stream off disk
+# instead of being read into memory whole.
+tokio-util = { version = "0.7", features = ["io"] }
 
 # gRPC
 tonic = { version = "0.14", features = ["tls-ring", "tls-native-roots"] }

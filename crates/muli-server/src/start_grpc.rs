@@ -28,7 +28,17 @@ use muli_proto::release_service_server::ReleaseServiceServer;
 use muli_proto::tenant_service_server::TenantServiceServer;
 use muli_proto::user_service_server::UserServiceServer;
 
+use tonic::service::interceptor::InterceptedService;
+
 use crate::config::ServerConfig;
+
+/// Upper bound on a single release asset moved over gRPC, in bytes.
+///
+/// The release RPCs are unary and carry the whole file in one message, so this is
+/// also a per-request memory bound on both peers — raise it deliberately, not
+/// reflexively. 128 MiB comfortably covers a stripped service binary while keeping
+/// a hostile upload from exhausting the server.
+const MAX_RELEASE_ASSET_BYTES: usize = 128 * 1024 * 1024;
 use crate::grpc::{
     AgentServiceImpl, AuthInterceptor, GitServiceImpl, HealthServiceImpl, JobServiceImpl,
     LogServiceImpl, OrgServiceImpl, PipelineServiceImpl, RegistryServiceImpl, ReleaseServiceImpl,
@@ -240,10 +250,23 @@ pub(crate) async fn start_grpc(
             tenant_service,
             auth.clone(),
         ))
-        .add_service(ReleaseServiceServer::with_interceptor(
-            release_service,
-            auth.clone(),
-        ))
+        // Release assets travel as ONE unary message carrying the whole file, so
+        // the default 4 MB decode limit caps an uploadable asset at 4 MB. A release
+        // binary is routinely larger (a Rust service is ~12-17 MB), and the failure
+        // surfaces as an opaque 500 rather than anything naming a size.
+        //
+        // Encoding is not limited by default, which is why *creating* a release
+        // worked while downloading did not: the pipeline writes assets in-process
+        // via ReleaseAssetStorage and never crosses gRPC. The matching decode limit
+        // on the client side lives in flightdeck's MuliReleaseClient.
+        .add_service(
+            InterceptedService::new(
+                ReleaseServiceServer::new(release_service)
+                    .max_decoding_message_size(MAX_RELEASE_ASSET_BYTES)
+                    .max_encoding_message_size(MAX_RELEASE_ASSET_BYTES),
+                auth.clone(),
+            ),
+        )
         .add_service(PipelineServiceServer::with_interceptor(
             pipeline_service,
             auth,

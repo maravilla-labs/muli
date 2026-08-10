@@ -22,9 +22,16 @@ use muli_proto::{
     DeleteReleaseRequest, DeleteReleaseResponse, DownloadReleaseAssetRequest,
     DownloadReleaseAssetResponse, GetReleaseByTagRequest, GetReleaseRequest,
     ListReleaseAssetsRequest, ListReleaseAssetsResponse, ListReleasesRequest, ListReleasesResponse,
-    Release as ProtoRelease, ReleaseAsset as ProtoAsset, UpdateReleaseRequest,
+    Release as ProtoRelease, ReleaseAsset as ProtoAsset, ReleaseAssetChunk, UpdateReleaseRequest,
     UploadReleaseAssetRequest,
 };
+
+use futures::{Stream, StreamExt};
+use std::pin::Pin;
+use tokio_util::io::ReaderStream;
+
+/// Bytes per streamed frame. Matches the artifact download path.
+const ASSET_CHUNK_BYTES: usize = 64 * 1024;
 
 use super::util::{datetime_to_proto, domain_err_to_grpc, validate_tenant};
 use crate::release_storage::ReleaseAssetStorage;
@@ -86,6 +93,9 @@ impl ReleaseServiceImpl {
 
 #[tonic::async_trait]
 impl ReleaseService for ReleaseServiceImpl {
+    type DownloadReleaseAssetStreamStream =
+        Pin<Box<dyn Stream<Item = Result<ReleaseAssetChunk, Status>> + Send>>;
+
     async fn create_release(
         &self,
         request: Request<CreateReleaseRequest>,
@@ -275,6 +285,55 @@ impl ReleaseService for ReleaseServiceImpl {
             content_type: asset.content_type,
             name: asset.name,
         }))
+    }
+
+    /// Stream an asset off disk.
+    ///
+    /// Unlike the unary form above — and unlike the artifact download path, which
+    /// reads the whole file into a `Vec` before chunking it — this never holds more
+    /// than one frame in memory: `ReaderStream` pulls from the file handle lazily as
+    /// the client consumes. That removes the message-size ceiling entirely rather
+    /// than raising it.
+    ///
+    /// The first frame carries metadata and no data so a proxy can set response
+    /// headers before forwarding bytes.
+    async fn download_release_asset_stream(
+        &self,
+        request: Request<DownloadReleaseAssetRequest>,
+    ) -> Result<Response<Self::DownloadReleaseAssetStreamStream>, Status> {
+        let (_t, req) = validate_tenant(request, |r| &r.tenant_id)?;
+        let asset = self
+            .store
+            .get_asset(&req.asset_id)
+            .await
+            .map_err(domain_err_to_grpc)?
+            .filter(|a| a.tenant_id == req.tenant_id)
+            .ok_or_else(|| Status::not_found("asset not found"))?;
+
+        let (file, size) = self
+            .asset_storage
+            .open(&req.tenant_id, &asset.release_id, &asset.id)
+            .await
+            .map_err(domain_err_to_grpc)?;
+
+        let head = ReleaseAssetChunk {
+            data: Vec::new(),
+            content_type: asset.content_type,
+            name: asset.name,
+            size,
+        };
+
+        let body = ReaderStream::with_capacity(file, ASSET_CHUNK_BYTES).map(|frame| {
+            frame
+                .map(|bytes| ReleaseAssetChunk {
+                    data: bytes.to_vec(),
+                    ..Default::default()
+                })
+                .map_err(|e| Status::internal(format!("read asset: {e}")))
+        });
+
+        let stream = futures::stream::once(async move { Ok(head) }).chain(body);
+        Ok(Response::new(Box::pin(stream)))
     }
 
     async fn list_release_assets(
