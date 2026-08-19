@@ -338,7 +338,7 @@ pub async fn create_or_update_file(
         let repo = git2::Repository::open_bare(&repo_fs_path).map_err(|e| e.to_string())?;
         let sig = match &author {
             Some(a) => git2::Signature::now(&a.name, &a.email),
-            None => git2::Signature::now("Flightdeck", "system@maravilla.page"),
+            None => git2::Signature::now("Muli", "muli@localhost"),
         }
         .map_err(|e| e.to_string())?;
 
@@ -440,7 +440,7 @@ pub async fn create_files_batch(
         let repo = git2::Repository::open_bare(&repo_fs_path).map_err(|e| e.to_string())?;
         let sig = match &author {
             Some(a) => git2::Signature::now(&a.name, &a.email),
-            None => git2::Signature::now("Flightdeck", "system@maravilla.page"),
+            None => git2::Signature::now("Muli", "muli@localhost"),
         }
         .map_err(|e| e.to_string())?;
 

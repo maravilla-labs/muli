@@ -10,11 +10,12 @@
 //! the shared tenant could overwrite them.
 //!
 //! An org-owned repo carries `owner_type == Organization` and a `namespace` equal
-//! to the org handle (flightdeck sets it that way when it creates the repo via the
-//! gRPC `create_repository`; git push cannot create repos). So the org's registry
-//! tenant is simply the repo namespace. `owner_type` is the trust anchor: only
-//! membership-gated flightdeck can set it, so a non-member cannot obtain a
-//! `solutas`-namespace org repo and thus cannot mint a `solutas` registry token.
+//! to the org handle (whichever control plane creates the repo via the gRPC
+//! `create_repository` sets it that way; git push cannot create repos). So the
+//! org's registry tenant is simply the repo namespace. `owner_type` is the trust
+//! anchor: only a membership-gated caller can set it, so a non-member cannot
+//! obtain an `acme`-namespace org repo and thus cannot mint an `acme` registry
+//! token.
 //!
 //! Note: muli's own org tables are unpopulated on deployments where orgs are owned
 //! by an external control plane, so this deliberately does NOT consult `OrgStore`

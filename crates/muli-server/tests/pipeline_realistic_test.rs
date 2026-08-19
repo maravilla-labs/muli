@@ -232,7 +232,7 @@ steps:
         },
         yaml.into(),
     );
-    // Inject env vars like flightdeck's vault would
+    // Inject env vars the way an external control plane's vault would
     run.env_vars
         .insert("WUNDER_NPM_TOKEN".into(), "fake-token-123".into());
     rs.create_run(&run).await.unwrap();

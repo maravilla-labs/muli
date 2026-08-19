@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.29] - 2026-08-19
+
+### Added
+
+- **Resolved run env is now logged** — every pipeline run logs the *names* of the environment variables and secrets it resolved, together with the trigger kind (`push`, `pull_request`, `manual`, `schedule`, `retry`). Values are never logged. Previously nothing recorded what a run resolved, so a step failing on an empty secret gave no way to tell whether the secret was missing, undecryptable, or simply never supplied by the caller.
+- **Warning when org-level secrets are skipped** — resolving a run's org secrets requires mapping the repo namespace to an org handle. When that lookup returns nothing, or fails outright, muli now warns instead of silently continuing with no org secrets. The failure was previously swallowed entirely.
+
+### Changed
+
+- **Fallback commit author is now `Muli <muli@localhost>`** (was a downstream product's name). This applies only to commits created through the git API when the caller supplies no author; callers that pass an author are unaffected.
+- **Documentation and comments no longer reference downstream products.** Muli is an independent, self-hostable project; source comments, the pipeline proto, and module docs now describe the generic "external control plane" contract rather than naming any particular consumer. No behavior change.
+
 ## [0.4.21] - 2026-06-02
 
 ### Fixed

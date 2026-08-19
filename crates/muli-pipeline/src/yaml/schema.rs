@@ -31,7 +31,7 @@ pub struct PipelineDef {
     #[serde(default)]
     pub steps: Vec<StepDef>,
     /// Arbitrary key-value data included in all webhook payloads for this pipeline.
-    /// Muli does not interpret the values — consumers (e.g. Flightdeck) read them.
+    /// Muli does not interpret the values — webhook consumers read them.
     #[serde(default)]
     pub webhook: HashMap<String, Value>,
 }

@@ -171,8 +171,8 @@ message TriggerPipelineRequest {
   // Optional. When empty, the ref above is resolved to its current commit.
   string commit_sha = 4;
   // Additional environment variables to inject into step Jobs.
-  // Callers (e.g. flightdeck) can pass secrets here; muli also resolves
-  // its own PipelineSecretStore secrets at execution time.
+  // Callers can pass secrets here; muli also resolves its own
+  // PipelineSecretStore secrets at execution time.
   map<string, string> env_vars = 5;
   // Identity recorded on the run. Defaults to the calling tenant when empty.
   string triggered_by = 6;

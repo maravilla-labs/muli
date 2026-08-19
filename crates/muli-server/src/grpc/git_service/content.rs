@@ -138,7 +138,7 @@ impl GitServiceImpl {
         let result = tokio::task::spawn_blocking(move || {
             let repo =
                 git2::Repository::open_bare(&repo_fs_path).map_err(|e| e.to_string())?;
-            let sig = git2::Signature::now("Flightdeck", "system@maravilla.page")
+            let sig = git2::Signature::now("Muli", "muli@localhost")
                 .map_err(|e| e.to_string())?;
 
             let ref_name = format!("refs/heads/{branch}");
@@ -247,7 +247,7 @@ impl GitServiceImpl {
         let result = tokio::task::spawn_blocking(move || {
             let repo =
                 git2::Repository::open_bare(&repo_fs_path).map_err(|e| e.to_string())?;
-            let sig = git2::Signature::now("Flightdeck", "system@maravilla.page")
+            let sig = git2::Signature::now("Muli", "muli@localhost")
                 .map_err(|e| e.to_string())?;
 
             let ref_name = format!("refs/heads/{branch}");

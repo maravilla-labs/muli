@@ -258,7 +258,7 @@ pub(crate) async fn start_grpc(
         // Encoding is not limited by default, which is why *creating* a release
         // worked while downloading did not: the pipeline writes assets in-process
         // via ReleaseAssetStorage and never crosses gRPC. The matching decode limit
-        // on the client side lives in flightdeck's MuliReleaseClient.
+        // must be set by each client on its own release-service stub.
         .add_service(
             InterceptedService::new(
                 ReleaseServiceServer::new(release_service)

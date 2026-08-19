@@ -64,7 +64,7 @@ impl Handler for SshSessionHandler {
 
         // Find the key across all tenants. The key's tenant_id tells us which
         // DB it lives in, which works for every deployment model:
-        //   - Flightdeck (single tenant): key is in "local"
+        //   - Single-tenant deployment: key is in the default tenant ("local")
         //   - Subdomain multi-tenant: key is in its respective tenant DB
         match self.ssh_key_store.find_by_fingerprint(&fingerprint).await {
             Ok(Some(key)) => {

@@ -23,6 +23,18 @@ use super::PipelineTriggerImpl;
 /// Maximum accepted pipeline YAML size.
 const MAX_YAML_SIZE: usize = 1_048_576; // 1 MB
 
+/// Short label for a trigger, used in the resolved-env log line so a
+/// "secret missing" report can be pinned to push vs manual immediately.
+fn trigger_kind(trigger: &PipelineTrigger) -> &'static str {
+    match trigger {
+        PipelineTrigger::Push { .. } => "push",
+        PipelineTrigger::PullRequest { .. } => "pull_request",
+        PipelineTrigger::Manual { .. } => "manual",
+        PipelineTrigger::Schedule { .. } => "schedule",
+        PipelineTrigger::Retry { .. } => "retry",
+    }
+}
+
 /// Parse + validate a single pipeline file and check its triggers against the
 /// event. Returns the parsed `PipelineDef` when the pipeline should run, or
 /// `None` (skip this file) on size limit, parse/validation error, or no match.
@@ -167,15 +179,33 @@ impl PipelineTriggerImpl {
         };
 
         // Resolve secrets. `caller_env` carries variables supplied by the caller
-        // of a manual trigger (flightdeck's build vars + vault values); it is
-        // empty for push/PR triggers.
-        let org_id = self
+        // of a manual trigger (e.g. an external control plane's build variables
+        // and vault values); it is empty for push/PR triggers, which have no
+        // caller to supply them.
+        let org_id = match self
             .org_store
             .get_org_by_handle(tenant_id, &repo.namespace)
             .await
-            .ok()
-            .flatten()
-            .map(|org| org.id);
+        {
+            Ok(Some(org)) => Some(org.id),
+            Ok(None) => {
+                warn!(
+                    namespace = %repo.namespace,
+                    repo_id = %repo_id,
+                    "pipeline trigger: namespace is not an org handle; org-level secrets will be skipped"
+                );
+                None
+            }
+            Err(e) => {
+                warn!(
+                    namespace = %repo.namespace,
+                    repo_id = %repo_id,
+                    error = %e,
+                    "pipeline trigger: org lookup failed; org-level secrets will be skipped"
+                );
+                None
+            }
+        };
 
         match crate::secret_resolver::resolve_env_vars(
             &self.secret_store,
@@ -188,7 +218,19 @@ impl PipelineTriggerImpl {
         )
         .await
         {
-            Ok(env) => run.env_vars = env,
+            Ok(env) => {
+                // Names only, never values -- pipeline log output is not redacted.
+                let mut names: Vec<&str> = env.keys().map(String::as_str).collect();
+                names.sort_unstable();
+                info!(
+                    repo_id = %repo_id,
+                    trigger = trigger_kind(trigger),
+                    count = names.len(),
+                    secrets = %names.join(","),
+                    "pipeline trigger: resolved run env"
+                );
+                run.env_vars = env;
+            }
             Err(e) => {
                 warn!(error = %e, "pipeline trigger: failed to resolve secrets; continuing without");
             }
