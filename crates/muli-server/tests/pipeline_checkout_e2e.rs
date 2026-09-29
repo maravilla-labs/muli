@@ -278,6 +278,7 @@ impl CheckoutE2eEnv {
             cache_store: None,
             allow_localhost_webhooks: true,
             lfs_storage: None,
+            public_url: None,
             pipeline_trigger: Some(pipeline_trigger.clone() as Arc<dyn PipelineTriggerHook>),
             repo_service,
             quota_store: None,

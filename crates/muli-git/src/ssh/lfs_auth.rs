@@ -27,6 +27,7 @@ pub async fn handle_lfs_authenticate(
     _org_store: &Arc<dyn OrgStore>,
     default_tenant_id: Option<&str>,
     git_domain: Option<&str>,
+    public_url: Option<&str>,
 ) -> Result<(), anyhow::Error> {
     // Parse "<repo_path> upload|download"
     let (repo_path, _operation) = match parse_lfs_authenticate_args(args) {
@@ -72,9 +73,7 @@ pub async fn handle_lfs_authenticate(
         },
     };
 
-    // Build the LFS endpoint URL
-    let domain = git_domain.unwrap_or("localhost");
-    let href = format!("https://{tenant_id}.{domain}/{namespace}/{repo_name}.git/info/lfs");
+    let href = lfs_href(public_url, git_domain, &tenant_id, &namespace, &repo_name);
 
     let response = serde_json::json!({
         "href": href,
@@ -91,4 +90,56 @@ pub async fn handle_lfs_authenticate(
 
     tracing::debug!(%tenant_id, %namespace, %repo_name, "LFS authenticate response sent");
     Ok(())
+}
+
+/// Build the LFS endpoint URL returned to the client.
+///
+/// Prefers the configured public URL. Without one, falls back to the
+/// `{tenant}.{git_domain}` subdomain form, which only works where that
+/// subdomain is publicly served.
+fn lfs_href(
+    public_url: Option<&str>,
+    git_domain: Option<&str>,
+    tenant_id: &str,
+    namespace: &str,
+    repo_name: &str,
+) -> String {
+    match public_url {
+        Some(url) => crate::lfs::lfs_endpoint(url, namespace, repo_name),
+        None => {
+            let domain = git_domain.unwrap_or("localhost");
+            crate::lfs::lfs_endpoint(
+                &format!("https://{tenant_id}.{domain}"),
+                namespace,
+                repo_name,
+            )
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn href_uses_public_url_not_tenant_subdomain() {
+        assert_eq!(
+            lfs_href(
+                Some("https://git.example.com"),
+                Some("git.example.com"),
+                "local",
+                "acme",
+                "site"
+            ),
+            "https://git.example.com/acme/site.git/info/lfs"
+        );
+    }
+
+    #[test]
+    fn href_falls_back_to_tenant_subdomain() {
+        assert_eq!(
+            lfs_href(None, Some("git.example.com"), "acme", "acme", "site"),
+            "https://acme.git.example.com/acme/site.git/info/lfs"
+        );
+    }
 }

@@ -68,6 +68,12 @@ pub struct ServerConfig {
     /// Defaults to `http://localhost:{git_port}` so same-machine runners work out of the box.
     /// Override when muli sits behind a reverse proxy (e.g. `MULI_GIT_BASE_URL=https://git.example.com`).
     pub git_base_url: Option<String>,
+    /// Public base URL clients reach the git HTTP service at (e.g. `https://git.example.com`).
+    /// Used for the LFS endpoint in SSH `git-lfs-authenticate` responses and for LFS batch
+    /// transfer hrefs. Set it whenever muli sits behind a proxy or gateway
+    /// (`MULI_GIT_PUBLIC_URL`); when unset, LFS URLs fall back to `https://{tenant}.{git_domain}`
+    /// (SSH) and the request's Host header (HTTP).
+    pub git_public_url: Option<String>,
     pub git_ssh_enabled: bool,
     pub git_ssh_port: u16,
     pub git_ssh_host_key_path: Option<String>,
@@ -159,6 +165,7 @@ impl std::fmt::Debug for ServerConfig {
             .field("git_domain", &self.git_domain)
             .field("git_root", &self.git_root)
             .field("git_base_url", &self.git_base_url)
+            .field("git_public_url", &self.git_public_url)
             .field("git_ssh_enabled", &self.git_ssh_enabled)
             .field("git_ssh_port", &self.git_ssh_port)
             .field(
@@ -240,6 +247,7 @@ impl Default for ServerConfig {
             git_domain: "localhost".to_string(),
             git_root: None,
             git_base_url: None,
+            git_public_url: None,
             git_ssh_enabled: false,
             git_ssh_port: 2222,
             git_ssh_host_key_path: None,

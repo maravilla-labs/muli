@@ -502,6 +502,7 @@ async fn start_git_http(
         cache_store: Some(git.cache_store.clone()),
         allow_localhost_webhooks: config.git_allow_localhost_webhooks,
         lfs_storage,
+        public_url: config.git_public_url.clone(),
         pipeline_trigger: git.pipeline_trigger.clone(),
         repo_service: git.repo_service.clone(),
         quota_store: Some(git.quota_store.clone()),
@@ -582,6 +583,7 @@ async fn start_git_ssh(
         collaborator_store: git.collaborator_store.clone(),
         token_store: None,
         git_domain: Some(config.git_domain.clone()),
+        public_url: config.git_public_url.clone(),
         post_push_hooks,
     };
 

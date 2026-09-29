@@ -45,6 +45,9 @@ pub struct SshServer {
     pub token_store: Option<Arc<dyn GitTokenStore>>,
     /// Git domain for building LFS endpoint URLs in SSH authenticate responses.
     pub git_domain: Option<String>,
+    /// Public base URL of the git HTTP service (e.g. `https://git.example.com`).
+    /// When set, LFS endpoint URLs are built from it instead of `{tenant}.{git_domain}`.
+    pub public_url: Option<String>,
     /// Shared post-push hook infrastructure (pipelines, webhooks, cache invalidation).
     pub post_push_hooks: PostPushHooks,
 }
@@ -98,6 +101,7 @@ impl SshServer {
                         collaborator_store: self.collaborator_store.clone(),
                         token_store: self.token_store.clone(),
                         git_domain: self.git_domain.clone(),
+                        public_url: self.public_url.clone(),
                         post_push_hooks: self.post_push_hooks.clone(),
                         authenticated_fingerprint: None,
                         authenticated_user_id: None,

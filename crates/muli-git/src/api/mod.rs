@@ -60,6 +60,9 @@ pub struct GitState {
     pub allow_localhost_webhooks: bool,
     /// LFS object storage backend (None = LFS disabled).
     pub lfs_storage: Option<Arc<dyn lfs::storage::LfsStorage>>,
+    /// Public base URL of this service (e.g. `https://git.example.com`), used for
+    /// LFS transfer hrefs. `None` derives them from the request's Host header.
+    pub public_url: Option<String>,
     /// Shared post-push hook infrastructure (pipelines, webhooks, cache invalidation).
     pub post_push_hooks: PostPushHooks,
     /// Repository domain service (create, delete, fork, transfer).
@@ -82,6 +85,9 @@ pub struct GitRouterConfig {
     pub allow_localhost_webhooks: bool,
     /// LFS object storage backend (None = LFS disabled).
     pub lfs_storage: Option<Arc<dyn lfs::storage::LfsStorage>>,
+    /// Public base URL of this service, used for LFS transfer hrefs
+    /// (None = derive from the request's Host header).
+    pub public_url: Option<String>,
     /// Pipeline trigger hook (None = pipelines disabled).
     pub pipeline_trigger: Option<Arc<dyn PipelineTriggerHook>>,
     /// Repository domain service (create, delete, fork, transfer).
@@ -105,6 +111,7 @@ pub fn git_router(cfg: GitRouterConfig) -> Router {
         cache_store,
         allow_localhost_webhooks,
         lfs_storage,
+        public_url,
         pipeline_trigger,
         repo_service,
         quota_store,
@@ -131,6 +138,7 @@ pub fn git_router(cfg: GitRouterConfig) -> Router {
         cache_store,
         allow_localhost_webhooks,
         lfs_storage,
+        public_url,
         post_push_hooks,
         repo_service,
     });

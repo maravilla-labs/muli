@@ -128,6 +128,7 @@ pub async fn start_server() -> TestServer {
         cache_store: None,
         allow_localhost_webhooks: true,
         lfs_storage,
+        public_url: None,
         pipeline_trigger: None,
         repo_service,
         quota_store: None,
@@ -354,6 +355,7 @@ pub async fn start_server_with_ssh() -> TestServerWithSsh {
         collaborator_store: collaborator_store.clone(),
         token_store: Some(srv.token_store.clone()),
         git_domain: Some("localhost".to_string()),
+        public_url: None,
         post_push_hooks,
     };
 
@@ -498,6 +500,7 @@ async fn start_server_with_acl_inner(anonymous_pull: bool) -> TestServerWithAcl 
         cache_store: None,
         allow_localhost_webhooks: true,
         lfs_storage,
+        public_url: None,
         pipeline_trigger: None,
         repo_service,
         quota_store: None,

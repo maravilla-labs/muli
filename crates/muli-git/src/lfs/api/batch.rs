@@ -39,8 +39,7 @@ pub async fn batch(
 
     let _repo_name = strip_git_suffix(&raw_repo);
 
-    // Build base URL for transfer hrefs from the incoming request.
-    let base_url = build_base_url(&headers, &namespace, &raw_repo);
+    let base_url = build_base_url(state.public_url.as_deref(), &headers, &namespace, &raw_repo);
 
     let mut objects = Vec::with_capacity(req.objects.len());
 
@@ -214,7 +213,22 @@ async fn build_upload_response(
 }
 
 /// Build the base URL for LFS object transfer endpoints.
-fn build_base_url(headers: &HeaderMap, namespace: &str, raw_repo: &str) -> String {
+///
+/// Uses the configured public URL when set. Otherwise it is derived from the
+/// request, which is only right when the Host header is the public host (not
+/// when a gateway rewrites it to an internal tenant subdomain).
+fn build_base_url(
+    public_url: Option<&str>,
+    headers: &HeaderMap,
+    namespace: &str,
+    raw_repo: &str,
+) -> String {
+    if let Some(public_url) = public_url {
+        return format!(
+            "{}/objects",
+            crate::lfs::lfs_endpoint(public_url, namespace, raw_repo)
+        );
+    }
     let scheme = if headers
         .get("x-forwarded-proto")
         .and_then(|v| v.to_str().ok())
@@ -259,4 +273,37 @@ fn lfs_error(status: StatusCode, msg: &str) -> Response {
         Json(body),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn gateway_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "local.git.example.com".parse().unwrap());
+        headers.insert("x-forwarded-proto", "https".parse().unwrap());
+        headers
+    }
+
+    #[test]
+    fn base_url_prefers_public_url_over_host_header() {
+        assert_eq!(
+            build_base_url(
+                Some("https://git.example.com"),
+                &gateway_headers(),
+                "acme",
+                "site.git"
+            ),
+            "https://git.example.com/acme/site.git/info/lfs/objects"
+        );
+    }
+
+    #[test]
+    fn base_url_falls_back_to_host_header() {
+        assert_eq!(
+            build_base_url(None, &gateway_headers(), "acme", "site.git"),
+            "https://local.git.example.com/acme/site.git/info/lfs/objects"
+        );
+    }
 }

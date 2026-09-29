@@ -42,6 +42,7 @@ pub(super) struct SshSessionHandler {
     #[allow(dead_code)] // reserved for LFS token generation
     pub token_store: Option<Arc<dyn GitTokenStore>>,
     pub git_domain: Option<String>,
+    pub public_url: Option<String>,
     pub post_push_hooks: PostPushHooks,
     pub authenticated_fingerprint: Option<String>,
     pub authenticated_user_id: Option<String>,
@@ -155,6 +156,7 @@ impl Handler for SshSessionHandler {
                 &self.org_store,
                 self.default_tenant_id.as_deref(),
                 self.git_domain.as_deref(),
+                self.public_url.as_deref(),
             )
             .await;
         }

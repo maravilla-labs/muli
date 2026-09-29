@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- **`MULI_GIT_PUBLIC_URL`** — the public base URL clients reach the git HTTP service at. When set, Git LFS endpoint URLs are built from it: the `href` in SSH `git-lfs-authenticate` responses and the upload/download/verify hrefs in LFS batch responses. Unset keeps the previous behavior.
+
+### Fixed
+
+- **Git LFS behind a proxy or gateway pointed clients at an unreachable host** — SSH `git-lfs-authenticate` always answered `https://{tenant}.{git_domain}/...`, and batch hrefs echoed the request's Host header, which a gateway that rewrites Host to a tenant subdomain turns into an internal name. With `MULI_GIT_PUBLIC_URL` set, both now point at the public host.
+
 ## [0.4.29] - 2026-08-19
 
 ### Added
