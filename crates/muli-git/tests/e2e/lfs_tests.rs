@@ -67,6 +67,7 @@ async fn lfs_batch_upload_and_download() {
         .as_str()
         .expect("verify href");
     assert!(verify_href.contains("verify"), "verify href present");
+    assert_authenticated_only_with_header(&body);
 
     // 2. Upload the object
     let resp = client
@@ -109,6 +110,7 @@ async fn lfs_batch_upload_and_download() {
 
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
+    assert_authenticated_only_with_header(&body);
     let download_href = body["objects"][0]["actions"]["download"]["href"]
         .as_str()
         .expect("download href");
@@ -547,4 +549,23 @@ async fn lfs_batch_multiple_objects() {
     // oid2 and missing_oid should have 404 errors
     assert_eq!(objects[1]["error"]["code"], 404);
     assert_eq!(objects[2]["error"]["code"], 404);
+}
+
+/// `authenticated: true` makes git-lfs send an action without the credentials it
+/// used for the batch call, so it is only allowed when every action carries a
+/// header of its own. Otherwise the transfer arrives unauthenticated and gets a 401.
+fn assert_authenticated_only_with_header(body: &serde_json::Value) {
+    for obj in body["objects"].as_array().expect("objects array") {
+        if obj["authenticated"] != json!(true) {
+            continue;
+        }
+        let actions = obj["actions"].as_object().expect("actions object");
+        for (name, action) in actions {
+            assert!(
+                action["header"].is_object(),
+                "object {} claims authenticated but action {name} has no header",
+                obj["oid"]
+            );
+        }
+    }
 }

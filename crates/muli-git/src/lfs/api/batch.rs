@@ -21,6 +21,11 @@ use crate::lfs::types::{
 };
 use crate::tenant::TenantContext;
 
+// `authenticated: true` tells git-lfs the action hrefs need no credentials, so it
+// sends the transfer without the Authorization it used for the batch request.
+// Only a presigned URL satisfies that; every href on this host goes through the
+// same auth as the batch call, so those responses leave `authenticated` unset.
+
 /// Default presigned URL TTL in seconds.
 const PRESIGN_TTL_SECS: u64 = 3600;
 
@@ -48,7 +53,7 @@ pub async fn batch(
             objects.push(ObjectResponse {
                 oid: obj.oid.clone(),
                 size: obj.size,
-                authenticated: Some(true),
+                authenticated: None,
                 actions: None,
                 error: Some(ObjectError {
                     code: 422,
@@ -100,6 +105,7 @@ async fn build_download_response(
         return ObjectResponse {
             oid: obj.oid.clone(),
             size: obj.size,
+            // The presigned URL authenticates itself; nothing else in this response does.
             authenticated: Some(true),
             actions: Some(Actions {
                 download: Some(Action {
@@ -118,7 +124,7 @@ async fn build_download_response(
         Ok(Some(size)) => ObjectResponse {
             oid: obj.oid.clone(),
             size,
-            authenticated: Some(true),
+            authenticated: None,
             actions: Some(Actions {
                 download: Some(Action {
                     href: format!("{base_url}/{}", obj.oid),
@@ -133,7 +139,7 @@ async fn build_download_response(
         Ok(None) => ObjectResponse {
             oid: obj.oid.clone(),
             size: obj.size,
-            authenticated: Some(true),
+            authenticated: None,
             actions: None,
             error: Some(ObjectError {
                 code: 404,
@@ -156,7 +162,7 @@ async fn build_upload_response(
             return ObjectResponse {
                 oid: obj.oid.clone(),
                 size: obj.size,
-                authenticated: Some(true),
+                authenticated: None,
                 actions: None,
                 error: None,
             };
@@ -173,7 +179,7 @@ async fn build_upload_response(
         return ObjectResponse {
             oid: obj.oid.clone(),
             size: obj.size,
-            authenticated: Some(true),
+            authenticated: None,
             actions: Some(Actions {
                 upload: Some(Action {
                     href: url,
@@ -194,7 +200,7 @@ async fn build_upload_response(
     ObjectResponse {
         oid: obj.oid.clone(),
         size: obj.size,
-        authenticated: Some(true),
+        authenticated: None,
         actions: Some(Actions {
             upload: Some(Action {
                 href: format!("{base_url}/{}", obj.oid),
@@ -250,7 +256,7 @@ fn error_object(oid: &str, size: u64, e: &LfsStorageError) -> ObjectResponse {
     ObjectResponse {
         oid: oid.to_string(),
         size,
-        authenticated: Some(true),
+        authenticated: None,
         actions: None,
         error: Some(ObjectError {
             code: 500,

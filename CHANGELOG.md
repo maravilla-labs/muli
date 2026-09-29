@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+
+- **LFS uploads were sent without credentials and failed with 401** — every batch response claimed `authenticated: true` although its upload/download/verify hrefs carry no auth header, which tells git-lfs to skip credentials for the transfer. Only presigned download URLs, which authenticate themselves, are marked authenticated now; everything else leaves the flag unset, so git-lfs reuses the batch request's credentials. Presigned uploads stay unmarked because their verify href still needs credentials.
+
 ## [0.4.30] - 2026-09-29
 
 ### Added
