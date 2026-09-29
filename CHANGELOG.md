@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.30] - 2026-09-29
+
 ### Added
 
 - **`MULI_GIT_PUBLIC_URL`** — the public base URL clients reach the git HTTP service at. When set, Git LFS endpoint URLs are built from it: the `href` in SSH `git-lfs-authenticate` responses and the upload/download/verify hrefs in LFS batch responses. Unset keeps the previous behavior.
