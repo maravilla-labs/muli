@@ -7,6 +7,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-04
+
+### Added
+- Luat package registry (`MULI_LUAT_ENABLED`): sparse index, tarball
+  download, package/version info, search, publish, yank/unyank and `me`,
+  served at the root of every tenant's registry host. Anonymous reads on
+  public tenants, CORS on the read endpoints, scope = user or org handle
+  for publishing, strict server-side tarball validation.
+- Registry tokens can be bound to a tenant user (`user_id`), which scoped
+  publishing needs.
+
 ## [0.4.31] - 2026-09-30
 
 ### Fixed
