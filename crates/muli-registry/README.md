@@ -11,6 +11,7 @@ When `MULI_REGISTRY_ENABLED=true`, the server starts a registry on its own port 
 | Docker push/pull | `MULI_REGISTRY_ENABLED=true` | OCI Distribution v2 API |
 | npm publish/install | `MULI_NPM_ENABLED=true` | npm registry API (`/-/npm/`) |
 | Cargo publish/download | `MULI_CARGO_ENABLED=true` | Cargo sparse index + API (`/index/`, `/api/v1/crates/`) |
+| Luat packages | `MULI_LUAT_ENABLED=true` | Luat registry API (`/index/@scope/name`, `/api/v1/packages/`, `/api/v1/me`) |
 
 Each tenant accesses their registry via subdomain routing (`{tenant}.registry.example.com`), with separate storage, authentication, quotas, and metrics. A **default tenant** mode lets you skip subdomain setup entirely for single-tenant or local development.
 
@@ -26,6 +27,7 @@ Each tenant accesses their registry via subdomain routing (`{tenant}.registry.ex
 | `MULI_REGISTRY_MAX_BLOB_SIZE_MB` | `5120` | Max single blob size |
 | `MULI_NPM_ENABLED` | `false` | Enable npm protocol |
 | `MULI_CARGO_ENABLED` | `false` | Enable Cargo protocol |
+| `MULI_LUAT_ENABLED` | `false` | Enable the Luat package protocol |
 | `MULI_REGISTRY_TLS_CERT_PATH` | — | TLS certificate (wildcard for subdomains) |
 | `MULI_REGISTRY_TLS_KEY_PATH` | — | TLS private key |
 
@@ -133,6 +135,56 @@ cargo add my-crate --registry muli
 | `GET` | `/api/v1/crates/{name}/{version}/download` | Download .crate |
 | `DELETE/PUT` | `/api/v1/crates/{name}/{version}/yank` | Yank / unyank |
 
+### Luat (when `MULI_LUAT_ENABLED=true`)
+
+The server side of the Luat registry protocol (`luat/docs/packages.md`), at
+the root of the tenant's host. It shares its host with cargo without
+overlapping it: Luat paths always carry `@scope`.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/index/@{scope}/{name}` | NDJSON index, oldest first; `ETag` / `If-None-Match` |
+| `GET` | `/api/v1/packages?q=&page=&per_page=` | Search (no `q`: most recently updated first) |
+| `GET` | `/api/v1/packages/@{scope}/{name}` | Package page data (latest version) |
+| `GET` | `/api/v1/packages/@{scope}/{name}/{version}` | Page data for one version |
+| `GET` | `/api/v1/packages/@{scope}/{name}/{version}/download` | Tarball (`application/gzip`) |
+| `PUT` | `/api/v1/packages/@{scope}/{name}/{version}` | Publish (tarball body) |
+| `DELETE` / `PUT` | `/api/v1/packages/@{scope}/{name}/{version}/yank` / `unyank` | Flip the yanked flag |
+| `GET` | `/api/v1/me` | The token's user and publishable scopes |
+
+**Reads** follow the tenant's registry visibility: on a `public` tenant they
+are anonymous, and the read endpoints answer CORS (`Access-Control-Allow-Origin: *`,
+preflight included) so a browser site on another origin can call them.
+Publish, yank and `me` never get CORS headers.
+
+**Writes** need a registry token with `push` that is **bound to a tenant
+user** (`user_id` on `CreateRegistryToken`). The user may publish to a scope
+that is their own handle, or the handle of an org of the tenant in which they
+are owner, admin or member (viewers may not). Errors are `{"error": "..."}`:
+401 no/bad token, 403 scope not allowed (or token not bound to a user),
+409 version exists, 413 over 10 MiB compressed / 50 MiB or 5000 files
+unpacked, 400 for any other invalid package. Nothing is ever deleted.
+
+**Public registry** (`luat.registry.maravilla.cloud`): it is the tenant `luat`
+under `MULI_REGISTRY_DOMAIN=registry.maravilla.cloud`. Set it up once
+(gRPC, `x-tenant-id: luat` metadata, plus `authorization: Bearer $MULI_API_KEY`
+when an API key is configured):
+
+```bash
+G="grpcurl -plaintext -H x-tenant-id:luat localhost:50051"
+$G -d '{"id":"luat","name":"Luat packages"}' muli.v1.TenantService/CreateTenant
+$G -d '{"tenant_id":"luat","visibility":"public"}' muli.v1.RegistryService/SetRegistryVisibility
+$G -d '{"tenant_id":"luat","handle":"senol","external_id":"senol","email":"..."}' muli.v1.UserService/CreateUser   # → user id
+$G -d '{"tenant_id":"luat","handle":"maravilla","display_name":"Maravilla"}' muli.v1.OrgService/CreateOrg     # → org id
+$G -d '{"tenant_id":"luat","org_id":"<org id>","user_id":"<user id>","role":"ORG_ROLE_OWNER"}' muli.v1.OrgService/AddMember
+$G -d '{"tenant_id":"luat","user_id":"<user id>","permissions":["REGISTRY_PERMISSION_PULL","REGISTRY_PERMISSION_PUSH"],"description":"luat publish"}' \
+   muli.v1.RegistryService/CreateRegistryToken                                                                     # → plaintext_token
+```
+
+Package files live under `{tenant-id}/luat/packages/{scope}/{name}/`
+(`index`, `summary.json`, `versions/{version}.tgz`, `versions/{version}.json`)
+and count towards the tenant's storage quota.
+
 ## Library Usage
 
 Embed in any axum application:
@@ -148,7 +200,7 @@ let router = registry_router(
     Some(auth),
     tenant_config,
     None,
-    RegistryConfig { npm_enabled: true, cargo_enabled: true },
+    RegistryConfig { npm_enabled: true, cargo_enabled: true, ..Default::default() },
 );
 
 let listener = tokio::net::TcpListener::bind("0.0.0.0:5000").await?;

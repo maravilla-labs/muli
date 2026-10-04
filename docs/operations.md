@@ -113,6 +113,7 @@ All env vars continue to work identically and always take highest priority.
 | `MULI_REGISTRY_MAX_BLOB_SIZE_MB` | Per-blob upload cap | `5120` (5 GiB) |
 | `MULI_REGISTRY_TLS_CERT_PATH` | PEM cert for registry TLS | *(none)* |
 | `MULI_REGISTRY_TLS_KEY_PATH` | PEM key for registry TLS | *(none)* |
+| `MULI_LUAT_ENABLED` | Serve the Luat package API at `{tenant}.{MULI_REGISTRY_DOMAIN}` (see `crates/muli-registry/README.md`) | `false` |
 
 ### Git hosting (optional)
 
