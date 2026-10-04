@@ -31,6 +31,8 @@ pub struct RegistryMetrics {
     cargo_download_total: IntCounterVec,
     maven_publish_total: IntCounterVec,
     maven_download_total: IntCounterVec,
+    luat_publish_total: IntCounterVec,
+    luat_download_total: IntCounterVec,
 }
 
 /// Singleton metrics instance — Prometheus global registry only allows one
@@ -163,6 +165,20 @@ impl RegistryMetrics {
         )
         .expect("failed to register registry_maven_download_total");
 
+        let luat_publish_total = register_int_counter_vec!(
+            "registry_luat_publish_total",
+            "Total number of Luat package publishes",
+            &["tenant_id"]
+        )
+        .expect("failed to register registry_luat_publish_total");
+
+        let luat_download_total = register_int_counter_vec!(
+            "registry_luat_download_total",
+            "Total number of Luat tarball downloads",
+            &["tenant_id"]
+        )
+        .expect("failed to register registry_luat_download_total");
+
         Self {
             push_total,
             pull_total,
@@ -181,6 +197,8 @@ impl RegistryMetrics {
             cargo_download_total,
             maven_publish_total,
             maven_download_total,
+            luat_publish_total,
+            luat_download_total,
         }
     }
 
@@ -264,6 +282,18 @@ impl RegistryMetrics {
 
     pub fn record_maven_download(&self, tenant_id: &str) {
         self.maven_download_total
+            .with_label_values(&[tenant_id])
+            .inc();
+    }
+
+    pub fn record_luat_publish(&self, tenant_id: &str) {
+        self.luat_publish_total
+            .with_label_values(&[tenant_id])
+            .inc();
+    }
+
+    pub fn record_luat_download(&self, tenant_id: &str) {
+        self.luat_download_total
             .with_label_values(&[tenant_id])
             .inc();
     }

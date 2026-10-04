@@ -32,8 +32,8 @@ async fn router_with_visibility(level: RegistryVisibilityLevel) -> (axum::Router
     let vis = Arc::new(MemoryRegistryVisibilityStore::new());
     vis.set_visibility(TENANT, level).await.unwrap();
 
-    let auth = RegistryAuth::new(token_store)
-        .with_visibility(vis, RegistryVisibilityLevel::Private);
+    let auth =
+        RegistryAuth::new(token_store).with_visibility(vis, RegistryVisibilityLevel::Private);
     let router = registry_router(
         storage,
         Some(auth),
@@ -43,6 +43,7 @@ async fn router_with_visibility(level: RegistryVisibilityLevel) -> (axum::Router
             npm_enabled: true,
             cargo_enabled: true,
             maven_enabled: true,
+            luat: None,
         },
     );
     (router, tmp)

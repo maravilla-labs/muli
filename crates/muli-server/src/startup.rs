@@ -132,14 +132,7 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
 
     // Registry
     if config.registry_enabled {
-        start_registry(
-            &config,
-            &stores.registry_token_store,
-            &stores.registry_visibility_store,
-            &stores.tenant_quota_store,
-            &cancel,
-        )
-        .await?;
+        start_registry(&config, &stores, &cancel).await?;
     }
 
     // Git
@@ -355,11 +348,12 @@ async fn start_metrics(config: &ServerConfig, cancel: &CancellationToken) -> any
 
 async fn start_registry(
     config: &ServerConfig,
-    registry_token_store: &Arc<dyn muli_core::traits::RegistryTokenStore>,
-    registry_visibility_store: &Arc<dyn muli_core::traits::RegistryVisibilityStore>,
-    tenant_quota_store: &Arc<dyn muli_core::traits::TenantQuotaStore>,
+    stores: &crate::stores::Stores,
     cancel: &CancellationToken,
 ) -> anyhow::Result<()> {
+    let registry_token_store = &stores.registry_token_store;
+    let registry_visibility_store = &stores.registry_visibility_store;
+    let tenant_quota_store = &stores.tenant_quota_store;
     let max_blob_size_bytes = config.registry_max_blob_size_mb * 1024 * 1024;
     let registry_storage = Arc::new(
         muli_registry::storage::FilesystemStorage::with_max_blob_size(
@@ -382,6 +376,13 @@ async fn start_registry(
         npm_enabled: config.npm_enabled,
         cargo_enabled: config.cargo_enabled,
         maven_enabled: config.maven_enabled,
+        luat: config
+            .luat_enabled
+            .then(|| muli_registry::luat::LuatConfig {
+                user_store: stores.user_store.clone(),
+                org_store: stores.org_store.clone(),
+                org_member_store: stores.org_member_store.clone(),
+            }),
     };
     let registry_router = muli_registry::registry_router(
         registry_storage,

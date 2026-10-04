@@ -57,7 +57,7 @@ pub struct Cli {
 pub enum RegistryMode {
     /// OCI/Docker registry only
     Docker,
-    /// OCI/Docker registry + npm + cargo
+    /// OCI/Docker registry + npm + cargo + maven + luat
     Full,
 }
 
@@ -69,6 +69,7 @@ pub fn apply_overrides(config: &mut muli_server::config::ServerConfig, cli: &Cli
             config.npm_enabled = true;
             config.cargo_enabled = true;
             config.maven_enabled = true;
+            config.luat_enabled = true;
         }
     }
     if cli.git || cli.git_ssh {

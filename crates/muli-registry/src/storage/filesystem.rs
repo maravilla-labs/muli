@@ -376,8 +376,8 @@ impl RegistryStorage for FilesystemStorage {
             return Ok(0);
         }
         let mut total: u64 = 0;
-        // Count all registry storage: blobs, manifests, npm, cargo, maven.
-        for subdir in ["blobs", "manifests", "npm", "cargo", "maven"] {
+        // Count all registry storage: blobs, manifests, npm, cargo, maven, luat.
+        for subdir in ["blobs", "manifests", "npm", "cargo", "maven", "luat"] {
             let dir = root.join(subdir);
             if dir.exists() {
                 collect_dir_size(&dir, &mut total).await?;

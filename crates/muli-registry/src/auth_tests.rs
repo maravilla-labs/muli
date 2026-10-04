@@ -41,16 +41,28 @@ fn token_prefix_extraction() {
 
 #[test]
 fn required_permission_read_methods() {
-    assert_eq!(required_permission(&Method::GET), RegistryPermission::Pull);
-    assert_eq!(required_permission(&Method::HEAD), RegistryPermission::Pull);
+    assert_eq!(
+        required_permission(&Method::GET, "/v2/x/manifests/latest"),
+        RegistryPermission::Pull
+    );
+    assert_eq!(
+        required_permission(&Method::HEAD, "/v2/x/manifests/latest"),
+        RegistryPermission::Pull
+    );
 }
 
 #[test]
 fn required_permission_write_methods() {
-    assert_eq!(required_permission(&Method::PUT), RegistryPermission::Push);
-    assert_eq!(required_permission(&Method::POST), RegistryPermission::Push);
     assert_eq!(
-        required_permission(&Method::PATCH),
+        required_permission(&Method::PUT, "/v2/x/manifests/latest"),
+        RegistryPermission::Push
+    );
+    assert_eq!(
+        required_permission(&Method::POST, "/v2/x/manifests/latest"),
+        RegistryPermission::Push
+    );
+    assert_eq!(
+        required_permission(&Method::PATCH, "/v2/x/manifests/latest"),
         RegistryPermission::Push
     );
 }
@@ -58,8 +70,20 @@ fn required_permission_write_methods() {
 #[test]
 fn required_permission_delete_method() {
     assert_eq!(
-        required_permission(&Method::DELETE),
+        required_permission(&Method::DELETE, "/v2/x/manifests/latest"),
         RegistryPermission::Admin
+    );
+}
+
+#[test]
+fn luat_yank_needs_push_not_admin() {
+    assert_eq!(
+        required_permission(&Method::DELETE, "/api/v1/packages/@acme/ui/1.0.0/yank"),
+        RegistryPermission::Push
+    );
+    assert_eq!(
+        required_permission(&Method::PUT, "/api/v1/packages/@acme/ui/1.0.0"),
+        RegistryPermission::Push
     );
 }
 

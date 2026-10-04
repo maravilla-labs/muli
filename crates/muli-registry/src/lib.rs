@@ -1,13 +1,14 @@
 // Copyright 2026 Maravilla Labs
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Embedded multi-format package registry (OCI, npm, Cargo).
+//! Embedded multi-format package registry (OCI, npm, Cargo, Maven, Luat).
 
 pub mod api;
 pub mod auth;
 pub mod cargo;
 pub mod common;
 pub mod garbage_collection;
+pub mod luat;
 pub mod maven;
 pub mod metrics;
 pub mod npm;

@@ -34,6 +34,8 @@ pub struct RegistryConfig {
     pub npm_enabled: bool,
     pub cargo_enabled: bool,
     pub maven_enabled: bool,
+    /// Luat packages; `Some` enables the format (`MULI_LUAT_ENABLED`).
+    pub luat: Option<crate::luat::LuatConfig>,
 }
 
 /// Create the registry router with OCI and optionally npm/cargo sub-routers.
@@ -93,6 +95,12 @@ pub fn registry_router(
         protected = protected.merge(maven_router);
     }
 
+    // Mount luat sub-router if enabled
+    let luat_enabled = config.luat.is_some();
+    if let Some(luat) = config.luat {
+        protected = protected.merge(crate::luat::luat_router(luat));
+    }
+
     let mut app = protected
         .with_state(storage)
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB default for metadata endpoints
@@ -115,6 +123,14 @@ pub fn registry_router(
     app = app
         .layer(axum::middleware::from_fn(crate::tenant::tenant_middleware))
         .layer(axum::Extension(tenant_config));
+
+    // CORS for the anonymous Luat reads sits outside tenant and auth so a
+    // browser preflight needs neither.
+    if luat_enabled {
+        app = app.layer(axum::middleware::from_fn(
+            crate::luat::cors::cors_middleware,
+        ));
+    }
 
     // Request-level tracing for all incoming requests
     app = app.layer(TraceLayer::new_for_http());

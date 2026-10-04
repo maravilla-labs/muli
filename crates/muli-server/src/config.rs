@@ -51,6 +51,10 @@ pub struct ServerConfig {
     pub npm_enabled: bool,
     pub cargo_enabled: bool,
     pub maven_enabled: bool,
+    /// Serve Luat packages (`MULI_LUAT_ENABLED`) at `{tenant}.{registry_domain}`:
+    /// `/index/@scope/name`, `/api/v1/packages/...`, `/api/v1/me`. Reads follow
+    /// the tenant's registry visibility; publishing needs a user-bound token.
+    pub luat_enabled: bool,
     pub registry_tls_cert_path: Option<String>,
     pub registry_tls_key_path: Option<String>,
     pub shutdown_timeout_seconds: u64,
@@ -146,6 +150,7 @@ impl std::fmt::Debug for ServerConfig {
             .field("npm_enabled", &self.npm_enabled)
             .field("cargo_enabled", &self.cargo_enabled)
             .field("maven_enabled", &self.maven_enabled)
+            .field("luat_enabled", &self.luat_enabled)
             .field("registry_tls_cert_path", &self.registry_tls_cert_path)
             .field(
                 "registry_tls_key_path",
@@ -234,6 +239,7 @@ impl Default for ServerConfig {
             npm_enabled: false,
             cargo_enabled: false,
             maven_enabled: false,
+            luat_enabled: false,
             registry_tls_cert_path: None,
             registry_tls_key_path: None,
             shutdown_timeout_seconds: 30,

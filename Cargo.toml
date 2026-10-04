@@ -133,6 +133,8 @@ glob = "0.3"
 md-5 = "0.10"
 
 tar = "0.4"
+flate2 = "1"
+toml = "0.8"
 
 # Constant-time comparison
 subtle = "2.6"

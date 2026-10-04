@@ -29,6 +29,9 @@ reqwest = { workspace = true }
 quick-xml = { workspace = true }
 md-5 = { workspace = true }
 tempfile = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+toml = { workspace = true }
 
 [dev-dependencies]
 muli-core = { workspace = true }
@@ -44,3 +47,7 @@ md-5 = { workspace = true }
 hex = { workspace = true }
 base64 = { workspace = true }
 reqwest = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+tempfile = { workspace = true }
+chrono = { workspace = true }

@@ -15,7 +15,7 @@ use muli_core::auth::extract_any_token;
 use muli_core::token_hash;
 use tracing::{debug, warn};
 
-use muli_core::registry::model::{RegistryPermission, RegistryVisibilityLevel};
+use muli_core::registry::model::{RegistryPermission, RegistryToken, RegistryVisibilityLevel};
 use muli_core::traits::{RegistryTokenStore, RegistryVisibilityStore};
 
 use crate::metrics::RegistryMetrics;
@@ -58,6 +58,12 @@ impl RegistryAuth {
     }
 }
 
+/// The verified token of an authenticated request, inserted into the request
+/// extensions by `auth_middleware`. Absent on anonymous reads of a public
+/// registry (and when no `RegistryAuth` is configured).
+#[derive(Clone, Debug)]
+pub struct AuthenticatedToken(pub RegistryToken);
+
 /// Hash a plaintext token with Argon2id.
 pub fn hash_token(plaintext: &str) -> String {
     token_hash::hash_token(plaintext).expect("Argon2id hashing failed")
@@ -69,7 +75,13 @@ pub fn token_prefix(plaintext: &str) -> String {
 }
 
 /// Determine the required permission based on the HTTP method.
-fn required_permission(method: &Method) -> RegistryPermission {
+///
+/// Luat yank is a `DELETE` but is "authenticated like publish" by the Luat
+/// protocol (nothing is deleted), so it needs `Push`, not `Admin`.
+fn required_permission(method: &Method, path: &str) -> RegistryPermission {
+    if crate::luat::is_luat_path(path) && *method == Method::DELETE {
+        return RegistryPermission::Push;
+    }
     match *method {
         Method::GET | Method::HEAD => RegistryPermission::Pull,
         Method::PUT | Method::POST | Method::PATCH => RegistryPermission::Push,
@@ -92,7 +104,13 @@ pub async fn auth_middleware(request: Request, next: Next) -> Response {
     let metrics = request.extensions().get::<RegistryMetrics>().cloned();
     let method = request.method().clone();
     let path = request.uri().path().to_string();
-    let is_read = matches!(method, Method::GET | Method::HEAD);
+    // Identity endpoints are GETs that must still see a token, even on a
+    // public registry: their whole answer is "who does this token belong to".
+    let is_read =
+        matches!(method, Method::GET | Method::HEAD) && !crate::luat::is_identity_path(&path);
+    // Luat clients expect `{"error": "..."}` bodies; every other format keeps
+    // the OCI-style error shape it always had.
+    let luat = crate::luat::is_luat_path(&path);
 
     debug!(%method, %path, "auth: processing request");
 
@@ -131,7 +149,7 @@ pub async fn auth_middleware(request: Request, next: Next) -> Response {
             if let Some(metrics) = &metrics {
                 metrics.record_auth_failure(tenant_id, "missing_token");
             }
-            return unauthorized_response("missing_token");
+            return unauthorized_response("missing_token", luat);
         }
     };
 
@@ -152,7 +170,7 @@ pub async fn auth_middleware(request: Request, next: Next) -> Response {
                 if let Some(metrics) = &metrics {
                     metrics.record_auth_failure(tenant_id, "invalid_token");
                 }
-                return unauthorized_response("token_not_found");
+                return unauthorized_response("token_not_found", luat);
             }
             t
         }
@@ -161,14 +179,14 @@ pub async fn auth_middleware(request: Request, next: Next) -> Response {
             if let Some(metrics) = &metrics {
                 metrics.record_auth_failure(tenant_id, "invalid_token");
             }
-            return unauthorized_response("token_not_found");
+            return unauthorized_response("token_not_found", luat);
         }
         Err(e) => {
             warn!(tenant_id, error = %e, "auth: token store lookup failed");
             if let Some(metrics) = &metrics {
                 metrics.record_auth_failure(tenant_id, "store_error");
             }
-            return unauthorized_response("store_error");
+            return unauthorized_response("store_error", luat);
         }
     };
 
@@ -183,7 +201,7 @@ pub async fn auth_middleware(request: Request, next: Next) -> Response {
         if let Some(metrics) = &metrics {
             metrics.record_auth_failure(tenant_id, reason);
         }
-        return unauthorized_response(reason);
+        return unauthorized_response(reason, luat);
     }
 
     // Verify tenant_id matches
@@ -194,23 +212,38 @@ pub async fn auth_middleware(request: Request, next: Next) -> Response {
         if let Some(metrics) = &metrics {
             metrics.record_auth_failure(tenant_id, "tenant_mismatch");
         }
-        return forbidden_response("token does not belong to this tenant");
+        return forbidden_response("token does not belong to this tenant", luat);
     }
 
     // Check permission
-    let required = required_permission(&method);
-    if !token.has_permission(required) {
+    let required = required_permission(&method, &path);
+    // The identity endpoint only answers "whose token is this", so any valid
+    // tenant token may ask, whatever its permissions.
+    if !crate::luat::is_identity_path(&path) && !token.has_permission(required) {
         warn!(tenant_id, required = ?required, "auth: insufficient permission");
         if let Some(metrics) = &metrics {
             metrics.record_auth_failure(tenant_id, "insufficient_permission");
         }
-        return forbidden_response("insufficient permissions");
+        return forbidden_response("insufficient permissions", luat);
     }
 
+    let mut request = request;
+    request.extensions_mut().insert(AuthenticatedToken(token));
     next.run(request).await
 }
 
-fn unauthorized_response(reason: &str) -> Response {
+fn unauthorized_response(reason: &str, luat: bool) -> Response {
+    if luat {
+        let mut resp = crate::common::error_json(
+            StatusCode::UNAUTHORIZED,
+            &format!("authentication required ({reason})"),
+        );
+        resp.headers_mut().insert(
+            "WWW-Authenticate",
+            axum::http::HeaderValue::from_static("Bearer realm=\"muli-registry\""),
+        );
+        return resp;
+    }
     let body = serde_json::json!({
         "errors": [{
             "code": "UNAUTHORIZED",
@@ -226,7 +259,10 @@ fn unauthorized_response(reason: &str) -> Response {
         .into_response()
 }
 
-fn forbidden_response(message: &str) -> Response {
+fn forbidden_response(message: &str, luat: bool) -> Response {
+    if luat {
+        return crate::common::error_json(StatusCode::FORBIDDEN, message);
+    }
     let body = serde_json::json!({
         "errors": [{
             "code": "DENIED",

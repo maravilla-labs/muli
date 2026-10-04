@@ -136,6 +136,7 @@ pub async fn start_e2e_registry() -> E2eRegistry {
         RegistryConfig {
             npm_enabled: false,
             maven_enabled: false,
+            luat: None,
             cargo_enabled: false,
         },
     );

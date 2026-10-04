@@ -72,6 +72,7 @@ impl TestRegistry {
                 npm_enabled: true,
                 cargo_enabled: true,
                 maven_enabled: true,
+                luat: None,
             },
         );
 
@@ -181,6 +182,7 @@ impl TestServer {
                 npm_enabled: true,
                 cargo_enabled: true,
                 maven_enabled: true,
+                luat: None,
             },
         );
 
