@@ -80,6 +80,11 @@ pub struct RegistryToken {
     pub created_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
     pub revoked: bool,
+    /// The tenant user this token acts for, when it is bound to one. Formats with
+    /// per-namespace publish rights (Luat scopes) authorize against this user's
+    /// own handle and org memberships; an unbound token cannot publish there.
+    #[serde(default)]
+    pub user_id: Option<String>,
 }
 
 /// Storage quota and current usage for a tenant.
@@ -109,7 +114,14 @@ impl RegistryToken {
             created_at: Utc::now(),
             expires_at,
             revoked: false,
+            user_id: None,
         }
+    }
+
+    /// Bind the token to a tenant user.
+    pub fn with_user(mut self, user_id: impl Into<String>) -> Self {
+        self.user_id = Some(user_id.into());
+        self
     }
 
     /// Check if this token is currently valid (not expired, not revoked).

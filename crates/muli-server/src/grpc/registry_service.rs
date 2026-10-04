@@ -10,7 +10,7 @@ use tonic::{Request, Response, Status};
 use tracing::info;
 
 use muli_core::registry::model::{RegistryToken, RegistryVisibilityLevel};
-use muli_core::traits::{RegistryTokenStore, RegistryVisibilityStore, TenantQuotaStore};
+use muli_core::traits::{RegistryTokenStore, RegistryVisibilityStore, TenantQuotaStore, UserStore};
 
 use muli_proto::registry_service_server::RegistryService;
 use muli_proto::{
@@ -32,6 +32,9 @@ pub struct RegistryServiceImpl {
     pub token_store: Arc<dyn RegistryTokenStore>,
     pub quota_store: Arc<dyn TenantQuotaStore>,
     pub visibility_store: Arc<dyn RegistryVisibilityStore>,
+    /// Resolves `user_id` on token creation so a token can only be bound to a
+    /// user of the tenant it is issued for.
+    pub user_store: Arc<dyn UserStore>,
 }
 
 impl RegistryServiceImpl {
@@ -87,7 +90,7 @@ impl RegistryService for RegistryServiceImpl {
             .filter(|&ttl| ttl > 0)
             .map(|ttl| Utc::now() + Duration::seconds(ttl as i64));
 
-        let token = RegistryToken::new(
+        let mut token = RegistryToken::new(
             req.tenant_id.clone(),
             token_hash,
             prefix,
@@ -95,6 +98,22 @@ impl RegistryService for RegistryServiceImpl {
             req.description,
             expires_at,
         );
+        if let Some(user_id) = req.user_id.filter(|u| !u.is_empty()) {
+            let user = self
+                .user_store
+                .get_user(&user_id)
+                .await
+                .map_err(|e| Status::internal(format!("Failed to look up user: {e}")))?;
+            match user {
+                Some(u) if u.tenant_id == req.tenant_id => token = token.with_user(u.id),
+                _ => {
+                    return Err(Status::invalid_argument(format!(
+                        "user {user_id} does not exist in tenant {}",
+                        req.tenant_id
+                    )));
+                }
+            }
+        }
 
         let token_id = self
             .token_store
@@ -140,6 +159,7 @@ impl RegistryService for RegistryServiceImpl {
                 created_at: Some(datetime_to_proto(t.created_at)),
                 expires_at: t.expires_at.map(datetime_to_proto),
                 revoked: t.revoked,
+                user_id: t.user_id,
             })
             .collect();
 
@@ -197,7 +217,7 @@ impl RegistryService for RegistryServiceImpl {
         let token_hash = hash_token(&plaintext).await;
         let prefix = token_prefix(&plaintext);
 
-        let new_token = RegistryToken::new(
+        let mut new_token = RegistryToken::new(
             caller_tenant.clone(),
             token_hash,
             prefix,
@@ -205,6 +225,8 @@ impl RegistryService for RegistryServiceImpl {
             format!("rotated from {}", req.token_id),
             old_token.expires_at,
         );
+        // A rotated token keeps acting for the same user.
+        new_token.user_id = old_token.user_id.clone();
 
         let new_token_id = self
             .token_store

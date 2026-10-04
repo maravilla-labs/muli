@@ -33,6 +33,9 @@ message CreateRegistryTokenRequest {
   repeated RegistryPermission permissions = 2;
   string description = 3;
   optional uint64 ttl_seconds = 4;
+  // Bind the token to a tenant user (TenantUser.id). Required for publishing
+  // Luat packages, whose scopes are authorized per user.
+  optional string user_id = 5;
 }
 
 message CreateRegistryTokenResponse {
@@ -55,6 +58,7 @@ message RegistryTokenInfo {
   optional Timestamp created_at = 4;
   optional Timestamp expires_at = 5;
   bool revoked = 6;
+  optional string user_id = 7;
 }
 
 message RevokeRegistryTokenRequest {

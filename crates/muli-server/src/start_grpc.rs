@@ -93,6 +93,7 @@ pub(crate) async fn start_grpc(
         token_store: stores.registry_token_store,
         quota_store: stores.tenant_quota_store.clone(),
         visibility_store: stores.registry_visibility_store.clone(),
+        user_store: stores.user_store.clone(),
     };
 
     let repo_service = Arc::new(muli_core::service::RepositoryService::new(
