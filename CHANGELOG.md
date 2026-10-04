@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-04
+
+### Security
+- Luat registry: an org's scope belongs to the org. User and org handles
+  are separate namespaces, so a user whose handle equalled an org's could
+  publish into that org's scope; now only the org's owners, admins and
+  members can, and a user's own handle is a scope only while no org holds
+  it.
+
 ## [0.5.0] - 2026-10-04
 
 ### Added

@@ -6,7 +6,9 @@
 mod luat_common;
 
 use luat_common::tarball::{manifest, simple, with_toml};
-use luat_common::{ALICE, ALICE_RO, BOB, FOREIGN, LuatRegistry, UNBOUND, assert_error, json};
+use luat_common::{
+    ALICE, ALICE_RO, BOB, FOREIGN, LuatRegistry, NAMESAKE, UNBOUND, assert_error, json,
+};
 
 #[tokio::test]
 async fn publish_needs_a_valid_token() {
@@ -82,6 +84,30 @@ async fn publish_is_limited_to_owned_scopes() {
         )
         .await,
         403,
+    );
+
+    // A user whose handle equals an org's handle does not own the org's scope.
+    assert_error(
+        &reg.publish(
+            Some(NAMESAKE),
+            "@acme/ui",
+            "1.0.0",
+            simple("@acme/ui", "1.0.0"),
+        )
+        .await,
+        403,
+    );
+    let me_request = reg
+        .request("GET", "/api/v1/me", Some(NAMESAKE))
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let (status, _, body) = reg.send(me_request).await;
+    assert_eq!(status, 200);
+    let me: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        me["scopes"],
+        serde_json::json!([]),
+        "namesake must not get the org's scope"
     );
 
     // Member, owner and personal scopes are fine.

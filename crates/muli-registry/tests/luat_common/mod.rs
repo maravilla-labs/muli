@@ -47,6 +47,8 @@ pub const BOB: &str = "bobby-luat-token-0002";
 pub const ALICE_RO: &str = "readonly-luat-token-0003";
 pub const UNBOUND: &str = "unbound-luat-token-0004";
 pub const FOREIGN: &str = "foreign-luat-token-0005";
+/// A user whose handle is also an org's handle (`acme`), not a member of it.
+pub const NAMESAKE: &str = "namesake-luat-token-0006";
 
 pub struct LuatRegistry {
     pub router: axum::Router,
@@ -97,12 +99,13 @@ impl LuatRegistry {
                 format!("{handle}@example.com"),
             )
         };
-        let (alice, bob, carol) = (
+        let (alice, bob, carol, namesake) = (
             user("alice", TENANT),
             user("bob", TENANT),
             user("carol", "other"),
+            user("acme", TENANT),
         );
-        for u in [&alice, &bob, &carol] {
+        for u in [&alice, &bob, &carol, &namesake] {
             users.create_user(u).await.unwrap();
         }
         let acme = Organization::new(TENANT.into(), "acme".into(), "Acme".into(), String::new());
@@ -131,6 +134,7 @@ impl LuatRegistry {
         add_token(&tokens, TENANT, ALICE_RO, vec![Pull], Some(&alice)).await;
         add_token(&tokens, TENANT, UNBOUND, vec![Pull, Push, Admin], None).await;
         add_token(&tokens, "other", FOREIGN, vec![Pull, Push], Some(&carol)).await;
+        add_token(&tokens, TENANT, NAMESAKE, vec![Pull, Push], Some(&namesake)).await;
 
         let visibility = Arc::new(MemoryRegistryVisibilityStore::new());
         visibility.set_visibility(TENANT, level).await.unwrap();

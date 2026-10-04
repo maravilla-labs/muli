@@ -69,12 +69,13 @@ pub async fn may_publish(
     user: &TenantUser,
     scope: &str,
 ) -> Result<bool, Response> {
-    if user.handle == scope {
-        return Ok(true);
-    }
+    // User and org handles are separate namespaces, so a user can carry an
+    // org's handle. An org's scope belongs to the org: only its writers may
+    // publish there, never a user who merely shares the name. A user's own
+    // handle is their scope only while no org holds it.
     let org = match config.org_store.get_org_by_handle(tenant_id, scope).await {
         Ok(Some(org)) => org,
-        Ok(None) => return Ok(false),
+        Ok(None) => return Ok(user.handle == scope),
         Err(e) => return Err(store_failure(e)),
     };
     match config.org_member_store.get_member(&org.id, &user.id).await {
@@ -90,14 +91,15 @@ pub async fn publishable_scopes(
     user: &TenantUser,
 ) -> Result<Vec<String>, Response> {
     let mut scopes = Vec::new();
-    if is_valid_part(&user.handle) {
-        scopes.push(user.handle.clone());
-    }
     let orgs = config
         .org_store
         .list_orgs(tenant_id)
         .await
         .map_err(store_failure)?;
+    // The user's own handle, unless an org holds it (see `may_publish`).
+    if is_valid_part(&user.handle) && !orgs.iter().any(|o| o.handle == user.handle) {
+        scopes.push(user.handle.clone());
+    }
     for org in orgs {
         if !is_valid_part(&org.handle) || scopes.contains(&org.handle) {
             continue;
