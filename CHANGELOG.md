@@ -7,6 +7,20 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-10-05
+
+### Fixed
+- Commits made through the contents API (HTTP `POST .../contents`, one
+  file or a batch) and the gRPC content service fire the same post-push
+  hooks as a push: pipelines, webhooks, cache and quota. A repository
+  whose first files came from the web never ran its pipeline before.
+- Job containers keep `/tmp` on disk. It was a 64 MB tmpfs, so tools
+  whose installers download larger archives there failed with ENOSPC,
+  and everything written there counted against the job's memory.
+- A retried pipeline run resolves the current org and repo secrets
+  instead of replaying the original run's snapshot, so a rotated secret
+  reaches the retry.
+
 ## [0.5.1] - 2026-10-04
 
 ### Security
