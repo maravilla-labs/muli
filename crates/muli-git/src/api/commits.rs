@@ -101,7 +101,11 @@ pub async fn list_commits(
 
         let mut commits = Vec::new();
         // Walk more commits when filtering by path since most won't match
-        let walk_limit = if filter_path.is_some() { limit * 20 } else { limit };
+        let walk_limit = if filter_path.is_some() {
+            limit * 20
+        } else {
+            limit
+        };
         // Mutable tracked path — updated when a rename is detected (--follow)
         let mut current_path = filter_path.clone();
 
@@ -120,11 +124,7 @@ pub async fn list_commits(
                 // prevents rename detection from working).
                 let mut opts = git2::DiffOptions::new();
                 let diff = repo
-                    .diff_tree_to_tree(
-                        parent_tree.as_ref(),
-                        Some(&commit_tree),
-                        Some(&mut opts),
-                    )
+                    .diff_tree_to_tree(parent_tree.as_ref(), Some(&commit_tree), Some(&mut opts))
                     .map_err(|e| format!("diff failed: {e}"))?;
 
                 // Enable rename detection on the computed diff

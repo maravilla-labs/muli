@@ -289,16 +289,19 @@ impl FilesystemStorage {
         if !path.exists() {
             return Err(GitStorageError::NotFound(path.display().to_string()));
         }
-        path.to_str()
-            .map(str::to_string)
-            .ok_or_else(|| GitStorageError::GitCommand("repository path contains invalid UTF-8".into()))
+        path.to_str().map(str::to_string).ok_or_else(|| {
+            GitStorageError::GitCommand("repository path contains invalid UTF-8".into())
+        })
     }
 }
 
 /// Reject tag names that could be misread as `git` options or break ref format.
 /// Git validates the full ref format itself; this guards the argv boundary.
 fn validate_tag_name(tag: &str) -> Result<(), GitStorageError> {
-    if tag.is_empty() || tag.starts_with('-') || tag.contains("..") || tag.contains(char::is_whitespace)
+    if tag.is_empty()
+        || tag.starts_with('-')
+        || tag.contains("..")
+        || tag.contains(char::is_whitespace)
     {
         return Err(GitStorageError::GitCommand(format!(
             "invalid tag name: {tag:?}"
@@ -455,11 +458,18 @@ mod tag_tests {
             );
         }
         let branch = String::from_utf8_lossy(
-            &git(&wt, &["rev-parse", "--abbrev-ref", "HEAD"]).await.stdout,
+            &git(&wt, &["rev-parse", "--abbrev-ref", "HEAD"])
+                .await
+                .stdout,
         )
         .trim()
         .to_string();
-        assert!(git(&wt, &["push", "origin", &branch]).await.status.success());
+        assert!(
+            git(&wt, &["push", "origin", &branch])
+                .await
+                .status
+                .success()
+        );
         let sha = String::from_utf8_lossy(&git(&wt, &["rev-parse", "HEAD"]).await.stdout)
             .trim()
             .to_string();
