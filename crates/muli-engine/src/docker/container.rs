@@ -70,9 +70,9 @@ pub async fn create_container(
         ..Default::default()
     };
 
-    // Provide a writable /tmp via tmpfs since root filesystem is read-only
-    let mut tmpfs = HashMap::new();
-    tmpfs.insert("/tmp".to_string(), "size=64m".to_string());
+    // /tmp stays on the container's writable layer (on disk, removed with the
+    // container). A tmpfs there capped downloads (npm postinstall binaries
+    // well over 64 MB) and its pages would count against the job's memory.
 
     let host_config = HostConfig {
         nano_cpus: Some(limits.nano_cpus),
@@ -85,7 +85,6 @@ pub async fn create_container(
         pids_limit: Some(256),
         readonly_rootfs: Some(false),
         privileged: Some(false),
-        tmpfs: Some(tmpfs),
         // Allow containers to reach the host machine's services (e.g. git HTTP on :7000).
         // On Linux, `host-gateway` resolves to the Docker bridge IP.
         // Docker Desktop (macOS/Windows) already provides host.docker.internal automatically.
