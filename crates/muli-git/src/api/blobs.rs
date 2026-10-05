@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use crate::api::GitState;
 use crate::api::helpers::{error_response, resolve_repo};
+use crate::hooks::{RefUpdate, compute_dir_size};
 use crate::tenant::TenantContext;
 use axum::{
     Extension, Json,
@@ -240,12 +241,7 @@ pub fn insert_blob_in_tree(
         })
     });
 
-    let new_subtree_oid = insert_blob_in_tree(
-        repo,
-        existing_subtree.as_ref(),
-        rest,
-        blob_oid,
-    )?;
+    let new_subtree_oid = insert_blob_in_tree(repo, existing_subtree.as_ref(), rest, blob_oid)?;
 
     let mut builder = if let Some(tree) = base_tree {
         repo.treebuilder(Some(tree)).map_err(|e| e.to_string())?
@@ -268,7 +264,9 @@ pub fn remove_blob_from_tree(
     if path_segments.is_empty() {
         return Err("empty path".to_string());
     }
-    let mut builder = repo.treebuilder(Some(base_tree)).map_err(|e| e.to_string())?;
+    let mut builder = repo
+        .treebuilder(Some(base_tree))
+        .map_err(|e| e.to_string())?;
     if path_segments.len() == 1 {
         // Leaf — remove the entry
         builder
@@ -306,36 +304,38 @@ pub fn remove_blob_from_tree(
 
 /// POST /api/v1/repos/{namespace}/{repo}/contents/{*path}
 ///
-/// Create or update a single file and commit.
+/// Create or update a single file and commit. Like a push, the commit fires
+/// the post-push hooks (pipelines, webhooks, cache, quota).
 pub async fn create_or_update_file(
     Extension(tenant): Extension<TenantContext>,
     State(state): State<Arc<GitState>>,
     Path((namespace, repo_name, file_path)): Path<(String, String, String)>,
     Json(body): Json<CreateFileRequest>,
 ) -> Response {
-    if let Err(e) = resolve_repo(&state, &tenant.tenant_id, &namespace, &repo_name).await {
-        return e;
-    }
+    let repo = match resolve_repo(&state, &tenant.tenant_id, &namespace, &repo_name).await {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
 
     let repo_fs_path = state
         .storage
         .repo_path(&tenant.tenant_id, &namespace, &repo_name);
 
-    let content = match base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        &body.content,
-    ) {
-        Ok(c) => c,
-        Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid base64 content"),
-    };
+    let content =
+        match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &body.content) {
+            Ok(c) => c,
+            Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid base64 content"),
+        };
 
     let message = body.message;
     let branch = body.branch;
     let author = body.author;
     let file_path_clone = file_path.clone();
+    let repo_size_before = compute_dir_size(&repo_fs_path).await.ok();
+    let git_path = repo_fs_path.clone();
 
     let result = tokio::task::spawn_blocking(move || {
-        let repo = git2::Repository::open_bare(&repo_fs_path).map_err(|e| e.to_string())?;
+        let repo = git2::Repository::open_bare(&git_path).map_err(|e| e.to_string())?;
         let sig = match &author {
             Some(a) => git2::Signature::now(&a.name, &a.email),
             None => git2::Signature::now("Muli", "muli@localhost"),
@@ -371,16 +371,32 @@ pub async fn create_or_update_file(
             )
             .map_err(|e| e.to_string())?;
 
-        Ok::<(String, String), String>((file_path_clone, commit_oid.to_string()))
+        let update = RefUpdate {
+            old_sha: parent_commit.id().to_string(),
+            new_sha: commit_oid.to_string(),
+            ref_name,
+        };
+        Ok::<(String, RefUpdate), String>((file_path_clone, update))
     })
     .await;
 
     match result {
-        Ok(Ok((path, sha))) => (
-            StatusCode::CREATED,
-            Json(serde_json::json!({ "path": path, "sha": sha })),
-        )
-            .into_response(),
+        Ok(Ok((path, update))) => {
+            let sha = update.new_sha.clone();
+            state.post_push_hooks.fire(
+                tenant.tenant_id.clone(),
+                repo.id,
+                repo_name,
+                vec![update],
+                repo_size_before,
+                repo_fs_path,
+            );
+            (
+                StatusCode::CREATED,
+                Json(serde_json::json!({ "path": path, "sha": sha })),
+            )
+                .into_response()
+        }
         Ok(Err(e)) if e.contains("branch not found") => error_response(StatusCode::NOT_FOUND, &e),
         Ok(Err(e)) => {
             tracing::error!(error = %e, "failed to create/update file");
@@ -395,7 +411,8 @@ pub async fn create_or_update_file(
 
 /// POST /api/v1/repos/{namespace}/{repo}/contents
 ///
-/// Create or update multiple files in a single commit.
+/// Create or update multiple files in a single commit. Like a push, the
+/// commit fires the post-push hooks (pipelines, webhooks, cache, quota).
 pub async fn create_files_batch(
     Extension(tenant): Extension<TenantContext>,
     State(state): State<Arc<GitState>>,
@@ -403,12 +420,16 @@ pub async fn create_files_batch(
     Json(body): Json<CreateFilesBatchRequest>,
 ) -> Response {
     if body.files.is_empty() && body.deletes.is_empty() {
-        return error_response(StatusCode::BAD_REQUEST, "files and deletes must not both be empty");
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "files and deletes must not both be empty",
+        );
     }
 
-    if let Err(e) = resolve_repo(&state, &tenant.tenant_id, &namespace, &repo_name).await {
-        return e;
-    }
+    let repo = match resolve_repo(&state, &tenant.tenant_id, &namespace, &repo_name).await {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
 
     let repo_fs_path = state
         .storage
@@ -417,10 +438,7 @@ pub async fn create_files_batch(
     // Decode all files upfront
     let mut decoded_files = Vec::with_capacity(body.files.len());
     for entry in &body.files {
-        match base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            &entry.content,
-        ) {
+        match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &entry.content) {
             Ok(c) => decoded_files.push((entry.path.clone(), c)),
             Err(_) => {
                 return error_response(
@@ -435,9 +453,11 @@ pub async fn create_files_batch(
     let branch = body.branch;
     let author = body.author;
     let deletes = body.deletes;
+    let repo_size_before = compute_dir_size(&repo_fs_path).await.ok();
+    let git_path = repo_fs_path.clone();
 
     let result = tokio::task::spawn_blocking(move || {
-        let repo = git2::Repository::open_bare(&repo_fs_path).map_err(|e| e.to_string())?;
+        let repo = git2::Repository::open_bare(&git_path).map_err(|e| e.to_string())?;
         let sig = match &author {
             Some(a) => git2::Signature::now(&a.name, &a.email),
             None => git2::Signature::now("Muli", "muli@localhost"),
@@ -467,7 +487,9 @@ pub async fn create_files_batch(
 
         // Apply deletes first (enables atomic renames: delete old + create new)
         for del_path in &deletes {
-            let current_tree = repo.find_tree(current_tree_oid).map_err(|e| e.to_string())?;
+            let current_tree = repo
+                .find_tree(current_tree_oid)
+                .map_err(|e| e.to_string())?;
             let segments: Vec<&str> = del_path.split('/').collect();
             current_tree_oid = remove_blob_from_tree(&repo, &current_tree, &segments)?;
         }
@@ -475,13 +497,17 @@ pub async fn create_files_batch(
         // Then insert all files
         for (path, content) in &decoded_files {
             let blob_oid = repo.blob(content).map_err(|e| e.to_string())?;
-            let current_tree = repo.find_tree(current_tree_oid).map_err(|e| e.to_string())?;
+            let current_tree = repo
+                .find_tree(current_tree_oid)
+                .map_err(|e| e.to_string())?;
             let segments: Vec<&str> = path.split('/').collect();
             current_tree_oid =
                 insert_blob_in_tree(&repo, Some(&current_tree), &segments, blob_oid)?;
         }
 
-        let final_tree = repo.find_tree(current_tree_oid).map_err(|e| e.to_string())?;
+        let final_tree = repo
+            .find_tree(current_tree_oid)
+            .map_err(|e| e.to_string())?;
 
         // Create commit
         let parents: Vec<&git2::Commit<'_>> = match &parent_commit {
@@ -492,16 +518,35 @@ pub async fn create_files_batch(
             .commit(Some(&ref_name), &sig, &sig, &message, &final_tree, &parents)
             .map_err(|e| e.to_string())?;
 
-        Ok::<(usize, String), String>((decoded_files.len(), commit_oid.to_string()))
+        let update = RefUpdate {
+            // The first commit of an empty repository has no parent.
+            old_sha: parent_commit
+                .as_ref()
+                .map_or_else(|| "0".repeat(40), |c| c.id().to_string()),
+            new_sha: commit_oid.to_string(),
+            ref_name,
+        };
+        Ok::<(usize, RefUpdate), String>((decoded_files.len(), update))
     })
     .await;
 
     match result {
-        Ok(Ok((count, sha))) => (
-            StatusCode::CREATED,
-            Json(serde_json::json!({ "files_committed": count, "sha": sha })),
-        )
-            .into_response(),
+        Ok(Ok((count, update))) => {
+            let sha = update.new_sha.clone();
+            state.post_push_hooks.fire(
+                tenant.tenant_id.clone(),
+                repo.id,
+                repo_name,
+                vec![update],
+                repo_size_before,
+                repo_fs_path,
+            );
+            (
+                StatusCode::CREATED,
+                Json(serde_json::json!({ "files_committed": count, "sha": sha })),
+            )
+                .into_response()
+        }
         Ok(Err(e)) => {
             tracing::error!(error = %e, "failed to create files batch");
             error_response(StatusCode::INTERNAL_SERVER_ERROR, &e)

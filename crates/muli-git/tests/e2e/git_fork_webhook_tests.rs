@@ -163,3 +163,78 @@ async fn test_webhook_delivery() {
         &request_str[..request_str.len().min(500)]
     );
 }
+
+/// A commit through the contents API moves the branch like a push does, so
+/// it must fire the push hooks too. A repository started from the web (its
+/// first files committed through the API) otherwise never runs its pipeline.
+#[tokio::test]
+async fn test_contents_api_commit_fires_push_webhook() {
+    let srv = start_server().await;
+    let repo_name = "contents-webhook-repo";
+
+    let (status, repo) = api_post(
+        &srv,
+        "/api/v1/repos",
+        json!({"namespace": NAMESPACE, "name": repo_name, "description": "", "is_private": false}),
+    )
+    .await;
+    assert_eq!(status, 201, "repo create: {repo}");
+
+    let mock_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mock_addr = mock_listener.local_addr().unwrap();
+    let received = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+    let received_clone = received.clone();
+    tokio::spawn(async move {
+        for _ in 0..5 {
+            if let Ok((mut stream, _)) = mock_listener.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = vec![0u8; 8192];
+                let n = stream.read(&mut buf).await.unwrap_or(0);
+                buf.truncate(n);
+                received_clone
+                    .lock()
+                    .await
+                    .push(String::from_utf8_lossy(&buf).into_owned());
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await;
+            }
+        }
+    });
+
+    let (status, hook) = api_post(
+        &srv,
+        &format!("/api/v1/repos/{NAMESPACE}/{repo_name}/hooks"),
+        json!({
+            "url": format!("http://127.0.0.1:{}/webhook", mock_addr.port()),
+            "secret": "test-secret",
+            "events": ["push"]
+        }),
+    )
+    .await;
+    assert_eq!(status, 201, "webhook create: {hook}");
+
+    // The first commit of the empty repository, through the contents API.
+    let (status, commit) = api_post(
+        &srv,
+        &format!("/api/v1/repos/{NAMESPACE}/{repo_name}/contents"),
+        json!({
+            "files": [{"path": "README.md", "content": "aGVsbG8K"}],
+            "message": "first commit",
+            "branch": "main"
+        }),
+    )
+    .await;
+    assert_eq!(status, 201, "batch commit: {commit}");
+    let sha = commit["sha"].as_str().unwrap().to_string();
+
+    tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+
+    let deliveries = received.lock().await;
+    let push = deliveries
+        .iter()
+        .find(|d| d.contains(&sha))
+        .unwrap_or_else(|| panic!("no push webhook for {sha}; got {deliveries:?}"));
+    assert!(push.contains("refs/heads/main"), "ref missing in: {push}");
+    assert!(push.contains(&"0".repeat(40)), "first commit has no parent: {push}");
+}
