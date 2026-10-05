@@ -336,7 +336,30 @@ impl PipelineServiceImpl {
             trigger,
             original.yaml_content.clone(),
         );
-        new_run.env_vars = original.env_vars.clone();
+        // Re-resolve secrets rather than replaying the original run's snapshot.
+        //
+        // `original.env_vars` is a point-in-time copy taken when that run was
+        // created. Cloning it verbatim meant a rotated credential never reached
+        // a retry: update the secret, hit "re-run", and the build still
+        // authenticated with the superseded value — which reads exactly like the
+        // update not having been saved, and is why this was hunted in the vault
+        // and the mirror rather than here.
+        //
+        // Fresh store values are layered OVER the recorded ones so that keys the
+        // original run got from its caller (a manual trigger's build variables,
+        // which no store can supply now) survive, while anything the stores do
+        // provide is current. A secret deleted since the original run keeps its
+        // recorded value; that is the deliberate trade-off for not dropping
+        // caller-supplied vars on the floor.
+        new_run.env_vars = match self.pipeline_trigger.as_ref() {
+            Some(trigger_impl) => merge_retry_env(
+                &original.env_vars,
+                trigger_impl
+                    .resolve_current_env(&caller_tenant, &original.repo_id)
+                    .await,
+            ),
+            None => original.env_vars.clone(),
+        };
 
         self.run_store
             .create_run(&new_run)
@@ -506,5 +529,62 @@ fn ci_clone_url_target(
         CiCloneUrlTarget::ContainerClone
     } else {
         CiCloneUrlTarget::HostCheckout
+    }
+}
+
+/// Layer freshly-resolved store secrets over a retried run's recorded env.
+///
+/// `fresh` wins on conflict — that is the whole point of re-resolving, and
+/// getting this direction backwards silently reinstates the stale-credential
+/// bug this exists to fix. Keys present only in `recorded` are kept: those came
+/// from the original run's caller (a manual trigger's build variables), which no
+/// store can supply on a retry.
+fn merge_retry_env(
+    recorded: &HashMap<String, String>,
+    fresh: HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut env = recorded.clone();
+    env.extend(fresh);
+    env
+}
+
+#[cfg(test)]
+mod retry_env_tests {
+    use super::*;
+
+    fn map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn rotated_secret_replaces_the_recorded_copy() {
+        let merged = merge_retry_env(
+            &map(&[("RAISIN_KEY", "old-key")]),
+            map(&[("RAISIN_KEY", "new-key")]),
+        );
+        assert_eq!(merged["RAISIN_KEY"], "new-key");
+    }
+
+    #[test]
+    fn caller_only_vars_survive_the_retry() {
+        // PREVIEW_SERVER came from the original manual trigger's caller and is
+        // in no store; it must not be dropped just because we re-resolved.
+        let merged = merge_retry_env(
+            &map(&[("PREVIEW_SERVER", "https://example.test")]),
+            map(&[("RAISIN_KEY", "new-key")]),
+        );
+        assert_eq!(merged["PREVIEW_SERVER"], "https://example.test");
+        assert_eq!(merged["RAISIN_KEY"], "new-key");
+    }
+
+    #[test]
+    fn empty_resolution_keeps_the_recorded_env() {
+        // Stores unreachable / no secrets: a retry must still run with what the
+        // original had rather than losing its env entirely.
+        let merged = merge_retry_env(&map(&[("RAISIN_KEY", "old-key")]), HashMap::new());
+        assert_eq!(merged["RAISIN_KEY"], "old-key");
     }
 }

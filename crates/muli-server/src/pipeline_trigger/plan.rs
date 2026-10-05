@@ -88,6 +88,73 @@ pub(crate) fn parse_config(
 }
 
 impl PipelineTriggerImpl {
+    /// Resolve the current org + repo secrets for a repo, with no caller env.
+    ///
+    /// A retry re-runs an OLD run's recorded YAML, and used to re-use that
+    /// run's recorded `env_vars` verbatim. That froze every secret at the value
+    /// it had when the ORIGINAL run was created, so rotating a credential and
+    /// hitting "re-run" replayed the superseded one — indistinguishable from
+    /// the rotation not having been saved. Retries resolve through here instead
+    /// so a rotated secret takes effect on the next run, whatever its kind.
+    ///
+    /// `caller_env` is deliberately empty: the caller of the ORIGINAL run is
+    /// long gone, and passing its recorded values back in would re-apply the
+    /// stale copies on top of the fresh ones (they override, by design).
+    /// `retry_run` layers those caller-only keys back underneath instead.
+    pub(crate) async fn resolve_current_env(
+        &self,
+        tenant_id: &str,
+        repo_id: &str,
+    ) -> HashMap<String, String> {
+        let repo = match self.repo_store.get_repository(repo_id).await {
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                warn!(repo_id = %repo_id, "retry env resolve: repository not found");
+                return HashMap::new();
+            }
+            Err(e) => {
+                warn!(repo_id = %repo_id, error = %e, "retry env resolve: repository lookup failed");
+                return HashMap::new();
+            }
+        };
+
+        let org_id = match self
+            .org_store
+            .get_org_by_handle(tenant_id, &repo.namespace)
+            .await
+        {
+            Ok(Some(org)) => Some(org.id),
+            Ok(None) => None,
+            Err(e) => {
+                warn!(
+                    namespace = %repo.namespace,
+                    repo_id = %repo_id,
+                    error = %e,
+                    "retry env resolve: org lookup failed; org-level secrets will be skipped"
+                );
+                None
+            }
+        };
+
+        match crate::secret_resolver::resolve_env_vars(
+            &self.secret_store,
+            &self.org_secret_store,
+            tenant_id,
+            repo_id,
+            org_id.as_deref(),
+            self.encryption_key.as_ref(),
+            HashMap::new(),
+        )
+        .await
+        {
+            Ok(env) => env,
+            Err(e) => {
+                warn!(error = %e, "retry env resolve: failed to resolve secrets; keeping recorded env");
+                HashMap::new()
+            }
+        }
+    }
+
     /// 7. Upsert the `Pipeline` record, reusing the existing ID for the same
     /// repo/name. Returns `None` on store error (skip this file).
     pub(crate) async fn upsert_pipeline_record(
