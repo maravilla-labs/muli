@@ -197,6 +197,7 @@ mod tests {
             allow_localhost_webhooks: false,
             repo_service,
             tenant_limits_store: None,
+            post_push_hooks: None,
         };
 
         let mut req = Request::new(CreateWebhookRequest {

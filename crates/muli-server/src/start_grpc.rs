@@ -101,6 +101,18 @@ pub(crate) async fn start_grpc(
         git_storage.clone(),
     ));
 
+    let post_push_hooks = muli_git::hooks::PostPushHooks {
+        pipeline_trigger: pipeline_trigger
+            .clone()
+            .map(|t| t as Arc<dyn muli_git::api::PipelineTriggerHook>),
+        webhook_store: stores.webhook_store.clone(),
+        http_client: Arc::new(muli_git::hooks::webhook_http_client()),
+        webhook_semaphore: Arc::new(tokio::sync::Semaphore::new(10)),
+        allow_localhost_webhooks: config.git_allow_localhost_webhooks,
+        cache_store: Some(stores.tree_commit_cache.clone()),
+        quota_store: Some(stores.tenant_quota_store.clone()),
+    };
+
     let git_token_store = stores.git_token_store;
     let git_service = GitServiceImpl {
         repo_store: stores.repo_store.clone(),
@@ -112,6 +124,7 @@ pub(crate) async fn start_grpc(
         allow_localhost_webhooks: config.git_allow_localhost_webhooks,
         repo_service,
         tenant_limits_store: Some(stores.tenant_limits_store.clone()),
+        post_push_hooks: Some(post_push_hooks),
     };
 
     let user_service = UserServiceImpl {

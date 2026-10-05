@@ -44,6 +44,8 @@ pub struct GitServiceImpl {
     pub allow_localhost_webhooks: bool,
     pub repo_service: Arc<muli_core::service::RepositoryService>,
     pub tenant_limits_store: Option<Arc<dyn TenantLimitsStore>>,
+    /// Fired after a commit made through this service, like after a push.
+    pub post_push_hooks: Option<muli_git::hooks::PostPushHooks>,
 }
 
 #[tonic::async_trait]
