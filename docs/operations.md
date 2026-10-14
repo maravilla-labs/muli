@@ -328,6 +328,32 @@ du -sh ${MULI_REGISTRY_ROOT:-/var/lib/muli/registry}
 du -sh ${MULI_GIT_ROOT:-/var/lib/muli/git}
 ```
 
+### Per-namespace git usage
+
+`TenantService.GetTenantUsage` reports one storage figure per tenant. Where
+many users share a tenant (for example `local`), `TenantService.GetNamespaceUsage`
+reports git storage for one namespace (user or organization handle) and for each
+of its repositories:
+
+```
+GetNamespaceUsage { tenant_id: "local", namespace: "alice" }
+-> { storage_bytes, repo_count, repos: [{ name, storage_bytes }],
+     measured_at, status, tenant_storage_bytes, unmeasured_repo_count }
+```
+
+- Authorization is identical to `GetTenantUsage` (same API key and tenant rules).
+- `status` is `NAMESPACE_USAGE_STATUS_EMPTY` with zero repositories for a
+  namespace that has none (or does not exist); this is not an error.
+- Sizes are the on-disk size of each bare repository, cached for 60 seconds per
+  repository. A cold call walks only the requested namespace's repositories.
+- Namespaces never overlap: the sum over all namespaces of a tenant equals the
+  git repository bytes under `{git_root}/{tenant}`. `GetTenantUsage.storage_bytes`
+  is larger because it also counts registry blobs and Git LFS objects (LFS is
+  stored per tenant, not per namespace) and is reconciled hourly, so it can lag.
+  `tenant_storage_bytes` repeats that tenant figure for reference.
+- Repositories whose directory cannot be read count 0 and are reported in
+  `unmeasured_repo_count`.
+
 ---
 
 ## 7. Token Rotation

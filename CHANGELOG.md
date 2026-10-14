@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+- `TenantService.GetNamespaceUsage` RPC: git storage per namespace (user or
+  organization handle) within a tenant, with a per-repository breakdown, a
+  `status` that distinguishes an empty namespace from a measured one, and the
+  tenant total for reference. Same authorization as `GetTenantUsage`; sizes are
+  cached for 60 seconds. Additive; `GetTenantUsage` is unchanged.
+
 ## [0.5.2] - 2026-10-05
 
 ### Fixed

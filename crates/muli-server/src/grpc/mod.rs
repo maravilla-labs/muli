@@ -11,6 +11,7 @@ pub mod health_service;
 pub mod job_query;
 pub mod job_service;
 pub mod log_service;
+pub mod namespace_usage;
 pub mod org_service;
 pub mod pipeline_service;
 pub mod registry_service;

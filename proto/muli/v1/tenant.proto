@@ -17,6 +17,9 @@ service TenantService {
   rpc SuspendTenant(SuspendTenantRequest)       returns (SuspendTenantResponse);
   rpc UnsuspendTenant(UnsuspendTenantRequest)   returns (UnsuspendTenantResponse);
   rpc GetTenantUsage(GetTenantUsageRequest)     returns (GetTenantUsageResponse);
+  // Per-namespace (and per-repository) git storage within one tenant. Additive:
+  // GetTenantUsage is unchanged.
+  rpc GetNamespaceUsage(GetNamespaceUsageRequest) returns (GetNamespaceUsageResponse);
 }
 
 message Tenant {
@@ -83,4 +86,44 @@ message GetTenantUsageResponse {
   uint32 active_pipelines = 3;
   uint32 pipeline_runs_today = 4;
   uint32 repo_count = 5;
+}
+
+// Request git storage usage for one namespace (user or organization handle)
+// inside a tenant. Authorization is identical to GetTenantUsage.
+message GetNamespaceUsageRequest {
+  string tenant_id = 1;   // required
+  string namespace = 2;   // required; user or organization handle
+}
+
+enum NamespaceUsageStatus {
+  NAMESPACE_USAGE_STATUS_UNSPECIFIED = 0;
+  // The namespace has at least one repository and sizes were measured.
+  NAMESPACE_USAGE_STATUS_MEASURED = 1;
+  // The namespace has no repositories (yet, or it does not exist). Not an
+  // error: storage_bytes and repo_count are zero.
+  NAMESPACE_USAGE_STATUS_EMPTY = 2;
+}
+
+message RepositoryUsage {
+  string name = 1;           // repository name, without the ".git" suffix
+  uint64 storage_bytes = 2;  // size of the bare repository on disk
+}
+
+message GetNamespaceUsageResponse {
+  // Sum of repos[].storage_bytes (bare repository directories only).
+  uint64 storage_bytes = 1;
+  uint32 repo_count = 2;
+  // Sorted by name.
+  repeated RepositoryUsage repos = 3;
+  // When the oldest size in this response was measured. Sizes are cached for
+  // a short TTL (60 seconds), so this may lag the request by up to the TTL.
+  Timestamp measured_at = 4;
+  NamespaceUsageStatus status = 5;
+  // The tenant's total from GetTenantUsage (git + registry + LFS), for
+  // reference. The sum over all namespaces is <= this value; the difference
+  // is registry blobs, Git LFS objects and quota-counter drift.
+  uint64 tenant_storage_bytes = 6;
+  // Repositories listed in the metadata store whose directory could not be
+  // measured (missing or unreadable). They contribute 0 to storage_bytes.
+  uint32 unmeasured_repo_count = 7;
 }

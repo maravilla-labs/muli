@@ -15,14 +15,16 @@ use muli_core::traits::{
 
 use muli_proto::tenant_service_server::TenantService;
 use muli_proto::{
-    CreateTenantRequest, DeleteTenantRequest, DeleteTenantResponse, GetTenantLimitsRequest,
-    GetTenantLimitsResponse, GetTenantRequest, GetTenantUsageRequest, GetTenantUsageResponse,
-    ListTenantsRequest, ListTenantsResponse, SetTenantLimitsRequest, SetTenantLimitsResponse,
+    CreateTenantRequest, DeleteTenantRequest, DeleteTenantResponse, GetNamespaceUsageRequest,
+    GetNamespaceUsageResponse, GetTenantLimitsRequest, GetTenantLimitsResponse, GetTenantRequest,
+    GetTenantUsageRequest, GetTenantUsageResponse, ListTenantsRequest, ListTenantsResponse,
+    NamespaceUsageStatus, RepositoryUsage, SetTenantLimitsRequest, SetTenantLimitsResponse,
     SuspendTenantRequest, SuspendTenantResponse, Tenant as ProtoTenant,
     TenantLimits as ProtoTenantLimits, UnsuspendTenantRequest, UnsuspendTenantResponse,
 };
 
 use super::conversions::{core_tier_to_proto, proto_tier_to_core};
+use super::namespace_usage::NamespaceUsageMeter;
 use super::util::{datetime_to_proto, extract_tenant_id};
 
 pub struct TenantServiceImpl {
@@ -32,6 +34,8 @@ pub struct TenantServiceImpl {
     pub repo_store: Arc<dyn RepositoryStore>,
     pub job_store: Arc<dyn JobStore>,
     pub pipeline_run_store: Arc<dyn PipelineRunStore>,
+    /// Per-namespace git storage measurement (cached).
+    pub namespace_usage: Arc<NamespaceUsageMeter>,
 }
 
 fn tenant_to_proto(t: &Tenant) -> ProtoTenant {
@@ -381,6 +385,61 @@ impl TenantService for TenantServiceImpl {
             active_pipelines: active_pipelines as u32,
             pipeline_runs_today: pipeline_runs_today as u32,
             repo_count: repo_count as u32,
+        }))
+    }
+
+    async fn get_namespace_usage(
+        &self,
+        request: Request<GetNamespaceUsageRequest>,
+    ) -> Result<Response<GetNamespaceUsageResponse>, Status> {
+        let req = request.into_inner();
+
+        if req.tenant_id.is_empty() {
+            return Err(Status::invalid_argument("tenant_id is required"));
+        }
+        if req.namespace.is_empty() {
+            return Err(Status::invalid_argument("namespace is required"));
+        }
+        if req.namespace.contains(['/', '\\']) || req.namespace.contains("..") {
+            return Err(Status::invalid_argument("namespace is invalid"));
+        }
+
+        let usage = self
+            .namespace_usage
+            .measure(&req.tenant_id, &req.namespace)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to measure namespace usage: {e}")))?;
+
+        // Same source as GetTenantUsage.storage_bytes.
+        let tenant_storage_bytes = self
+            .tenant_quota_store
+            .get_quota(&req.tenant_id)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to get quota: {e}")))?
+            .map(|q| q.current_usage_bytes)
+            .unwrap_or(0);
+
+        let status = if usage.repos.is_empty() {
+            NamespaceUsageStatus::Empty
+        } else {
+            NamespaceUsageStatus::Measured
+        };
+
+        Ok(Response::new(GetNamespaceUsageResponse {
+            storage_bytes: usage.storage_bytes,
+            repo_count: usage.repos.len() as u32,
+            repos: usage
+                .repos
+                .into_iter()
+                .map(|r| RepositoryUsage {
+                    name: r.name,
+                    storage_bytes: r.storage_bytes,
+                })
+                .collect(),
+            measured_at: Some(datetime_to_proto(usage.measured_at)),
+            status: status as i32,
+            tenant_storage_bytes,
+            unmeasured_repo_count: usage.unmeasured_repo_count,
         }))
     }
 }

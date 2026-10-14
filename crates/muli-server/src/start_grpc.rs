@@ -143,6 +143,10 @@ pub(crate) async fn start_grpc(
         repo_store: stores.repo_store.clone(),
         job_store: stores.job_store.clone(),
         pipeline_run_store: stores.pipeline_run_store.clone(),
+        namespace_usage: Arc::new(crate::grpc::namespace_usage::NamespaceUsageMeter::new(
+            stores.repo_store.clone(),
+            config.effective_git_root(),
+        )),
     };
 
     let pipeline_service = PipelineServiceImpl {
