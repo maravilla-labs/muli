@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-10-22
+
+### Fixed
+- A retried pipeline run carries the pipeline's `webhook:` data again, so a
+  `webhook: deploy: true` gate on `pipeline.completed` no longer skips
+  retries.
+
+## [0.5.3] - 2026-10-14
+
 ### Added
 - `TenantService.GetNamespaceUsage` RPC: git storage per namespace (user or
   organization handle) within a tenant, with a per-repository breakdown, a
