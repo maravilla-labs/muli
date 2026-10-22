@@ -360,6 +360,9 @@ impl PipelineServiceImpl {
             ),
             None => original.env_vars.clone(),
         };
+        // `pipeline.completed` webhooks carry `run.webhook_data`; leaving it empty
+        // here made consumers (e.g. a `webhook: deploy: true` gate) skip retries.
+        new_run.webhook_data = retry_webhook_data(&original.yaml_content, &original.webhook_data);
 
         self.run_store
             .create_run(&new_run)
@@ -546,6 +549,51 @@ fn merge_retry_env(
     let mut env = recorded.clone();
     env.extend(fresh);
     env
+}
+
+/// Webhook data for a retried run: re-read from the recorded YAML, as push and
+/// manual triggers do, falling back to the original run's copy if it won't parse.
+fn retry_webhook_data(
+    yaml_content: &str,
+    original: &HashMap<String, serde_json::Value>,
+) -> HashMap<String, serde_json::Value> {
+    match muli_pipeline::yaml::parser::parse_pipeline(yaml_content) {
+        Ok(def) => def.webhook,
+        Err(_) => original.clone(),
+    }
+}
+
+#[cfg(test)]
+mod retry_webhook_tests {
+    use super::*;
+
+    const YAML: &str = r#"
+name: deploy
+image: node:22-alpine
+on:
+  push:
+    branches: [main]
+webhook:
+  deploy: true
+jobs:
+  build:
+    commands:
+      - echo hi
+"#;
+
+    #[test]
+    fn retry_carries_webhook_data_from_yaml() {
+        // The original run's stored copy was empty (the production symptom).
+        let data = retry_webhook_data(YAML, &HashMap::new());
+        assert_eq!(data["deploy"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn unparseable_yaml_falls_back_to_original_webhook_data() {
+        let original = HashMap::from([("deploy".to_string(), serde_json::json!(true))]);
+        let data = retry_webhook_data("not: [valid", &original);
+        assert_eq!(data["deploy"], serde_json::json!(true));
+    }
 }
 
 #[cfg(test)]
