@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+- `CreateAccessToken` takes an optional `repo_id`: a pull-only token, bound
+  to no user, that reads exactly that repository of the tenant whatever its
+  owner (the repository-scoped token CI checkouts already use). A platform
+  can copy a private template repository into another account's project
+  without a token that reaches anything else. Push/admin or a `user_id`
+  together with `repo_id` are refused (`INVALID_ARGUMENT`); an unknown or
+  other-tenant repository is `NOT_FOUND`.
+
 ## [0.5.4] - 2026-10-22
 
 ### Fixed

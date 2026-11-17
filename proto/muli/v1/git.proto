@@ -178,6 +178,13 @@ message CreateGitTokenRequest {
   string description = 3;
   optional int64 ttl_seconds = 4;
   optional string user_id = 5;
+  // Restrict the token to ONE repository (its id, in `tenant_id`): a
+  // read-only token for exactly that repository, whatever its owner or
+  // visibility (e.g. a platform copying a private template repository
+  // into another account's project). Only GIT_PERMISSION_PULL is allowed
+  // and `user_id` must be empty; any other repository is reached only as
+  // an anonymous reader would reach it.
+  optional string repo_id = 6;
 }
 
 message CreateGitTokenResponse {
