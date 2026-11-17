@@ -167,10 +167,15 @@ pub async fn auth_middleware(mut request: Request, next: Next) -> Response {
         .unwrap_or("unknown");
 
     let is_anonymous_pull = auth.anonymous_pull && is_read;
+    let required = required_permission(&method, &path, query.as_deref());
 
     // Authenticate: skip only for anonymous pull on public repos
     let token = if is_anonymous_pull {
-        // Try to extract token if present, but don't require it
+        // Try to extract token if present, but don't require it. A token
+        // counts only when it would be accepted on the authenticated path
+        // too (hash, expiry/revocation, tenant, permission); anything else
+        // is treated as no token at all, so it can never unlock more than an
+        // anonymous reader gets.
         if let Some(plaintext) = extract_any_token(request.headers()) {
             let prefix = token_hash::token_prefix(&plaintext);
             if let Ok(Some(t)) = auth.token_store.get_token_by_prefix(&prefix).await {
@@ -180,7 +185,14 @@ pub async fn auth_middleware(mut request: Request, next: Next) -> Response {
                     tokio::task::spawn_blocking(move || token_hash::verify_token(&pt, &hash))
                         .await
                         .unwrap_or(false);
-                if valid { Some(t) } else { None }
+                let tenant_ok = tenant_ctx
+                    .as_ref()
+                    .is_none_or(|ctx| ctx.tenant_id == t.tenant_id);
+                if valid && t.is_valid() && tenant_ok && t.has_permission(required) {
+                    Some(t)
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -233,7 +245,6 @@ pub async fn auth_middleware(mut request: Request, next: Next) -> Response {
         }
 
         // Check permission based on method + path
-        let required = required_permission(&method, &path, query.as_deref());
         if !token.has_permission(required) {
             return forbidden_response("insufficient permissions");
         }
@@ -241,51 +252,70 @@ pub async fn auth_middleware(mut request: Request, next: Next) -> Response {
         Some(token)
     };
 
+    let tenant_id_str = tenant_ctx
+        .as_ref()
+        .map(|t| t.tenant_id.as_str())
+        .unwrap_or("");
+
+    // The repository the request is about, when the path names one that
+    // exists in this tenant.
+    let repo = match (&auth.repo_store, extract_repo_from_path(&path)) {
+        (Some(repo_store), Some((namespace, repo_name))) if !tenant_id_str.is_empty() => repo_store
+            .get_repository_by_name(tenant_id_str, namespace, repo_name)
+            .await
+            .ok()
+            .flatten(),
+        _ => None,
+    };
+
+    // A repository-scoped token reaches exactly its repository: any other
+    // repository, a path naming none, or one that cannot be resolved is
+    // refused, never handed on to the ordinary checks.
+    if let Some(token) = token.as_ref()
+        && let Some(scope) = token.repo_id.as_deref()
+        && !repo_scope_allows(scope, repo.as_ref().map(|r| r.id.as_str()))
+    {
+        return forbidden_response("token is restricted to another repository");
+    }
+
     // Per-repo ACL check:
     //   - Private repos: owner or collaborator required for any access
     //   - Public repos: anyone can read, but only owner or collaborator can push
-    if let (Some(repo_store), Some(collab_store)) = (&auth.repo_store, &auth.collaborator_store)
-        && let Some((namespace, repo_name)) = extract_repo_from_path(&path)
-    {
-        let tenant_id_str = tenant_ctx
-            .as_ref()
-            .map(|t| t.tenant_id.as_str())
-            .unwrap_or("");
-        if !tenant_id_str.is_empty()
-            && let Ok(Some(repo)) = repo_store
-                .get_repository_by_name(tenant_id_str, namespace, repo_name)
-                .await
+    if let (Some(repo), Some(collab_store)) = (repo.as_ref(), &auth.collaborator_store) {
+        // A repository-scoped pull token reads its own repository without a
+        // user (CI checkout, a platform copying a template). Its validity
+        // and tenant are checked again here, whichever branch produced it.
+        if let Some(token) = token.as_ref()
+            && required == GitPermission::Pull
+            && token.repo_id.as_deref() == Some(repo.id.as_str())
+            && token.is_valid()
+            && token.tenant_id == tenant_id_str
+            && token.has_permission(GitPermission::Pull)
         {
-            let required = required_permission(&method, &path, query.as_deref());
-            if let Some(token) = token.as_ref()
-                && required == GitPermission::Pull
-                && token.repo_id.as_deref() == Some(repo.id.as_str())
+            if let Some(uid) = token.user_id.as_ref()
+                && !uid.is_empty()
             {
-                if let Some(uid) = token.user_id.as_ref()
-                    && !uid.is_empty()
-                {
-                    request.extensions_mut().insert(AuthenticatedUser {
-                        user_id: uid.clone(),
-                    });
-                }
-                return next.run(request).await;
+                request.extensions_mut().insert(AuthenticatedUser {
+                    user_id: uid.clone(),
+                });
             }
+            return next.run(request).await;
+        }
 
-            let user_id = token.as_ref().and_then(|t| t.user_id.as_deref());
+        let user_id = token.as_ref().and_then(|t| t.user_id.as_deref());
 
-            let verdict = check_repo_access_with_org_lookup(
-                &repo,
-                user_id,
-                required,
-                collab_store.as_ref(),
-                auth.org_store.as_deref(),
-                auth.org_member_store.as_deref(),
-                tenant_id_str,
-            )
-            .await;
-            if let RepoAccessVerdict::Denied { reason } = verdict {
-                return forbidden_response(reason);
-            }
+        let verdict = check_repo_access_with_org_lookup(
+            repo,
+            user_id,
+            required,
+            collab_store.as_ref(),
+            auth.org_store.as_deref(),
+            auth.org_member_store.as_deref(),
+            tenant_id_str,
+        )
+        .await;
+        if let RepoAccessVerdict::Denied { reason } = verdict {
+            return forbidden_response(reason);
         }
     }
 
@@ -301,6 +331,13 @@ pub async fn auth_middleware(mut request: Request, next: Next) -> Response {
     }
 
     next.run(request).await
+}
+
+/// Whether a token scoped to repository `scope` may serve a request about
+/// `resolved` (the id of the repository the path names, if any). Only an
+/// exact match; no repository at all is a refusal. Pure.
+pub(crate) fn repo_scope_allows(scope: &str, resolved: Option<&str>) -> bool {
+    !scope.is_empty() && resolved == Some(scope)
 }
 
 fn unauthorized_response() -> Response {

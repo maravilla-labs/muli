@@ -480,3 +480,165 @@ async fn test_http_private_repo_read_denied_for_expired_repo_scoped_token() {
         "clone should fail for expired repo-scoped token"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Repository-scoped tokens: enforced scope, never fail-open
+// ---------------------------------------------------------------------------
+
+/// A repo-scoped token stored for `tenant` (which may differ from the server's).
+async fn create_scoped_token_in(
+    srv: &TestServerWithAcl,
+    tenant: &str,
+    repo_name: &str,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    revoked: bool,
+) -> String {
+    let repo = srv
+        .http
+        .repo_store
+        .get_repository_by_name(TENANT, NAMESPACE, repo_name)
+        .await
+        .expect("repo lookup")
+        .expect("repo must exist");
+    let plaintext = format!("repo-scope-{}", uuid::Uuid::new_v4().simple());
+    let mut token = GitToken::new(
+        tenant.into(),
+        hash_token(&plaintext),
+        token_prefix(&plaintext),
+        vec![GitPermission::Pull],
+        format!("repo-scoped token for {repo_name}"),
+        expires_at,
+    );
+    token.repo_id = Some(repo.id.clone());
+    token.revoked = revoked;
+    srv.http
+        .token_store
+        .create_token(&token)
+        .await
+        .expect("create token");
+    plaintext
+}
+
+/// Status of a GET with `token` as a bearer token.
+async fn get_with(srv: &TestServerWithAcl, path: &str, token: &str) -> u16 {
+    reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{}{}", srv.http.addr.port(), path))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .expect("HTTP request")
+        .status()
+        .as_u16()
+}
+
+fn upload_refs(repo: &str) -> String {
+    format!("/{NAMESPACE}/{repo}.git/info/refs?service=git-upload-pack")
+}
+
+/// Valid scoped pull: its repo only. Other private or PUBLIC repos, a path
+/// naming no repository, an unknown repository and push are all refused.
+#[tokio::test]
+async fn test_repo_scoped_token_reaches_exactly_its_repository() {
+    if !git_available() {
+        eprintln!("SKIP: git binary not found");
+        return;
+    }
+    let srv = start_server_with_acl().await;
+    create_http_repo(&srv, "scope-own", true, Some("user-1")).await;
+    create_http_repo(&srv, "scope-other-private", true, Some("user-1")).await;
+    create_http_repo(&srv, "scope-other-public", false, Some("user-1")).await;
+    let token = create_scoped_token_in(&srv, TENANT, "scope-own", None, false).await;
+
+    assert_eq!(
+        get_with(&srv, &upload_refs("scope-own"), &token).await,
+        200,
+        "own repo"
+    );
+    assert_eq!(
+        get_with(&srv, &upload_refs("scope-other-private"), &token).await,
+        403,
+        "other private repo"
+    );
+    assert_eq!(
+        get_with(&srv, &upload_refs("scope-other-public"), &token).await,
+        403,
+        "other public repo"
+    );
+    assert_eq!(
+        get_with(&srv, "/api/v1/repos", &token).await,
+        403,
+        "non-repo path"
+    );
+    assert_eq!(
+        get_with(&srv, &upload_refs("does-not-exist"), &token).await,
+        403,
+        "unresolvable path"
+    );
+    assert_eq!(
+        get_with(
+            &srv,
+            &format!("/{NAMESPACE}/scope-own.git/info/refs?service=git-receive-pack"),
+            &token
+        )
+        .await,
+        403,
+        "push"
+    );
+}
+
+/// Expired, revoked and other-tenant scoped tokens are refused, with and
+/// without anonymous pull (where a rejected token must count as no token).
+#[tokio::test]
+async fn test_invalid_repo_scoped_tokens_are_refused() {
+    if !git_available() {
+        eprintln!("SKIP: git binary not found");
+        return;
+    }
+    for anonymous in [false, true] {
+        let srv = if anonymous {
+            start_server_with_acl_anonymous().await
+        } else {
+            start_server_with_acl().await
+        };
+        let repo = "scope-invalid";
+        // With anonymous pull git sends credentials only after a 401, so the
+        // setup push cannot run: the repository stays empty (info/refs still
+        // answers) and is created private through the API.
+        let (status, _) = api_post(
+            &srv.http,
+            "/api/v1/repos",
+            json!({ "namespace": NAMESPACE, "name": repo, "description": "", "is_private": true }),
+        )
+        .await;
+        assert_eq!(status, 201, "create repo");
+        let past = Some(chrono::Utc::now() - chrono::Duration::minutes(1));
+        let cases = [
+            (
+                "expired",
+                create_scoped_token_in(&srv, TENANT, repo, past, false).await,
+            ),
+            (
+                "revoked",
+                create_scoped_token_in(&srv, TENANT, repo, None, true).await,
+            ),
+            (
+                "other tenant",
+                create_scoped_token_in(&srv, "tenant-b", repo, None, false).await,
+            ),
+        ];
+        for (what, token) in cases {
+            let status = get_with(&srv, &upload_refs(repo), &token).await;
+            assert!(
+                status == 401 || status == 403,
+                "{what} token (anonymous_pull={anonymous}) must be refused, got {status}"
+            );
+        }
+        // Sanity: a valid one is accepted on the same server.
+        let ok = create_scoped_token_in(&srv, TENANT, repo, None, false).await;
+        assert_eq!(
+            get_with(&srv, &upload_refs(repo), &ok).await,
+            200,
+            "anonymous_pull={anonymous}"
+        );
+    }
+}

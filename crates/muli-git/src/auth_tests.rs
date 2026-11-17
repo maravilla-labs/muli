@@ -125,3 +125,21 @@ fn extract_repo_from_path_rest_api_with_suffix() {
         Some(("acme", "my-repo"))
     );
 }
+
+#[test]
+fn repo_scope_allows_only_its_own_repository() {
+    assert!(repo_scope_allows("repo-1", Some("repo-1")));
+    assert!(
+        !repo_scope_allows("repo-1", Some("repo-2")),
+        "another repository"
+    );
+    assert!(
+        !repo_scope_allows("repo-1", None),
+        "a path naming no repository"
+    );
+    assert!(
+        !repo_scope_allows("", Some("")),
+        "an empty scope is no scope"
+    );
+    assert!(!repo_scope_allows("", None));
+}

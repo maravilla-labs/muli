@@ -16,6 +16,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   together with `repo_id` are refused (`INVALID_ARGUMENT`); an unknown or
   other-tenant repository is `NOT_FOUND`.
 
+### Security
+- A repository-scoped token is now enforced on every HTTP request: a path
+  naming another repository (private or public), no repository, or an
+  unknown one is refused (403) instead of falling through to the ordinary
+  checks.
+- With anonymous pull enabled, a presented token counted even when expired,
+  revoked, of another tenant or without the needed permission; together
+  with the repository-scope shortcut an expired or revoked CI token still
+  read its private repository. Such a token now counts as no token, and the
+  shortcut re-checks validity, tenant and permission itself.
+
 ## [0.5.4] - 2026-10-22
 
 ### Fixed
