@@ -18,13 +18,21 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   `repo_id` are refused (`INVALID_ARGUMENT`); an unknown or other-tenant
   repository is `NOT_FOUND`.
 
+### Fixed
+- Git LFS batch requests take their permission from the request's
+  `operation`: a download needs Pull (it needed Push, so read-only tokens,
+  CI checkout tokens included, could not fetch LFS objects), an upload or
+  an unreadable body Push.
+
 ### Security
 - A repository-scoped token is now enforced on every HTTP request: a path
   naming another repository (private or public), no repository, or an
   unknown one is refused (403) instead of falling through to the ordinary
-  checks, and so are the REST API, LFS and admin operations on its own
-  repository; only info/refs, git-upload-pack and (with Push)
-  git-receive-pack are served.
+  checks, and so are the REST API and admin operations on its own
+  repository. It is served on its repository's git smart HTTP endpoints
+  (info/refs, git-upload-pack, and git-receive-pack with Push) and Git LFS
+  endpoints (batch and object download with Pull; upload, verify and
+  batch upload with Push), so CI checkouts of LFS repositories work.
 - With anonymous pull enabled, a presented token counted even when expired,
   revoked, of another tenant or without the needed permission; together
   with the repository-scope shortcut an expired or revoked CI token still

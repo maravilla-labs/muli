@@ -167,7 +167,27 @@ pub async fn auth_middleware(mut request: Request, next: Next) -> Response {
         .unwrap_or("unknown");
 
     let is_anonymous_pull = auth.anonymous_pull && is_read;
-    let required = required_permission(&method, &path, query.as_deref());
+    let mut required = required_permission(&method, &path, query.as_deref());
+
+    // An LFS batch request says in its body whether it downloads or
+    // uploads: a download needs Pull, an upload Push. The body is small
+    // JSON; it is read here and put back for the handler. Anything that
+    // cannot be read as a download keeps the Push requirement (fail closed).
+    if method == Method::POST && is_lfs_batch(&path) {
+        let (parts, body) = request.into_parts();
+        let bytes = match axum::body::to_bytes(body, LFS_BATCH_BODY_LIMIT).await {
+            Ok(b) => b,
+            Err(_) => {
+                return (
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    Json(json!({ "error": "LFS batch request too large" })),
+                )
+                    .into_response();
+            }
+        };
+        required = lfs_batch_permission(&bytes);
+        request = Request::from_parts(parts, axum::body::Body::from(bytes));
+    }
 
     // Authenticate: skip only for anonymous pull on public repos
     let token = if is_anonymous_pull {
@@ -341,19 +361,56 @@ pub async fn auth_middleware(mut request: Request, next: Next) -> Response {
     next.run(request).await
 }
 
-/// The git smart HTTP endpoints of a repository (`/{ns}/{repo}[.git]/info/refs`,
-/// `git-upload-pack`, `git-receive-pack`): the only paths a
-/// repository-scoped token may use. Not the REST API, not LFS. Pure.
-pub(crate) fn is_git_transport(path: &str) -> bool {
+/// Upper bound for an LFS batch request body read by the auth middleware
+/// (git-lfs sends at most 100 objects per batch, a few KiB).
+const LFS_BATCH_BODY_LIMIT: usize = 1024 * 1024;
+
+/// The path segments of `/{ns}/{repo}[.git]/...`, with a non-empty
+/// namespace and repository, outside the REST API.
+fn repo_path_parts(path: &str) -> Option<Vec<&str>> {
     if path.starts_with("/api/") {
-        return false;
+        return None;
     }
     let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
-    matches!(
-        parts.as_slice(),
-        [ns, repo, "info", "refs"] | [ns, repo, "git-upload-pack"] | [ns, repo, "git-receive-pack"]
-            if !ns.is_empty() && !repo.is_empty()
-    )
+    (parts.len() >= 3 && !parts[0].is_empty() && !parts[1].is_empty()).then_some(parts)
+}
+
+/// `/{ns}/{repo}[.git]/info/lfs/objects/batch`. Pure.
+pub(crate) fn is_lfs_batch(path: &str) -> bool {
+    repo_path_parts(path).is_some_and(|p| p[2..] == ["info", "lfs", "objects", "batch"])
+}
+
+/// The permission an LFS batch body needs: Pull for `"operation":
+/// "download"`, Push for anything else (upload, unknown, unreadable). Pure.
+pub(crate) fn lfs_batch_permission(body: &[u8]) -> GitPermission {
+    let operation = serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| {
+            v.get("operation")
+                .and_then(|o| o.as_str())
+                .map(str::to_string)
+        });
+    if operation.as_deref() == Some("download") {
+        GitPermission::Pull
+    } else {
+        GitPermission::Push
+    }
+}
+
+/// The endpoints of ONE repository a repository-scoped token may use, each
+/// gated by the token's permissions as usual: git smart HTTP
+/// (`info/refs`, `git-upload-pack`, `git-receive-pack`) and Git LFS
+/// (`info/lfs/objects/batch`, `.../verify`, `.../{oid}` download/upload).
+/// Not the REST API, not admin. Pure.
+pub(crate) fn is_git_transport(path: &str) -> bool {
+    let Some(parts) = repo_path_parts(path) else {
+        return false;
+    };
+    match &parts[2..] {
+        ["info", "refs"] | ["git-upload-pack"] | ["git-receive-pack"] => true,
+        ["info", "lfs", "objects", object] => !object.is_empty(),
+        _ => false,
+    }
 }
 
 /// Whether a token scoped to repository `scope` may serve a request about

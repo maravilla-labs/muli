@@ -759,3 +759,184 @@ async fn test_invalid_repo_scoped_tokens_are_refused() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Repository-scoped tokens and Git LFS (CI checkout of an LFS repository)
+// ---------------------------------------------------------------------------
+
+/// Send `method path` with a bearer `token` and an optional JSON body.
+async fn lfs_call(
+    srv: &TestServerWithAcl,
+    method: reqwest::Method,
+    path: &str,
+    token: &str,
+    body: Option<serde_json::Value>,
+    raw: Option<Vec<u8>>,
+) -> (u16, Vec<u8>) {
+    let url = if path.starts_with("http") {
+        path.to_string()
+    } else {
+        format!("http://127.0.0.1:{}{}", srv.http.addr.port(), path)
+    };
+    let mut req = reqwest::Client::new()
+        .request(method, url)
+        .header("Authorization", format!("Bearer {token}"));
+    if let Some(b) = body {
+        req = req
+            .header("Content-Type", "application/vnd.git-lfs+json")
+            .json(&b);
+    }
+    if let Some(r) = raw {
+        req = req
+            .header("Content-Type", "application/octet-stream")
+            .body(r);
+    }
+    let resp = req.send().await.expect("HTTP request");
+    let status = resp.status().as_u16();
+    (status, resp.bytes().await.unwrap_or_default().to_vec())
+}
+
+fn lfs_batch(repo: &str) -> String {
+    format!("/{NAMESPACE}/{repo}.git/info/lfs/objects/batch")
+}
+
+/// A scoped pull token (what CI checkout gets) downloads its repository's
+/// LFS objects; it is refused on another repository's LFS and for upload or
+/// verify; a scoped Pull+Push token may upload to its repository.
+#[tokio::test]
+async fn test_repo_scoped_token_and_lfs() {
+    if !git_available() {
+        eprintln!("SKIP: git binary not found");
+        return;
+    }
+    let srv = start_server_with_acl().await;
+    create_http_repo(&srv, "lfs-own", true, Some("user-1")).await;
+    create_http_repo(&srv, "lfs-other", true, Some("user-1")).await;
+
+    // The owner (user-1) stores an object in lfs-own.
+    let data = b"large file contents for CI".to_vec();
+    let oid = {
+        use sha2::{Digest, Sha256};
+        hex::encode(Sha256::digest(&data))
+    };
+    let object = |repo: &str| format!("/{NAMESPACE}/{repo}.git/info/lfs/objects/{oid}");
+    let (status, _) = lfs_call(
+        &srv,
+        reqwest::Method::PUT,
+        &object("lfs-own"),
+        &srv.http.token,
+        None,
+        Some(data.clone()),
+    )
+    .await;
+    assert_eq!(status, 200, "owner uploads the object");
+
+    let download =
+        json!({ "operation": "download", "objects": [{ "oid": oid, "size": data.len() }] });
+    let upload = json!({ "operation": "upload", "objects": [{ "oid": oid, "size": data.len() }] });
+    let (pull, _) =
+        create_repo_scoped_token(&srv, "lfs-own", vec![GitPermission::Pull], None).await;
+
+    // Batch download + object download on its own repository.
+    let (status, body) = lfs_call(
+        &srv,
+        reqwest::Method::POST,
+        &lfs_batch("lfs-own"),
+        &pull,
+        Some(download.clone()),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "batch download with a scoped pull token");
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let href = body["objects"][0]["actions"]["download"]["href"]
+        .as_str()
+        .expect("download href")
+        .to_string();
+    let (status, got) = lfs_call(&srv, reqwest::Method::GET, &href, &pull, None, None).await;
+    assert_eq!(status, 200, "object download");
+    assert_eq!(got, data);
+
+    // Another repository's LFS: refused (batch and object).
+    let (status, _) = lfs_call(
+        &srv,
+        reqwest::Method::POST,
+        &lfs_batch("lfs-other"),
+        &pull,
+        Some(download.clone()),
+        None,
+    )
+    .await;
+    assert_eq!(status, 403, "batch on another repository");
+    let (status, _) = lfs_call(
+        &srv,
+        reqwest::Method::GET,
+        &object("lfs-other"),
+        &pull,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, 403, "object of another repository");
+
+    // Upload and verify without Push: refused.
+    let (status, _) = lfs_call(
+        &srv,
+        reqwest::Method::POST,
+        &lfs_batch("lfs-own"),
+        &pull,
+        Some(upload.clone()),
+        None,
+    )
+    .await;
+    assert_eq!(status, 403, "batch upload without push");
+    let (status, _) = lfs_call(
+        &srv,
+        reqwest::Method::PUT,
+        &object("lfs-own"),
+        &pull,
+        None,
+        Some(data.clone()),
+    )
+    .await;
+    assert_eq!(status, 403, "object upload without push");
+    let (status, _) = lfs_call(
+        &srv,
+        reqwest::Method::POST,
+        &format!("/{NAMESPACE}/lfs-own.git/info/lfs/objects/verify"),
+        &pull,
+        Some(json!({ "oid": oid, "size": data.len() })),
+        None,
+    )
+    .await;
+    assert_eq!(status, 403, "verify without push");
+
+    // A scoped Pull+Push token uploads to its own repository only.
+    let (push, _) = create_repo_scoped_token(
+        &srv,
+        "lfs-own",
+        vec![GitPermission::Pull, GitPermission::Push],
+        None,
+    )
+    .await;
+    let (status, _) = lfs_call(
+        &srv,
+        reqwest::Method::POST,
+        &lfs_batch("lfs-own"),
+        &push,
+        Some(upload.clone()),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "batch upload with push");
+    let (status, _) = lfs_call(
+        &srv,
+        reqwest::Method::POST,
+        &lfs_batch("lfs-other"),
+        &push,
+        Some(upload),
+        None,
+    )
+    .await;
+    assert_eq!(status, 403, "batch upload on another repository");
+}

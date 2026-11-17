@@ -151,6 +151,9 @@ fn only_git_smart_http_paths_are_git_transport() {
         "/acme/repo/info/refs",
         "/acme/repo.git/git-upload-pack",
         "/acme/repo.git/git-receive-pack",
+        "/acme/repo.git/info/lfs/objects/batch",
+        "/acme/repo.git/info/lfs/objects/verify",
+        "/acme/repo.git/info/lfs/objects/0123abcd",
     ] {
         assert!(is_git_transport(ok), "{ok}");
     }
@@ -158,7 +161,10 @@ fn only_git_smart_http_paths_are_git_transport() {
         "/api/v1/repos/acme/repo/refs",
         "/api/v1/repos/acme/repo",
         "/api/v1/repos",
-        "/acme/repo.git/info/lfs/objects/batch",
+        "/acme/repo.git/info/lfs/objects/",
+        "/acme/repo.git/info/lfs/locks",
+        "/acme/repo.git/info/lfs/objects/a/b",
+        "/api/v1/repos/acme/repo/info/lfs/objects/batch",
         "/acme/repo.git",
         "/acme/repo.git/HEAD",
         "/info/refs",
@@ -167,4 +173,28 @@ fn only_git_smart_http_paths_are_git_transport() {
     ] {
         assert!(!is_git_transport(no), "{no}");
     }
+}
+
+#[test]
+fn lfs_batch_download_needs_pull_everything_else_push() {
+    assert!(is_lfs_batch("/acme/repo.git/info/lfs/objects/batch"));
+    assert!(is_lfs_batch("/acme/repo/info/lfs/objects/batch"));
+    assert!(!is_lfs_batch("/acme/repo.git/info/lfs/objects/verify"));
+    assert!(!is_lfs_batch(
+        "/api/v1/repos/acme/repo/info/lfs/objects/batch"
+    ));
+
+    let download = br#"{"operation":"download","objects":[]}"#;
+    let upload = br#"{"operation":"upload","objects":[]}"#;
+    assert_eq!(lfs_batch_permission(download), GitPermission::Pull);
+    assert_eq!(lfs_batch_permission(upload), GitPermission::Push);
+    assert_eq!(
+        lfs_batch_permission(br#"{"objects":[]}"#),
+        GitPermission::Push
+    );
+    assert_eq!(lfs_batch_permission(b"not json"), GitPermission::Push);
+    assert_eq!(
+        lfs_batch_permission(br#"{"operation":"DOWNLOAD"}"#),
+        GitPermission::Push
+    );
 }
