@@ -14,6 +14,7 @@
 //! - `pr_diff_comment_tests` — PR structured diff and comments
 //! - `pr_error_tests`        — PR error cases (conflict, invalid action, missing fields)
 //! - `lfs_binding_tests`     — LFS objects belong to repositories (no cross-repo reads)
+//! - `repo_path_tests`       — auth and serving resolve the same repository (tricky paths)
 //! - `ssh_tests`             — SSH clone and push
 
 #[path = "e2e/acl_tests.rs"]
@@ -40,5 +41,7 @@ mod pr_diff_comment_tests;
 mod pr_error_tests;
 #[path = "e2e/pr_lifecycle_tests.rs"]
 mod pr_lifecycle_tests;
+#[path = "e2e/repo_path_tests.rs"]
+mod repo_path_tests;
 #[path = "e2e/ssh_tests.rs"]
 mod ssh_tests;

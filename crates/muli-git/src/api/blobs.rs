@@ -6,8 +6,9 @@
 use std::sync::Arc;
 
 use crate::api::GitState;
-use crate::api::helpers::{error_response, resolve_repo};
+use crate::api::helpers::{error_response, repo_fs_path};
 use crate::hooks::{RefUpdate, compute_dir_size};
+use crate::repo_target::TargetRepo;
 use crate::tenant::TenantContext;
 use axum::{
     Extension, Json,
@@ -41,18 +42,13 @@ enum ContentResult {
 
 /// GET /api/v1/repos/{namespace}/{repo}/contents/{*path}
 pub async fn get_blob(
-    Extension(tenant): Extension<TenantContext>,
+    Extension(_tenant): Extension<TenantContext>,
     State(state): State<Arc<GitState>>,
-    Path((namespace, repo_name, file_path)): Path<(String, String, String)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _repo_name, file_path)): Path<(String, String, String)>,
     Query(query): Query<BlobQuery>,
 ) -> Response {
-    if let Err(e) = resolve_repo(&state, &tenant.tenant_id, &namespace, &repo_name).await {
-        return e;
-    }
-
-    let repo_fs_path = state
-        .storage
-        .repo_path(&tenant.tenant_id, &namespace, &repo_name);
+    let repo_fs_path = repo_fs_path(&state, &target);
     let git_ref = query.git_ref.unwrap_or_else(|| "HEAD".to_string());
     let file_path_clone = file_path.clone();
     let git_ref_clone = git_ref.clone();
@@ -124,18 +120,13 @@ pub async fn get_blob(
 
 /// GET /api/v1/repos/{namespace}/{repo}/contents
 pub async fn get_root_contents(
-    Extension(tenant): Extension<TenantContext>,
+    Extension(_tenant): Extension<TenantContext>,
     State(state): State<Arc<GitState>>,
-    Path((namespace, repo_name)): Path<(String, String)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _repo_name)): Path<(String, String)>,
     Query(query): Query<BlobQuery>,
 ) -> Response {
-    if let Err(e) = resolve_repo(&state, &tenant.tenant_id, &namespace, &repo_name).await {
-        return e;
-    }
-
-    let repo_fs_path = state
-        .storage
-        .repo_path(&tenant.tenant_id, &namespace, &repo_name);
+    let repo_fs_path = repo_fs_path(&state, &target);
     let git_ref = query.git_ref.unwrap_or_else(|| "HEAD".to_string());
     let git_ref_clone = git_ref.clone();
 
@@ -309,17 +300,13 @@ pub fn remove_blob_from_tree(
 pub async fn create_or_update_file(
     Extension(tenant): Extension<TenantContext>,
     State(state): State<Arc<GitState>>,
-    Path((namespace, repo_name, file_path)): Path<(String, String, String)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _repo_name, file_path)): Path<(String, String, String)>,
     Json(body): Json<CreateFileRequest>,
 ) -> Response {
-    let repo = match resolve_repo(&state, &tenant.tenant_id, &namespace, &repo_name).await {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
+    let repo = target.clone();
 
-    let repo_fs_path = state
-        .storage
-        .repo_path(&tenant.tenant_id, &namespace, &repo_name);
+    let repo_fs_path = repo_fs_path(&state, &target);
 
     let content =
         match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &body.content) {
@@ -386,7 +373,7 @@ pub async fn create_or_update_file(
             state.post_push_hooks.fire(
                 tenant.tenant_id.clone(),
                 repo.id,
-                repo_name,
+                repo.name.clone(),
                 vec![update],
                 repo_size_before,
                 repo_fs_path,
@@ -416,7 +403,8 @@ pub async fn create_or_update_file(
 pub async fn create_files_batch(
     Extension(tenant): Extension<TenantContext>,
     State(state): State<Arc<GitState>>,
-    Path((namespace, repo_name)): Path<(String, String)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _repo_name)): Path<(String, String)>,
     Json(body): Json<CreateFilesBatchRequest>,
 ) -> Response {
     if body.files.is_empty() && body.deletes.is_empty() {
@@ -426,14 +414,9 @@ pub async fn create_files_batch(
         );
     }
 
-    let repo = match resolve_repo(&state, &tenant.tenant_id, &namespace, &repo_name).await {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
+    let repo = target.clone();
 
-    let repo_fs_path = state
-        .storage
-        .repo_path(&tenant.tenant_id, &namespace, &repo_name);
+    let repo_fs_path = repo_fs_path(&state, &target);
 
     // Decode all files upfront
     let mut decoded_files = Vec::with_capacity(body.files.len());
@@ -536,7 +519,7 @@ pub async fn create_files_batch(
             state.post_push_hooks.fire(
                 tenant.tenant_id.clone(),
                 repo.id,
-                repo_name,
+                repo.name.clone(),
                 vec![update],
                 repo_size_before,
                 repo_fs_path,
@@ -561,14 +544,13 @@ pub async fn create_files_batch(
 /// Raw blob endpoint (currently unused but available).
 #[allow(dead_code)]
 pub async fn get_raw_blob(
-    Extension(tenant): Extension<TenantContext>,
+    Extension(_tenant): Extension<TenantContext>,
     State(state): State<Arc<GitState>>,
-    Path((namespace, repo_name, file_path)): Path<(String, String, String)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _repo_name, file_path)): Path<(String, String, String)>,
     Query(query): Query<BlobQuery>,
 ) -> Response {
-    let repo_fs_path = state
-        .storage
-        .repo_path(&tenant.tenant_id, &namespace, &repo_name);
+    let repo_fs_path = repo_fs_path(&state, &target);
     let git_ref = query.git_ref.unwrap_or_else(|| "HEAD".to_string());
     let file_path_clone = file_path.clone();
     let git_ref_clone = git_ref.clone();

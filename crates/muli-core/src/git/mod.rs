@@ -10,6 +10,7 @@ mod webhook;
 pub use access::{RepoAccessVerdict, check_repo_access, check_repo_access_with_org_lookup};
 pub use model::{
     GitPermission, GitToken, HasPermissions, OwnerType, Repository, RepositoryCollaborator, SshKey,
+    is_valid_repo_component,
 };
 pub use webhook::{
     Webhook, WebhookEvent, is_private_ip, validate_webhook_target, validate_webhook_url,

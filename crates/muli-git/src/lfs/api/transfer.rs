@@ -16,6 +16,7 @@ use super::{OBJECT_NOT_FOUND, lfs_error, resolve};
 use crate::api::GitState;
 use crate::lfs::storage::LfsStorageError;
 use crate::lfs::types::{self, VerifyRequest};
+use crate::repo_target::TargetRepo;
 use crate::tenant::TenantContext;
 
 /// PUT `/{namespace}/{repo}/info/lfs/objects/{oid}`
@@ -26,10 +27,11 @@ use crate::tenant::TenantContext;
 pub async fn upload(
     State(state): State<Arc<GitState>>,
     Extension(tenant): Extension<TenantContext>,
-    Path((namespace, raw_repo, oid)): Path<(String, String, String)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _raw_repo, oid)): Path<(String, String, String)>,
     request: axum::extract::Request,
 ) -> Response {
-    let repo = match resolve(&state, &tenant.tenant_id, &namespace, &raw_repo).await {
+    let repo = match resolve(&state, &target) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -90,9 +92,10 @@ pub async fn upload(
 pub async fn download(
     State(state): State<Arc<GitState>>,
     Extension(tenant): Extension<TenantContext>,
-    Path((namespace, raw_repo, oid)): Path<(String, String, String)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _raw_repo, oid)): Path<(String, String, String)>,
 ) -> Response {
-    let repo = match resolve(&state, &tenant.tenant_id, &namespace, &raw_repo).await {
+    let repo = match resolve(&state, &target) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -142,10 +145,10 @@ pub async fn download(
 pub async fn verify(
     State(state): State<Arc<GitState>>,
     Extension(tenant): Extension<TenantContext>,
-    Path((namespace, raw_repo)): Path<(String, String)>,
+    TargetRepo(target): TargetRepo,
     Json(req): Json<VerifyRequest>,
 ) -> Response {
-    let repo = match resolve(&state, &tenant.tenant_id, &namespace, &raw_repo).await {
+    let repo = match resolve(&state, &target) {
         Ok(r) => r,
         Err(resp) => return resp,
     };

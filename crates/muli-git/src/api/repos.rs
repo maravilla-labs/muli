@@ -18,6 +18,7 @@ use muli_core::git::Repository;
 
 use crate::api::GitState;
 use crate::api::helpers::{domain_err_to_http, validate_path_component};
+use crate::repo_target::TargetRepo;
 use crate::tenant::TenantContext;
 
 #[derive(Debug, Deserialize)]
@@ -93,11 +94,12 @@ pub async fn create_repo(
 pub async fn delete_repo(
     Extension(tenant): Extension<TenantContext>,
     State(state): State<Arc<GitState>>,
-    Path((namespace, repo_name)): Path<(String, String)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _repo_name)): Path<(String, String)>,
 ) -> Response {
     match state
         .repo_service
-        .delete(&tenant.tenant_id, &namespace, &repo_name)
+        .delete(&tenant.tenant_id, &target.namespace, &target.name)
         .await
     {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -114,14 +116,10 @@ pub struct TransferRepoRequest {
 pub async fn transfer_repo(
     Extension(tenant): Extension<TenantContext>,
     State(state): State<Arc<GitState>>,
-    Path((namespace, repo_name)): Path<(String, String)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _repo_name)): Path<(String, String)>,
     Json(req): Json<TransferRepoRequest>,
 ) -> Response {
-    let repo_name = repo_name
-        .strip_suffix(".git")
-        .unwrap_or(&repo_name)
-        .to_string();
-
     if !validate_path_component(&req.new_namespace) {
         return (
             StatusCode::BAD_REQUEST,
@@ -134,8 +132,8 @@ pub async fn transfer_repo(
         .repo_service
         .transfer(
             &tenant.tenant_id,
-            &namespace,
-            &repo_name,
+            &target.namespace,
+            &target.name,
             &req.new_namespace,
         )
         .await

@@ -19,7 +19,8 @@ use sha2::Sha256;
 use muli_core::git::{Webhook, WebhookEvent, validate_webhook_target};
 
 use crate::api::GitState;
-use crate::api::helpers::{error_response, resolve_repo};
+use crate::api::helpers::error_response;
+use crate::repo_target::TargetRepo;
 use crate::tenant::TenantContext;
 
 /// Sign a webhook payload using HMAC-SHA256.
@@ -68,7 +69,8 @@ impl From<Webhook> for WebhookResponse {
 pub async fn create_webhook(
     Extension(tenant): Extension<TenantContext>,
     State(state): State<Arc<GitState>>,
-    Path((namespace, repo_name)): Path<(String, String)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _repo_name)): Path<(String, String)>,
     Json(req): Json<CreateWebhookRequest>,
 ) -> Response {
     // Validate webhook URL (SSRF protection) — skip in test/dev mode
@@ -78,10 +80,7 @@ pub async fn create_webhook(
         return error_response(StatusCode::BAD_REQUEST, &msg);
     }
 
-    let repo = match resolve_repo(&state, &tenant.tenant_id, &namespace, &repo_name).await {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
+    let repo = target.clone();
 
     let mut webhook = Webhook::new(
         tenant.tenant_id.clone(),
@@ -114,12 +113,10 @@ pub async fn create_webhook(
 pub async fn list_webhooks(
     Extension(tenant): Extension<TenantContext>,
     State(state): State<Arc<GitState>>,
-    Path((namespace, repo_name)): Path<(String, String)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _repo_name)): Path<(String, String)>,
 ) -> Response {
-    let repo = match resolve_repo(&state, &tenant.tenant_id, &namespace, &repo_name).await {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
+    let repo = target.clone();
 
     match state
         .webhook_store
@@ -145,12 +142,10 @@ pub async fn list_webhooks(
 pub async fn delete_webhook(
     Extension(tenant): Extension<TenantContext>,
     State(state): State<Arc<GitState>>,
-    Path((namespace, repo_name, hook_id)): Path<(String, String, String)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _repo_name, hook_id)): Path<(String, String, String)>,
 ) -> Response {
-    let repo = match resolve_repo(&state, &tenant.tenant_id, &namespace, &repo_name).await {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
+    let repo = target.clone();
 
     // Verify the webhook belongs to this repo and tenant before deleting
     match state.webhook_store.get_webhook(&hook_id).await {

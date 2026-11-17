@@ -58,6 +58,12 @@ pub struct Repository {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Whether `value` is a namespace or repository name `Repository::new`
+/// accepts (the same rules, nothing looser).
+pub fn is_valid_repo_component(value: &str) -> bool {
+    validate_repo_component(value, "").is_ok()
+}
+
 /// Validate that a string is a valid repository namespace or name component.
 fn validate_repo_component(value: &str, label: &str) -> Result<(), MuliError> {
     if value.is_empty() {

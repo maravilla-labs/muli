@@ -14,8 +14,9 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::api::GitState;
-use crate::api::helpers::{error_response, resolve_repo};
+use crate::api::helpers::{error_response, repo_fs_path};
 use crate::api::pulls_diff::build_diff_from_git2_diff;
+use crate::repo_target::TargetRepo;
 use crate::tenant::TenantContext;
 
 #[derive(Debug, Deserialize)]
@@ -68,18 +69,13 @@ pub fn commit_to_info(commit: &git2::Commit, oid: &git2::Oid) -> CommitInfo {
 
 /// GET /api/v1/repos/{namespace}/{repo}/commits
 pub async fn list_commits(
-    Extension(tenant): Extension<TenantContext>,
+    Extension(_tenant): Extension<TenantContext>,
     State(state): State<Arc<GitState>>,
-    Path((namespace, repo_name)): Path<(String, String)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _repo_name)): Path<(String, String)>,
     Query(query): Query<CommitQuery>,
 ) -> Response {
-    if let Err(e) = resolve_repo(&state, &tenant.tenant_id, &namespace, &repo_name).await {
-        return e;
-    }
-
-    let repo_path = state
-        .storage
-        .repo_path(&tenant.tenant_id, &namespace, &repo_name);
+    let repo_path = repo_fs_path(&state, &target);
     let branch = query.branch.unwrap_or_else(|| "HEAD".to_string());
     let limit = query.limit.unwrap_or(20).min(500);
     let filter_path = query.path;
@@ -202,17 +198,12 @@ pub struct CommitDetail {
 
 /// GET /api/v1/repos/{namespace}/{repo}/commits/{sha}
 pub async fn get_commit(
-    Extension(tenant): Extension<TenantContext>,
+    Extension(_tenant): Extension<TenantContext>,
     State(state): State<Arc<GitState>>,
-    Path((namespace, repo_name, sha)): Path<(String, String, String)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _repo_name, sha)): Path<(String, String, String)>,
 ) -> Response {
-    if let Err(e) = resolve_repo(&state, &tenant.tenant_id, &namespace, &repo_name).await {
-        return e;
-    }
-
-    let path = state
-        .storage
-        .repo_path(&tenant.tenant_id, &namespace, &repo_name);
+    let path = repo_fs_path(&state, &target);
 
     let result = tokio::task::spawn_blocking(move || {
         let repo = git2::Repository::open_bare(&path).map_err(|e| e.to_string())?;
@@ -270,17 +261,12 @@ pub async fn get_commit(
 
 /// GET /api/v1/repos/{namespace}/{repo}/commits/{sha}/diff
 pub async fn get_commit_diff(
-    Extension(tenant): Extension<TenantContext>,
+    Extension(_tenant): Extension<TenantContext>,
     State(state): State<Arc<GitState>>,
-    Path((namespace, repo_name, sha)): Path<(String, String, String)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _repo_name, sha)): Path<(String, String, String)>,
 ) -> Response {
-    if let Err(e) = resolve_repo(&state, &tenant.tenant_id, &namespace, &repo_name).await {
-        return e;
-    }
-
-    let path = state
-        .storage
-        .repo_path(&tenant.tenant_id, &namespace, &repo_name);
+    let path = repo_fs_path(&state, &target);
 
     let result = tokio::task::spawn_blocking(move || {
         let repo = git2::Repository::open_bare(&path).map_err(|e| e.to_string())?;

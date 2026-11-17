@@ -8,6 +8,21 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Security
+- The HTTP service resolves the repository of a request ONCE
+  (`repo_target`): the auth middleware authorizes against it and every
+  handler (git smart HTTP, LFS, REST) serves it; nothing derives a
+  repository from the path again. Before, the middleware stripped every
+  trailing `.git` from the raw path while handlers stripped one from the
+  percent-decoded path, so `/{ns}/x.git.git/...` was authorized against `x`
+  and served from `x.git`, and a path the middleware could not resolve
+  (`/{ns}/%79/...` for `y`, or REST `/api/v1/repos/{ns}/y.git/...` for `y`)
+  skipped the per-repository check while the handler served the repository.
+  A path that names a repository which cannot be resolved is now refused
+  (404 after authentication; a repository-scoped token gets 403 for every
+  repository that is not its own). Percent-encoded, dotted, empty or
+  otherwise invalid repository components are never decoded into a
+  repository. LFS hrefs name the resolved repository (a repository named
+  `app.git` is `app.git.git` on the wire), also in `git-lfs-authenticate`.
 - Git LFS objects belong to repositories. Bytes stay stored once per tenant,
   but batch, download and verify answer only for oids indexed for the
   repository in the request path (new `lfs_repo_objects` table); an object
@@ -24,6 +39,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   downloads are issued only after the ownership check.
 
 ### Changed
+- REST paths name a repository verbatim: `/api/v1/repos/{ns}/x.git/...` is
+  the repository named `x.git` (it used to look up `x` and read files of
+  `x.git`). Git transport paths drop exactly one `.git` (`x.git` = `x`,
+  `x.git.git` = `x.git`).
 - Forks inherit their parent's LFS objects; deleting a repository drops its
   index rows. A repository copied by push owns its LFS objects once they are
   uploaded to it (`git lfs push --all`).

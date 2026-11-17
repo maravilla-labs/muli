@@ -28,9 +28,10 @@ use muli_core::git::WebhookEvent;
 use muli_core::pr::{NewPullRequest, PrState, PullRequest};
 
 use crate::api::GitState;
-use crate::api::helpers::{error_response, resolve_repo_full};
+use crate::api::helpers::{error_response, repo_fs_path};
 use crate::api::pulls_merge::{MergeError, perform_merge};
 use crate::auth::AuthenticatedUser;
+use crate::repo_target::TargetRepo;
 use crate::tenant::TenantContext;
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -45,14 +46,15 @@ pub async fn create_pr(
     Extension(tenant): Extension<TenantContext>,
     Extension(auth_user): Extension<AuthenticatedUser>,
     State(state): State<Arc<GitState>>,
-    Path((namespace, raw_repo)): Path<(String, String)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _raw_repo)): Path<(String, String)>,
     Json(req): Json<CreatePrRequest>,
 ) -> Response {
-    let (repo_id, _, _) =
-        match resolve_repo_full(&state, &tenant.tenant_id, &namespace, &raw_repo).await {
-            Ok(r) => r,
-            Err(e) => return e,
-        };
+    let (repo_id, _, _) = (
+        target.id.clone(),
+        target.name.clone(),
+        repo_fs_path(&state, &target),
+    );
 
     if req.source_branch.is_empty() || req.target_branch.is_empty() || req.title.is_empty() {
         return error_response(
@@ -116,16 +118,17 @@ pub async fn create_pr(
 
 /// GET /api/v1/repos/{namespace}/{repo}/pulls
 pub async fn list_prs(
-    Extension(tenant): Extension<TenantContext>,
+    Extension(_tenant): Extension<TenantContext>,
     State(state): State<Arc<GitState>>,
-    Path((namespace, raw_repo)): Path<(String, String)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _raw_repo)): Path<(String, String)>,
     Query(query): Query<ListPrsQuery>,
 ) -> Response {
-    let (repo_id, _, _) =
-        match resolve_repo_full(&state, &tenant.tenant_id, &namespace, &raw_repo).await {
-            Ok(r) => r,
-            Err(e) => return e,
-        };
+    let (repo_id, _, _) = (
+        target.id.clone(),
+        target.name.clone(),
+        repo_fs_path(&state, &target),
+    );
 
     let state_filter = query.state.as_deref().and_then(parse_pr_state);
 
@@ -143,15 +146,16 @@ pub async fn list_prs(
 
 /// GET /api/v1/repos/{namespace}/{repo}/pulls/{number}
 pub async fn get_pr(
-    Extension(tenant): Extension<TenantContext>,
+    Extension(_tenant): Extension<TenantContext>,
     State(state): State<Arc<GitState>>,
-    Path((namespace, raw_repo, number)): Path<(String, String, u64)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _raw_repo, number)): Path<(String, String, u64)>,
 ) -> Response {
-    let (repo_id, _, _) =
-        match resolve_repo_full(&state, &tenant.tenant_id, &namespace, &raw_repo).await {
-            Ok(r) => r,
-            Err(e) => return e,
-        };
+    let (repo_id, _, _) = (
+        target.id.clone(),
+        target.name.clone(),
+        repo_fs_path(&state, &target),
+    );
 
     match state.pr_store.get_pr_by_number(&repo_id, number).await {
         Ok(Some(pr)) => Json(PrResponse::from(pr)).into_response(),
@@ -167,14 +171,15 @@ pub async fn get_pr(
 pub async fn patch_pr(
     Extension(tenant): Extension<TenantContext>,
     State(state): State<Arc<GitState>>,
-    Path((namespace, raw_repo, number)): Path<(String, String, u64)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _raw_repo, number)): Path<(String, String, u64)>,
     Json(req): Json<PatchPrRequest>,
 ) -> Response {
-    let (repo_id, _repo_name, repo_path) =
-        match resolve_repo_full(&state, &tenant.tenant_id, &namespace, &raw_repo).await {
-            Ok(r) => r,
-            Err(e) => return e,
-        };
+    let (repo_id, _repo_name, repo_path) = (
+        target.id.clone(),
+        target.name.clone(),
+        repo_fs_path(&state, &target),
+    );
 
     let mut pr = match state.pr_store.get_pr_by_number(&repo_id, number).await {
         Ok(Some(pr)) => pr,

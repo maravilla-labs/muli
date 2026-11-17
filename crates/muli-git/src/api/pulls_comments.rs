@@ -17,8 +17,9 @@ use serde_json::json;
 use muli_core::pr::PrComment;
 
 use crate::api::GitState;
-use crate::api::helpers::{error_response, resolve_repo_full};
+use crate::api::helpers::{error_response, repo_fs_path};
 use crate::auth::AuthenticatedUser;
+use crate::repo_target::TargetRepo;
 use crate::tenant::TenantContext;
 
 const MAX_COMMENT_BODY: usize = 65536;
@@ -67,17 +68,18 @@ impl From<PrComment> for CommentResponse {
 
 /// POST /api/v1/repos/{namespace}/{repo}/pulls/{number}/comments
 pub async fn add_comment(
-    Extension(tenant): Extension<TenantContext>,
+    Extension(_tenant): Extension<TenantContext>,
     Extension(auth_user): Extension<AuthenticatedUser>,
     State(state): State<Arc<GitState>>,
-    Path((namespace, raw_repo, number)): Path<(String, String, u64)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _raw_repo, number)): Path<(String, String, u64)>,
     Json(req): Json<CreateCommentRequest>,
 ) -> Response {
-    let (repo_id, _, _) =
-        match resolve_repo_full(&state, &tenant.tenant_id, &namespace, &raw_repo).await {
-            Ok(r) => r,
-            Err(e) => return e,
-        };
+    let (repo_id, _, _) = (
+        target.id.clone(),
+        target.name.clone(),
+        repo_fs_path(&state, &target),
+    );
 
     let pr = match state.pr_store.get_pr_by_number(&repo_id, number).await {
         Ok(Some(pr)) => pr,
@@ -133,15 +135,16 @@ pub async fn add_comment(
 
 /// GET /api/v1/repos/{namespace}/{repo}/pulls/{number}/comments
 pub async fn list_comments(
-    Extension(tenant): Extension<TenantContext>,
+    Extension(_tenant): Extension<TenantContext>,
     State(state): State<Arc<GitState>>,
-    Path((namespace, raw_repo, number)): Path<(String, String, u64)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _raw_repo, number)): Path<(String, String, u64)>,
 ) -> Response {
-    let (repo_id, _, _) =
-        match resolve_repo_full(&state, &tenant.tenant_id, &namespace, &raw_repo).await {
-            Ok(r) => r,
-            Err(e) => return e,
-        };
+    let (repo_id, _, _) = (
+        target.id.clone(),
+        target.name.clone(),
+        repo_fs_path(&state, &target),
+    );
 
     let pr = match state.pr_store.get_pr_by_number(&repo_id, number).await {
         Ok(Some(pr)) => pr,

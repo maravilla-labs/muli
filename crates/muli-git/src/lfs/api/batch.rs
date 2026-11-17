@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use axum::{
     Extension, Json,
-    extract::{Path, State},
+    extract::State,
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
@@ -19,6 +19,7 @@ use crate::lfs::types::{
     self, APPLICATION_VND_GIT_LFS_JSON, Action, Actions, BatchRequest, BatchResponse, ObjectError,
     ObjectResponse, Operation,
 };
+use crate::repo_target::TargetRepo;
 use crate::tenant::TenantContext;
 
 // `authenticated: true` tells git-lfs the action hrefs need no credentials, so it
@@ -36,17 +37,23 @@ const NOT_FOUND_MESSAGE: &str = "Not found";
 /// POST `/{namespace}/{repo}/info/lfs/objects/batch`
 pub async fn batch(
     State(state): State<Arc<GitState>>,
-    Extension(tenant): Extension<TenantContext>,
-    Path((namespace, raw_repo)): Path<(String, String)>,
+    Extension(_tenant): Extension<TenantContext>,
+    TargetRepo(target): TargetRepo,
     headers: HeaderMap,
     Json(req): Json<BatchRequest>,
 ) -> Response {
-    let repo = match resolve(&state, &tenant.tenant_id, &namespace, &raw_repo).await {
+    let repo = match resolve(&state, &target) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
 
-    let base_url = build_base_url(state.public_url.as_deref(), &headers, &namespace, &raw_repo);
+    // Hrefs name the resolved repository, never echo the request path.
+    let base_url = build_base_url(
+        state.public_url.as_deref(),
+        &headers,
+        &target.namespace,
+        &target.name,
+    );
 
     let mut objects = Vec::with_capacity(req.objects.len());
 
@@ -234,12 +241,12 @@ fn build_base_url(
     public_url: Option<&str>,
     headers: &HeaderMap,
     namespace: &str,
-    raw_repo: &str,
+    name: &str,
 ) -> String {
     if let Some(public_url) = public_url {
         return format!(
             "{}/objects",
-            crate::lfs::lfs_endpoint(public_url, namespace, raw_repo)
+            crate::lfs::lfs_endpoint(public_url, namespace, name)
         );
     }
     let scheme = if headers
@@ -256,7 +263,7 @@ fn build_base_url(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("localhost");
 
-    format!("{scheme}://{host}/{namespace}/{raw_repo}/info/lfs/objects")
+    format!("{scheme}://{host}/{namespace}/{name}.git/info/lfs/objects")
 }
 
 fn error_object(oid: &str, size: u64, e: &LfsStorageError) -> ObjectResponse {
@@ -290,7 +297,7 @@ mod tests {
                 Some("https://git.example.com"),
                 &gateway_headers(),
                 "acme",
-                "site.git"
+                "site"
             ),
             "https://git.example.com/acme/site.git/info/lfs/objects"
         );
@@ -299,7 +306,7 @@ mod tests {
     #[test]
     fn base_url_falls_back_to_host_header() {
         assert_eq!(
-            build_base_url(None, &gateway_headers(), "acme", "site.git"),
+            build_base_url(None, &gateway_headers(), "acme", "site"),
             "https://local.git.example.com/acme/site.git/info/lfs/objects"
         );
     }

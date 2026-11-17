@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::api::GitState;
-use crate::api::helpers::{error_response, resolve_repo, validate_ref_name};
+use crate::api::helpers::{error_response, repo_fs_path, validate_ref_name};
+use crate::repo_target::TargetRepo;
 use crate::tenant::TenantContext;
 
 #[derive(Debug, Serialize)]
@@ -28,17 +29,12 @@ pub struct RefInfo {
 
 /// GET /api/v1/repos/{namespace}/{repo}/refs
 pub async fn list_refs(
-    Extension(tenant): Extension<TenantContext>,
+    Extension(_tenant): Extension<TenantContext>,
     State(state): State<Arc<GitState>>,
-    Path((namespace, repo_name)): Path<(String, String)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _repo_name)): Path<(String, String)>,
 ) -> Response {
-    if let Err(e) = resolve_repo(&state, &tenant.tenant_id, &namespace, &repo_name).await {
-        return e;
-    }
-
-    let path = state
-        .storage
-        .repo_path(&tenant.tenant_id, &namespace, &repo_name);
+    let path = repo_fs_path(&state, &target);
 
     let result = tokio::task::spawn_blocking(move || {
         let repo = git2::Repository::open_bare(&path).map_err(|e| e.to_string())?;
@@ -93,22 +89,17 @@ pub struct CreateBranchRequest {
 
 /// POST /api/v1/repos/{namespace}/{repo}/branches
 pub async fn create_branch(
-    Extension(tenant): Extension<TenantContext>,
+    Extension(_tenant): Extension<TenantContext>,
     State(state): State<Arc<GitState>>,
-    Path((namespace, repo_name)): Path<(String, String)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _repo_name)): Path<(String, String)>,
     Json(body): Json<CreateBranchRequest>,
 ) -> Response {
     if !validate_ref_name(&body.name) {
         return error_response(StatusCode::BAD_REQUEST, "invalid branch name");
     }
 
-    if let Err(e) = resolve_repo(&state, &tenant.tenant_id, &namespace, &repo_name).await {
-        return e;
-    }
-
-    let path = state
-        .storage
-        .repo_path(&tenant.tenant_id, &namespace, &repo_name);
+    let path = repo_fs_path(&state, &target);
     let name = body.name.clone();
     let from_ref = body.from_ref.clone();
 

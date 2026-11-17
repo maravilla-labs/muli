@@ -16,7 +16,8 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::api::GitState;
-use crate::api::helpers::resolve_repo_full;
+use crate::api::helpers::repo_fs_path;
+use crate::repo_target::TargetRepo;
 use crate::tenant::TenantContext;
 
 // ── Diff types ───────────────────────────────────────────────────────────────
@@ -194,15 +195,16 @@ pub fn build_diff_from_git2_diff(diff: &git2::Diff<'_>) -> Result<Vec<DiffFile>,
 
 /// GET /api/v1/repos/{namespace}/{repo}/pulls/{number}/diff
 pub async fn get_pr_diff(
-    Extension(tenant): Extension<TenantContext>,
+    Extension(_tenant): Extension<TenantContext>,
     State(state): State<Arc<GitState>>,
-    Path((namespace, raw_repo, number)): Path<(String, String, u64)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _raw_repo, number)): Path<(String, String, u64)>,
 ) -> Response {
-    let (repo_id, _, repo_path) =
-        match resolve_repo_full(&state, &tenant.tenant_id, &namespace, &raw_repo).await {
-            Ok(r) => r,
-            Err(e) => return e,
-        };
+    let (repo_id, _, repo_path) = (
+        target.id.clone(),
+        target.name.clone(),
+        repo_fs_path(&state, &target),
+    );
 
     let pr = match state.pr_store.get_pr_by_number(&repo_id, number).await {
         Ok(Some(pr)) => pr,

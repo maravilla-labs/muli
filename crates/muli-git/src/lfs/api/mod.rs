@@ -4,8 +4,8 @@
 //! LFS HTTP API route handlers.
 //!
 //! Objects are stored once per tenant (content-addressed), but they BELONG to
-//! repositories: every handler resolves the repository named in the path and
-//! answers only for oids the LFS object index holds for it. An oid stored for
+//! repositories: every handler works on the repository the request was
+//! resolved and authorized against (`crate::repo_target`) and answers only for oids the LFS object index holds for it. An oid stored for
 //! another repository gets exactly the answer of an oid stored nowhere, so
 //! the API is no existence oracle across repositories.
 
@@ -20,13 +20,13 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
+use muli_core::git::Repository;
 use muli_core::traits::LfsObjectStore;
 
 pub use batch::batch;
 pub use transfer::{download, upload, verify};
 
 use crate::api::GitState;
-use crate::api::helpers::strip_git_suffix;
 use crate::lfs::storage::LfsStorage;
 use crate::lfs::types::APPLICATION_VND_GIT_LFS_JSON;
 
@@ -52,38 +52,19 @@ impl LfsRepo<'_> {
     }
 }
 
-/// Resolve the LFS backend and the repository named in the path, or the
-/// response to send instead (LFS disabled, unknown repository, store error).
-pub(crate) async fn resolve<'a>(
-    state: &'a GitState,
-    tenant_id: &str,
-    namespace: &str,
-    raw_repo: &str,
-) -> Result<LfsRepo<'a>, Response> {
+/// The LFS backend and the repository the request was resolved and
+/// authorized against (`repo_target_middleware`), or the response to send
+/// instead (LFS disabled). The path is never parsed here.
+#[allow(clippy::result_large_err)] // a Response, built once per request
+pub(crate) fn resolve<'a>(state: &'a GitState, repo: &Repository) -> Result<LfsRepo<'a>, Response> {
     let (Some(storage), Some(objects)) = (&state.lfs_storage, &state.lfs_objects) else {
         return Err(lfs_error(StatusCode::NOT_FOUND, "LFS is not enabled"));
-    };
-    let name = strip_git_suffix(raw_repo);
-    let repo = match state
-        .repo_store
-        .get_repository_by_name(tenant_id, namespace, name)
-        .await
-    {
-        Ok(Some(r)) => r,
-        Ok(None) => return Err(lfs_error(StatusCode::NOT_FOUND, "repository not found")),
-        Err(e) => {
-            tracing::error!(error = %e, "LFS repository lookup failed");
-            return Err(lfs_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "repository lookup failed",
-            ));
-        }
     };
     Ok(LfsRepo {
         storage,
         objects,
-        tenant_id: tenant_id.to_string(),
-        repo_id: repo.id,
+        tenant_id: repo.tenant_id.clone(),
+        repo_id: repo.id.clone(),
     })
 }
 

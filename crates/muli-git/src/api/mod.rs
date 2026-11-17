@@ -271,6 +271,7 @@ pub fn git_router(cfg: GitRouterConfig) -> Router {
             get(lfs::api::download).put(lfs::api::upload),
         );
 
+    let target_repo_store = state.repo_store.clone();
     let mut app = Router::new()
         .merge(git_protocol)
         .merge(rest_api)
@@ -282,6 +283,13 @@ pub fn git_router(cfg: GitRouterConfig) -> Router {
             .layer(axum::middleware::from_fn(crate::auth::auth_middleware))
             .layer(axum::Extension(git_auth));
     }
+
+    // Outside auth (it runs first), inside the tenant layer (it needs the
+    // tenant): the one place the request's repository is resolved.
+    app = app.layer(axum::middleware::from_fn_with_state(
+        target_repo_store,
+        crate::repo_target::repo_target_middleware,
+    ));
 
     app = app
         .layer(axum::middleware::from_fn(crate::tenant::tenant_middleware))

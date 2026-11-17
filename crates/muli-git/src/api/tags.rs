@@ -15,7 +15,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::api::GitState;
-use crate::api::helpers::{error_response, resolve_repo, validate_ref_name};
+use crate::api::helpers::{error_response, repo_fs_path, validate_ref_name};
+use crate::repo_target::TargetRepo;
 use crate::tenant::TenantContext;
 
 #[derive(Debug, Deserialize)]
@@ -28,21 +29,16 @@ pub struct CreateTagRequest {
 /// POST /api/v1/repos/{namespace}/{repo}/tags
 pub async fn create_tag(
     State(state): State<Arc<GitState>>,
-    Extension(tenant): Extension<TenantContext>,
-    Path((namespace, repo_name)): Path<(String, String)>,
+    Extension(_tenant): Extension<TenantContext>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _repo_name)): Path<(String, String)>,
     Json(req): Json<CreateTagRequest>,
 ) -> Response {
     if !validate_ref_name(&req.name) {
         return error_response(StatusCode::BAD_REQUEST, "invalid tag name");
     }
 
-    if let Err(e) = resolve_repo(&state, &tenant.tenant_id, &namespace, &repo_name).await {
-        return e;
-    }
-
-    let path = state
-        .storage
-        .repo_path(&tenant.tenant_id, &namespace, &repo_name);
+    let path = repo_fs_path(&state, &target);
     let name = req.name.clone();
     let target = req.target.clone();
     let message = req.message.clone();
@@ -87,16 +83,11 @@ pub async fn create_tag(
 /// DELETE /api/v1/repos/{namespace}/{repo}/tags/{tag}
 pub async fn delete_tag(
     State(state): State<Arc<GitState>>,
-    Extension(tenant): Extension<TenantContext>,
-    Path((namespace, repo_name, tag)): Path<(String, String, String)>,
+    Extension(_tenant): Extension<TenantContext>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _repo_name, tag)): Path<(String, String, String)>,
 ) -> Response {
-    if let Err(e) = resolve_repo(&state, &tenant.tenant_id, &namespace, &repo_name).await {
-        return e;
-    }
-
-    let path = state
-        .storage
-        .repo_path(&tenant.tenant_id, &namespace, &repo_name);
+    let path = repo_fs_path(&state, &target);
 
     let result = tokio::task::spawn_blocking(move || -> Result<(), git2::Error> {
         let repo = git2::Repository::open_bare(&path)?;

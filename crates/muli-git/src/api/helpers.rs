@@ -82,47 +82,12 @@ pub fn validate_ref_name(name: &str) -> bool {
         && !name.chars().any(|c| c.is_ascii_control() || c == ' ')
 }
 
-/// Look up the repository and return its record.
-/// Returns an error Response on failure.
-pub async fn resolve_repo(
-    state: &GitState,
-    tenant_id: &str,
-    namespace: &str,
-    raw_repo: &str,
-) -> Result<Repository, Response> {
-    let repo_name = strip_git_suffix(raw_repo);
-    match state
-        .repo_store
-        .get_repository_by_name(tenant_id, namespace, repo_name)
-        .await
-    {
-        Ok(Some(repo)) => Ok(repo),
-        Ok(None) => Err(error_response(
-            StatusCode::NOT_FOUND,
-            "repository not found",
-        )),
-        Err(e) => {
-            tracing::error!(error = %e, "failed to look up repository");
-            Err(error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal error",
-            ))
-        }
-    }
-}
-
-/// Look up the repository and return (repo_id, repo_name, repo_path).
-/// Returns an error Response on failure.
-pub async fn resolve_repo_full(
-    state: &GitState,
-    tenant_id: &str,
-    namespace: &str,
-    raw_repo: &str,
-) -> Result<(String, String, std::path::PathBuf), Response> {
-    let repo_name = strip_git_suffix(raw_repo).to_string();
-    let repo = resolve_repo(state, tenant_id, namespace, raw_repo).await?;
-    let path = state.storage.repo_path(tenant_id, namespace, &repo_name);
-    Ok((repo.id, repo_name, path))
+/// Filesystem path of a repository resolved by `repo_target_middleware`.
+/// Handlers never build a repository path from request path parameters.
+pub fn repo_fs_path(state: &GitState, repo: &Repository) -> std::path::PathBuf {
+    state
+        .storage
+        .repo_path(&repo.tenant_id, &repo.namespace, &repo.name)
 }
 
 // ---------------------------------------------------------------------------

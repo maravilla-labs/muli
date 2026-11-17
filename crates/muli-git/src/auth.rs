@@ -24,6 +24,7 @@ use muli_core::traits::{
     CollaboratorStore, GitTokenStore, OrgMemberStore, OrgStore, RepositoryStore,
 };
 
+use crate::repo_target::{self, RepoPathKind, RepoTarget};
 use crate::tenant::TenantContext;
 
 /// Authenticated user context, injected into request extensions by the auth middleware.
@@ -36,6 +37,8 @@ pub struct AuthenticatedUser {
 #[derive(Clone)]
 pub struct GitAuth {
     pub token_store: Arc<dyn GitTokenStore>,
+    /// Unused by the HTTP middleware since the router resolves the request's
+    /// repository itself (`crate::repo_target`); kept for API compatibility.
     pub repo_store: Option<Arc<dyn RepositoryStore>>,
     pub collaborator_store: Option<Arc<dyn CollaboratorStore>>,
     pub org_store: Option<Arc<dyn OrgStore>>,
@@ -122,25 +125,6 @@ fn required_permission(method: &Method, path: &str, query: Option<&str>) -> GitP
         Method::DELETE => GitPermission::Admin,
         _ => GitPermission::Push,
     }
-}
-
-/// Extract (namespace, repo_name) from paths like:
-/// /{namespace}/{repo}.git/...  or /api/v1/repos/{namespace}/{repo}/...
-fn extract_repo_from_path(path: &str) -> Option<(&str, &str)> {
-    // REST API path: /api/v1/repos/{namespace}/{repo}
-    if let Some(rest) = path.strip_prefix("/api/v1/repos/") {
-        let parts: Vec<&str> = rest.splitn(3, '/').collect();
-        if parts.len() >= 2 {
-            return Some((parts[0], parts[1]));
-        }
-    }
-    // Git smart HTTP: /{namespace}/{repo}.git/...
-    let parts: Vec<&str> = path.trim_start_matches('/').splitn(3, '/').collect();
-    if parts.len() >= 2 {
-        let repo_name = parts[1].trim_end_matches(".git");
-        return Some((parts[0], repo_name));
-    }
-    None
 }
 
 pub async fn auth_middleware(mut request: Request, next: Next) -> Response {
@@ -277,16 +261,24 @@ pub async fn auth_middleware(mut request: Request, next: Next) -> Response {
         .map(|t| t.tenant_id.as_str())
         .unwrap_or("");
 
-    // The repository the request is about, when the path names one that
-    // exists in this tenant.
-    let repo = match (&auth.repo_store, extract_repo_from_path(&path)) {
-        (Some(repo_store), Some((namespace, repo_name))) if !tenant_id_str.is_empty() => repo_store
-            .get_repository_by_name(tenant_id_str, namespace, repo_name)
-            .await
-            .ok()
-            .flatten(),
-        _ => None,
-    };
+    // The repository the request is about, resolved ONCE by
+    // `repo_target_middleware`; handlers serve exactly this repository. If
+    // that middleware did not run, a path naming a repository is refused.
+    let target = request
+        .extensions()
+        .get::<RepoTarget>()
+        .cloned()
+        .unwrap_or_else(|| match repo_target::parse(&path).kind() {
+            Some(kind) => RepoTarget::Unresolved { kind },
+            None => RepoTarget::None,
+        });
+    let repo = target.repo().cloned();
+    // The endpoints of ONE repository a repository-scoped token may use, each
+    // gated by the token's permissions as usual: git smart HTTP (`info/refs`,
+    // `git-upload-pack`, `git-receive-pack`) and Git LFS
+    // (`info/lfs/objects/batch`, `.../verify`, `.../{oid}`). Not the REST
+    // API, not admin. Same grammar as the resolver (`repo_target::parse`).
+    let is_transport = target.kind() == Some(RepoPathKind::Transport);
 
     // A repository-scoped token reaches exactly its repository, and only
     // through the git smart HTTP endpoints (fetch, and push if it carries
@@ -299,9 +291,18 @@ pub async fn auth_middleware(mut request: Request, next: Next) -> Response {
         if !repo_scope_allows(scope, repo.as_ref().map(|r| r.id.as_str())) {
             return forbidden_response("token is restricted to another repository");
         }
-        if !is_git_transport(&path) || required == GitPermission::Admin {
+        if !is_transport || required == GitPermission::Admin {
             return forbidden_response("token is restricted to git fetch and push");
         }
+    }
+
+    // A path that names a repository which cannot be resolved is refused
+    // (never treated as "no repository", which would skip the checks below).
+    // Only after authentication, so an anonymous caller learns nothing, and
+    // after the scope check, so a repository-scoped token gets the same 403
+    // for every repository that is not its own, existing or not.
+    if let RepoTarget::Unresolved { .. } = target {
+        return not_found_response();
     }
 
     // Per-repo ACL check:
@@ -315,7 +316,7 @@ pub async fn auth_middleware(mut request: Request, next: Next) -> Response {
         if let Some(token) = token.as_ref()
             && matches!(required, GitPermission::Pull | GitPermission::Push)
             && token.repo_id.as_deref() == Some(repo.id.as_str())
-            && is_git_transport(&path)
+            && is_transport
             && token.is_valid()
             && token.tenant_id == tenant_id_str
             && token.has_permission(required)
@@ -397,22 +398,6 @@ pub(crate) fn lfs_batch_permission(body: &[u8]) -> GitPermission {
     }
 }
 
-/// The endpoints of ONE repository a repository-scoped token may use, each
-/// gated by the token's permissions as usual: git smart HTTP
-/// (`info/refs`, `git-upload-pack`, `git-receive-pack`) and Git LFS
-/// (`info/lfs/objects/batch`, `.../verify`, `.../{oid}` download/upload).
-/// Not the REST API, not admin. Pure.
-pub(crate) fn is_git_transport(path: &str) -> bool {
-    let Some(parts) = repo_path_parts(path) else {
-        return false;
-    };
-    match &parts[2..] {
-        ["info", "refs"] | ["git-upload-pack"] | ["git-receive-pack"] => true,
-        ["info", "lfs", "objects", object] => !object.is_empty(),
-        _ => false,
-    }
-}
-
 /// Whether a token scoped to repository `scope` may serve a request about
 /// `resolved` (the id of the repository the path names, if any). Only an
 /// exact match; no repository at all is a refusal. Pure.
@@ -428,6 +413,14 @@ fn unauthorized_response() -> Response {
         StatusCode::UNAUTHORIZED,
         [("WWW-Authenticate", "Basic realm=\"muli-git\"")],
         Json(body),
+    )
+        .into_response()
+}
+
+fn not_found_response() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({ "error": "repository not found" })),
     )
         .into_response()
 }

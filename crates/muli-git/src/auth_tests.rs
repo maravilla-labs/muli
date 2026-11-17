@@ -103,30 +103,6 @@ fn extract_basic_valid() {
 }
 
 #[test]
-fn extract_repo_from_path_git_http() {
-    assert_eq!(
-        extract_repo_from_path("/acme/my-repo.git/info/refs"),
-        Some(("acme", "my-repo"))
-    );
-}
-
-#[test]
-fn extract_repo_from_path_rest_api() {
-    assert_eq!(
-        extract_repo_from_path("/api/v1/repos/acme/my-repo"),
-        Some(("acme", "my-repo"))
-    );
-}
-
-#[test]
-fn extract_repo_from_path_rest_api_with_suffix() {
-    assert_eq!(
-        extract_repo_from_path("/api/v1/repos/acme/my-repo/branches"),
-        Some(("acme", "my-repo"))
-    );
-}
-
-#[test]
 fn repo_scope_allows_only_its_own_repository() {
     assert!(repo_scope_allows("repo-1", Some("repo-1")));
     assert!(
@@ -168,11 +144,22 @@ fn only_git_smart_http_paths_are_git_transport() {
         "/acme/repo.git",
         "/acme/repo.git/HEAD",
         "/info/refs",
-        "//repo/info/refs",
         "/a/b/c/info/refs",
     ] {
         assert!(!is_git_transport(no), "{no}");
     }
+    // Transport-shaped with an invalid repository: still transport (and
+    // unresolvable, so refused), never "no repository".
+    assert_eq!(
+        crate::repo_target::parse("//repo/info/refs"),
+        crate::repo_target::RepoPath::Invalid {
+            kind: RepoPathKind::Transport
+        }
+    );
+}
+
+fn is_git_transport(path: &str) -> bool {
+    crate::repo_target::parse(path).kind() == Some(RepoPathKind::Transport)
 }
 
 #[test]
