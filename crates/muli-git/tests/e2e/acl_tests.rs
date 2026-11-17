@@ -375,9 +375,9 @@ async fn test_http_private_repo_read_denied_for_wrong_repo_scoped_token() {
     );
 }
 
-/// Private repo: a repo-scoped token must not bypass write ACL even if the token carries Push.
+/// Private repo: a repo-scoped token WITHOUT Push cannot push to its repo.
 #[tokio::test]
-async fn test_http_private_repo_push_denied_for_repo_scoped_token_without_user() {
+async fn test_http_private_repo_push_denied_for_pull_only_repo_scoped_token() {
     if !git_available() {
         eprintln!("SKIP: git binary not found");
         return;
@@ -388,20 +388,15 @@ async fn test_http_private_repo_push_denied_for_repo_scoped_token_without_user()
 
     create_http_repo(&srv, repo_name, true, Some("user-1")).await;
 
-    let (token, _) = create_repo_scoped_token(
-        &srv,
-        repo_name,
-        vec![GitPermission::Pull, GitPermission::Push],
-        None,
-    )
-    .await;
+    let (token, _) =
+        create_repo_scoped_token(&srv, repo_name, vec![GitPermission::Pull], None).await;
 
     let url = git_url_with_token(&srv.http, NAMESPACE, repo_name, &token);
     let clone_dir = TempDir::new().unwrap();
     let clone_status = git_status(clone_dir.path(), &["clone", "--no-local", &url, "."]).await;
     assert!(
         clone_status.success(),
-        "clone should succeed before push is denied: {clone_status}"
+        "clone should succeed: {clone_status}"
     );
 
     git(clone_dir.path(), &["config", "user.email", "ci@muli.test"]).await;
@@ -417,7 +412,110 @@ async fn test_http_private_repo_push_denied_for_repo_scoped_token_without_user()
     .await;
     assert!(
         !push_status.success(),
-        "push should fail for repo-scoped token without user identity"
+        "push should fail for a pull-only repo-scoped token"
+    );
+}
+
+/// Private repo: a repo-scoped Pull+Push token pushes to its own repository
+/// (no user), and nowhere else.
+#[tokio::test]
+async fn test_http_repo_scoped_push_token_pushes_to_its_repository_only() {
+    if !git_available() {
+        eprintln!("SKIP: git binary not found");
+        return;
+    }
+
+    let srv = start_server_with_acl().await;
+    create_http_repo(&srv, "scoped-push-own", true, Some("user-1")).await;
+    create_http_repo(&srv, "scoped-push-other", true, Some("user-1")).await;
+
+    let (token, _) = create_repo_scoped_token(
+        &srv,
+        "scoped-push-own",
+        vec![GitPermission::Pull, GitPermission::Push],
+        None,
+    )
+    .await;
+
+    // Push to its own repository.
+    let url = git_url_with_token(&srv.http, NAMESPACE, "scoped-push-own", &token);
+    let dir = TempDir::new().unwrap();
+    assert!(
+        git_status(dir.path(), &["clone", "--no-local", &url, "."])
+            .await
+            .success()
+    );
+    git(dir.path(), &["config", "user.email", "ci@muli.test"]).await;
+    git(dir.path(), &["config", "user.name", "Repo Scoped"]).await;
+    std::fs::write(dir.path().join("ok.txt"), "pushed\n").unwrap();
+    git(dir.path(), &["add", "ok.txt"]).await;
+    git(dir.path(), &["commit", "-m", "scoped push"]).await;
+    let pushed = git_status(dir.path(), &["push", "origin", "main"]).await;
+    assert!(pushed.success(), "push to its own repo: {pushed}");
+
+    // The same commit to another repository: refused.
+    let other = git_url_with_token(&srv.http, NAMESPACE, "scoped-push-other", &token);
+    let refused = git_status(dir.path(), &["push", "--force", &other, "main"]).await;
+    assert!(!refused.success(), "push to another repository must fail");
+
+    // Neither the REST API (read or write) nor admin on its own repository.
+    for path in [
+        format!("/api/v1/repos/{NAMESPACE}/scoped-push-own/refs"),
+        format!("/api/v1/repos/{NAMESPACE}/scoped-push-own/commits"),
+        "/api/v1/repos".to_string(),
+    ] {
+        assert_eq!(get_with(&srv, &path, &token).await, 403, "{path}");
+    }
+    let status = reqwest::Client::new()
+        .delete(format!(
+            "http://127.0.0.1:{}/api/v1/repos/{NAMESPACE}/scoped-push-own",
+            srv.http.addr.port()
+        ))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .expect("HTTP request")
+        .status()
+        .as_u16();
+    assert_eq!(status, 403, "delete (admin)");
+}
+
+/// Expired, revoked and other-tenant Pull+Push scoped tokens cannot push.
+#[tokio::test]
+async fn test_invalid_repo_scoped_push_tokens_are_refused() {
+    if !git_available() {
+        eprintln!("SKIP: git binary not found");
+        return;
+    }
+    let srv = start_server_with_acl().await;
+    let repo = "scoped-push-invalid";
+    create_http_repo(&srv, repo, true, Some("user-1")).await;
+    let receive = format!("/{NAMESPACE}/{repo}.git/info/refs?service=git-receive-pack");
+    let past = Some(chrono::Utc::now() - chrono::Duration::minutes(1));
+    let both = vec![GitPermission::Pull, GitPermission::Push];
+    let cases = [
+        (
+            "expired",
+            create_scoped_token_with(&srv, TENANT, repo, both.clone(), past, false).await,
+        ),
+        (
+            "revoked",
+            create_scoped_token_with(&srv, TENANT, repo, both.clone(), None, true).await,
+        ),
+        (
+            "other tenant",
+            create_scoped_token_with(&srv, "tenant-b", repo, both.clone(), None, false).await,
+        ),
+    ];
+    for (what, token) in cases {
+        let status = get_with(&srv, &receive, &token).await;
+        assert!(status == 401 || status == 403, "{what}: {status}");
+    }
+    let ok = create_scoped_token_with(&srv, TENANT, repo, both, None, false).await;
+    assert_eq!(
+        get_with(&srv, &receive, &ok).await,
+        200,
+        "a valid one advertises receive-pack"
     );
 }
 
@@ -493,6 +591,25 @@ async fn create_scoped_token_in(
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
     revoked: bool,
 ) -> String {
+    create_scoped_token_with(
+        srv,
+        tenant,
+        repo_name,
+        vec![GitPermission::Pull],
+        expires_at,
+        revoked,
+    )
+    .await
+}
+
+async fn create_scoped_token_with(
+    srv: &TestServerWithAcl,
+    tenant: &str,
+    repo_name: &str,
+    permissions: Vec<GitPermission>,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    revoked: bool,
+) -> String {
     let repo = srv
         .http
         .repo_store
@@ -505,7 +622,7 @@ async fn create_scoped_token_in(
         tenant.into(),
         hash_token(&plaintext),
         token_prefix(&plaintext),
-        vec![GitPermission::Pull],
+        permissions,
         format!("repo-scoped token for {repo_name}"),
         expires_at,
     );

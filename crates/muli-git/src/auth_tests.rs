@@ -143,3 +143,28 @@ fn repo_scope_allows_only_its_own_repository() {
     );
     assert!(!repo_scope_allows("", None));
 }
+
+#[test]
+fn only_git_smart_http_paths_are_git_transport() {
+    for ok in [
+        "/acme/repo.git/info/refs",
+        "/acme/repo/info/refs",
+        "/acme/repo.git/git-upload-pack",
+        "/acme/repo.git/git-receive-pack",
+    ] {
+        assert!(is_git_transport(ok), "{ok}");
+    }
+    for no in [
+        "/api/v1/repos/acme/repo/refs",
+        "/api/v1/repos/acme/repo",
+        "/api/v1/repos",
+        "/acme/repo.git/info/lfs/objects/batch",
+        "/acme/repo.git",
+        "/acme/repo.git/HEAD",
+        "/info/refs",
+        "//repo/info/refs",
+        "/a/b/c/info/refs",
+    ] {
+        assert!(!is_git_transport(no), "{no}");
+    }
+}

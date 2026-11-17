@@ -8,19 +8,23 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Added
-- `CreateAccessToken` takes an optional `repo_id`: a pull-only token, bound
-  to no user, that reads exactly that repository of the tenant whatever its
-  owner (the repository-scoped token CI checkouts already use). A platform
-  can copy a private template repository into another account's project
-  without a token that reaches anything else. Push/admin or a `user_id`
-  together with `repo_id` are refused (`INVALID_ARGUMENT`); an unknown or
-  other-tenant repository is `NOT_FOUND`.
+- `CreateAccessToken` takes an optional `repo_id`: a token bound to no user
+  that fetches, and with `GIT_PERMISSION_PUSH` also pushes to, exactly that
+  repository of the tenant through the git smart HTTP endpoints, whatever
+  its owner (the repository-scoped token CI checkouts already use). A
+  platform can copy a private template repository into another account's
+  project without a token that reaches anything else. Permissions are Pull
+  or Pull + Push; Admin, Push without Pull, or a `user_id` together with
+  `repo_id` are refused (`INVALID_ARGUMENT`); an unknown or other-tenant
+  repository is `NOT_FOUND`.
 
 ### Security
 - A repository-scoped token is now enforced on every HTTP request: a path
   naming another repository (private or public), no repository, or an
   unknown one is refused (403) instead of falling through to the ordinary
-  checks.
+  checks, and so are the REST API, LFS and admin operations on its own
+  repository; only info/refs, git-upload-pack and (with Push)
+  git-receive-pack are served.
 - With anonymous pull enabled, a presented token counted even when expired,
   revoked, of another tenant or without the needed permission; together
   with the repository-scope shortcut an expired or revoked CI token still

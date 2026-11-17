@@ -178,12 +178,13 @@ message CreateGitTokenRequest {
   string description = 3;
   optional int64 ttl_seconds = 4;
   optional string user_id = 5;
-  // Restrict the token to ONE repository (its id, in `tenant_id`): a
-  // read-only token for exactly that repository, whatever its owner or
-  // visibility (e.g. a platform copying a private template repository
-  // into another account's project). Only GIT_PERMISSION_PULL is allowed
-  // and `user_id` must be empty; any other repository is reached only as
-  // an anonymous reader would reach it.
+  // Restrict the token to ONE repository (its id, in `tenant_id`): it
+  // fetches, and with GIT_PERMISSION_PUSH also pushes to, exactly that
+  // repository through the git smart HTTP endpoints, whatever its owner or
+  // visibility (e.g. a platform copying a private template repository into
+  // another account's project). Permissions: PULL, or PULL + PUSH; never
+  // ADMIN. `user_id` must be empty. Every other repository, the REST API
+  // and admin are refused.
   optional string repo_id = 6;
 }
 

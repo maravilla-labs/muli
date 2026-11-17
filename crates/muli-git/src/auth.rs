@@ -268,29 +268,37 @@ pub async fn auth_middleware(mut request: Request, next: Next) -> Response {
         _ => None,
     };
 
-    // A repository-scoped token reaches exactly its repository: any other
-    // repository, a path naming none, or one that cannot be resolved is
-    // refused, never handed on to the ordinary checks.
+    // A repository-scoped token reaches exactly its repository, and only
+    // through the git smart HTTP endpoints (fetch, and push if it carries
+    // Push): any other repository, a path naming none, one that cannot be
+    // resolved, the REST API and admin are refused, never handed on to the
+    // ordinary checks.
     if let Some(token) = token.as_ref()
         && let Some(scope) = token.repo_id.as_deref()
-        && !repo_scope_allows(scope, repo.as_ref().map(|r| r.id.as_str()))
     {
-        return forbidden_response("token is restricted to another repository");
+        if !repo_scope_allows(scope, repo.as_ref().map(|r| r.id.as_str())) {
+            return forbidden_response("token is restricted to another repository");
+        }
+        if !is_git_transport(&path) || required == GitPermission::Admin {
+            return forbidden_response("token is restricted to git fetch and push");
+        }
     }
 
     // Per-repo ACL check:
     //   - Private repos: owner or collaborator required for any access
     //   - Public repos: anyone can read, but only owner or collaborator can push
     if let (Some(repo), Some(collab_store)) = (repo.as_ref(), &auth.collaborator_store) {
-        // A repository-scoped pull token reads its own repository without a
-        // user (CI checkout, a platform copying a template). Its validity
-        // and tenant are checked again here, whichever branch produced it.
+        // A repository-scoped token fetches (and, when it carries Push,
+        // pushes to) its own repository without a user: CI checkout, a
+        // platform copying a template into a project. Validity, tenant and
+        // permission are checked again here, whichever branch produced it.
         if let Some(token) = token.as_ref()
-            && required == GitPermission::Pull
+            && matches!(required, GitPermission::Pull | GitPermission::Push)
             && token.repo_id.as_deref() == Some(repo.id.as_str())
+            && is_git_transport(&path)
             && token.is_valid()
             && token.tenant_id == tenant_id_str
-            && token.has_permission(GitPermission::Pull)
+            && token.has_permission(required)
         {
             if let Some(uid) = token.user_id.as_ref()
                 && !uid.is_empty()
@@ -331,6 +339,21 @@ pub async fn auth_middleware(mut request: Request, next: Next) -> Response {
     }
 
     next.run(request).await
+}
+
+/// The git smart HTTP endpoints of a repository (`/{ns}/{repo}[.git]/info/refs`,
+/// `git-upload-pack`, `git-receive-pack`): the only paths a
+/// repository-scoped token may use. Not the REST API, not LFS. Pure.
+pub(crate) fn is_git_transport(path: &str) -> bool {
+    if path.starts_with("/api/") {
+        return false;
+    }
+    let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+    matches!(
+        parts.as_slice(),
+        [ns, repo, "info", "refs"] | [ns, repo, "git-upload-pack"] | [ns, repo, "git-receive-pack"]
+            if !ns.is_empty() && !repo.is_empty()
+    )
 }
 
 /// Whether a token scoped to repository `scope` may serve a request about

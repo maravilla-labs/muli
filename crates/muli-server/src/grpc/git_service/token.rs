@@ -276,16 +276,20 @@ impl GitServiceImpl {
     }
 }
 
-/// A repository-scoped token is a READ token without a user: the HTTP ACL
-/// lets it pull exactly its repository and nothing else it would not let an
-/// anonymous reader do. Push or admin would never work through that path
-/// (writes always need a user), and a user would turn it into a user token
-/// that also reaches every other repository of that user, so both are
-/// refused instead of minted.
+/// A repository-scoped token has no user and carries Pull, plus Push only
+/// when asked for explicitly: the HTTP auth lets it fetch (and push to)
+/// exactly its repository through the git smart HTTP endpoints, nothing
+/// else. Admin is never granted (no REST/admin surface), and a user would
+/// turn it into a user token reaching every repository of that user, so
+/// both are refused instead of minted.
 fn check_repo_scope(permissions: &[GitPermission], user_id: Option<&str>) -> Result<(), Status> {
-    if permissions.iter().any(|p| *p != GitPermission::Pull) {
+    if !permissions.contains(&GitPermission::Pull)
+        || permissions
+            .iter()
+            .any(|p| !matches!(p, GitPermission::Pull | GitPermission::Push))
+    {
         return Err(Status::invalid_argument(
-            "a repository-scoped token may only carry the pull permission",
+            "a repository-scoped token carries pull, and optionally push, nothing else",
         ));
     }
     if user_id.is_some_and(|u| !u.is_empty()) {
@@ -301,13 +305,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_repo_scoped_token_is_pull_only_and_userless() {
+    fn a_repo_scoped_token_is_pull_or_pull_push_and_userless() {
         assert!(check_repo_scope(&[GitPermission::Pull], None).is_ok());
         assert!(check_repo_scope(&[GitPermission::Pull], Some("")).is_ok());
+        assert!(check_repo_scope(&[GitPermission::Pull, GitPermission::Push], None).is_ok());
         for perms in [
-            vec![GitPermission::Pull, GitPermission::Push],
+            vec![],
             vec![GitPermission::Push],
             vec![GitPermission::Admin],
+            vec![GitPermission::Pull, GitPermission::Admin],
+            vec![
+                GitPermission::Pull,
+                GitPermission::Push,
+                GitPermission::Admin,
+            ],
         ] {
             let err = check_repo_scope(&perms, None).unwrap_err();
             assert_eq!(err.code(), tonic::Code::InvalidArgument, "{perms:?}");
