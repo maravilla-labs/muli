@@ -7,6 +7,38 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+- `CreateAccessToken` takes an optional `repo_id`: a token bound to no user
+  that fetches, and with `GIT_PERMISSION_PUSH` also pushes to, exactly that
+  repository of the tenant through the git smart HTTP endpoints, whatever
+  its owner (the repository-scoped token CI checkouts already use). A
+  platform can copy a private template repository into another account's
+  project without a token that reaches anything else. Permissions are Pull
+  or Pull + Push; Admin, Push without Pull, or a `user_id` together with
+  `repo_id` are refused (`INVALID_ARGUMENT`); an unknown or other-tenant
+  repository is `NOT_FOUND`.
+
+### Fixed
+- Git LFS batch requests take their permission from the request's
+  `operation`: a download needs Pull (it needed Push, so read-only tokens,
+  CI checkout tokens included, could not fetch LFS objects), an upload or
+  an unreadable body Push.
+
+### Security
+- A repository-scoped token is now enforced on every HTTP request: a path
+  naming another repository (private or public), no repository, or an
+  unknown one is refused (403) instead of falling through to the ordinary
+  checks, and so are the REST API and admin operations on its own
+  repository. It is served on its repository's git smart HTTP endpoints
+  (info/refs, git-upload-pack, and git-receive-pack with Push) and Git LFS
+  endpoints (batch and object download with Pull; upload, verify and
+  batch upload with Push), so CI checkouts of LFS repositories work.
+- With anonymous pull enabled, a presented token counted even when expired,
+  revoked, of another tenant or without the needed permission; together
+  with the repository-scope shortcut an expired or revoked CI token still
+  read its private repository. Such a token now counts as no token, and the
+  shortcut re-checks validity, tenant and permission itself.
+
 ## [0.5.4] - 2026-10-22
 
 ### Fixed

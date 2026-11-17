@@ -125,3 +125,76 @@ fn extract_repo_from_path_rest_api_with_suffix() {
         Some(("acme", "my-repo"))
     );
 }
+
+#[test]
+fn repo_scope_allows_only_its_own_repository() {
+    assert!(repo_scope_allows("repo-1", Some("repo-1")));
+    assert!(
+        !repo_scope_allows("repo-1", Some("repo-2")),
+        "another repository"
+    );
+    assert!(
+        !repo_scope_allows("repo-1", None),
+        "a path naming no repository"
+    );
+    assert!(
+        !repo_scope_allows("", Some("")),
+        "an empty scope is no scope"
+    );
+    assert!(!repo_scope_allows("", None));
+}
+
+#[test]
+fn only_git_smart_http_paths_are_git_transport() {
+    for ok in [
+        "/acme/repo.git/info/refs",
+        "/acme/repo/info/refs",
+        "/acme/repo.git/git-upload-pack",
+        "/acme/repo.git/git-receive-pack",
+        "/acme/repo.git/info/lfs/objects/batch",
+        "/acme/repo.git/info/lfs/objects/verify",
+        "/acme/repo.git/info/lfs/objects/0123abcd",
+    ] {
+        assert!(is_git_transport(ok), "{ok}");
+    }
+    for no in [
+        "/api/v1/repos/acme/repo/refs",
+        "/api/v1/repos/acme/repo",
+        "/api/v1/repos",
+        "/acme/repo.git/info/lfs/objects/",
+        "/acme/repo.git/info/lfs/locks",
+        "/acme/repo.git/info/lfs/objects/a/b",
+        "/api/v1/repos/acme/repo/info/lfs/objects/batch",
+        "/acme/repo.git",
+        "/acme/repo.git/HEAD",
+        "/info/refs",
+        "//repo/info/refs",
+        "/a/b/c/info/refs",
+    ] {
+        assert!(!is_git_transport(no), "{no}");
+    }
+}
+
+#[test]
+fn lfs_batch_download_needs_pull_everything_else_push() {
+    assert!(is_lfs_batch("/acme/repo.git/info/lfs/objects/batch"));
+    assert!(is_lfs_batch("/acme/repo/info/lfs/objects/batch"));
+    assert!(!is_lfs_batch("/acme/repo.git/info/lfs/objects/verify"));
+    assert!(!is_lfs_batch(
+        "/api/v1/repos/acme/repo/info/lfs/objects/batch"
+    ));
+
+    let download = br#"{"operation":"download","objects":[]}"#;
+    let upload = br#"{"operation":"upload","objects":[]}"#;
+    assert_eq!(lfs_batch_permission(download), GitPermission::Pull);
+    assert_eq!(lfs_batch_permission(upload), GitPermission::Push);
+    assert_eq!(
+        lfs_batch_permission(br#"{"objects":[]}"#),
+        GitPermission::Push
+    );
+    assert_eq!(lfs_batch_permission(b"not json"), GitPermission::Push);
+    assert_eq!(
+        lfs_batch_permission(br#"{"operation":"DOWNLOAD"}"#),
+        GitPermission::Push
+    );
+}

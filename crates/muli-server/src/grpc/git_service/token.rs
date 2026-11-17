@@ -42,6 +42,20 @@ impl GitServiceImpl {
             .map(|&p| proto_git_permission_to_core(p))
             .collect::<Result<Vec<_>, _>>()?;
 
+        let repo_id = req.repo_id.as_deref().filter(|id| !id.is_empty());
+        if let Some(repo_id) = repo_id {
+            check_repo_scope(&core_permissions, req.user_id.as_deref())?;
+            let repo = self
+                .repo_store
+                .get_repository(repo_id)
+                .await
+                .map_err(|e| Status::internal(format!("Failed to look up repository: {e}")))?;
+            // Another tenant's repository answers exactly like a missing one.
+            if repo.is_none_or(|r| r.tenant_id != req.tenant_id) {
+                return Err(Status::not_found(format!("repository {repo_id} not found")));
+            }
+        }
+
         let plaintext = generate_token();
         let token_hash = hash_token(&plaintext).await;
         let prefix = token_prefix(&plaintext);
@@ -60,6 +74,7 @@ impl GitServiceImpl {
             expires_at,
         );
         token.user_id = req.user_id.clone();
+        token.repo_id = repo_id.map(str::to_string);
 
         let token_id = self
             .token_store
@@ -71,6 +86,7 @@ impl GitServiceImpl {
             operation = "create_access_token",
             tenant_id = %req.tenant_id,
             token_id = %token_id,
+            repo_id = repo_id.unwrap_or(""),
             "audit: git access token created"
         );
 
@@ -257,5 +273,57 @@ impl GitServiceImpl {
             token_id,
             plaintext_token: plaintext,
         }))
+    }
+}
+
+/// A repository-scoped token has no user and carries Pull, plus Push only
+/// when asked for explicitly: the HTTP auth lets it fetch (and push to)
+/// exactly its repository through the git smart HTTP endpoints, nothing
+/// else. Admin is never granted (no REST/admin surface), and a user would
+/// turn it into a user token reaching every repository of that user, so
+/// both are refused instead of minted.
+fn check_repo_scope(permissions: &[GitPermission], user_id: Option<&str>) -> Result<(), Status> {
+    if !permissions.contains(&GitPermission::Pull)
+        || permissions
+            .iter()
+            .any(|p| !matches!(p, GitPermission::Pull | GitPermission::Push))
+    {
+        return Err(Status::invalid_argument(
+            "a repository-scoped token carries pull, and optionally push, nothing else",
+        ));
+    }
+    if user_id.is_some_and(|u| !u.is_empty()) {
+        return Err(Status::invalid_argument(
+            "a repository-scoped token cannot also be bound to a user",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_repo_scoped_token_is_pull_or_pull_push_and_userless() {
+        assert!(check_repo_scope(&[GitPermission::Pull], None).is_ok());
+        assert!(check_repo_scope(&[GitPermission::Pull], Some("")).is_ok());
+        assert!(check_repo_scope(&[GitPermission::Pull, GitPermission::Push], None).is_ok());
+        for perms in [
+            vec![],
+            vec![GitPermission::Push],
+            vec![GitPermission::Admin],
+            vec![GitPermission::Pull, GitPermission::Admin],
+            vec![
+                GitPermission::Pull,
+                GitPermission::Push,
+                GitPermission::Admin,
+            ],
+        ] {
+            let err = check_repo_scope(&perms, None).unwrap_err();
+            assert_eq!(err.code(), tonic::Code::InvalidArgument, "{perms:?}");
+        }
+        let err = check_repo_scope(&[GitPermission::Pull], Some("user-1")).unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
     }
 }
