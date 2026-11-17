@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-11-17
+
 ### Security
 - The HTTP service resolves the repository of a request ONCE
   (`repo_target`): the auth middleware authorizes against it and every
