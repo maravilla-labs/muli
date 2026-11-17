@@ -9,11 +9,14 @@ use tracing::{info, warn};
 
 use crate::error::{MuliError, Result};
 use crate::git::Repository;
-use crate::traits::{GitStorage, RepositoryStore};
+use crate::traits::{GitStorage, LfsObjectStore, RepositoryStore};
 
 pub struct RepositoryService {
     repo_store: Arc<dyn RepositoryStore>,
     git_storage: Arc<dyn GitStorage>,
+    /// LFS object index: a fork inherits its parent's rows, a deleted
+    /// repository loses its own. `None` = no LFS on this installation.
+    lfs_objects: Option<Arc<dyn LfsObjectStore>>,
 }
 
 impl RepositoryService {
@@ -21,7 +24,14 @@ impl RepositoryService {
         Self {
             repo_store,
             git_storage,
+            lfs_objects: None,
         }
+    }
+
+    /// Keep the LFS object index in step with forks and deletions.
+    pub fn with_lfs_objects(mut self, store: Arc<dyn LfsObjectStore>) -> Self {
+        self.lfs_objects = Some(store);
+        self
     }
 
     /// Create a new repository with duplicate check and rollback.
@@ -80,6 +90,14 @@ impl RepositoryService {
             .ok_or_else(|| MuliError::NotFound("repository not found".into()))?;
 
         self.repo_store.delete_repository(&repo.id).await?;
+
+        // Best-effort: a row left behind names a repository id that no longer
+        // exists and is never reused, so it grants nothing.
+        if let Some(lfs) = &self.lfs_objects
+            && let Err(e) = lfs.remove_repo_lfs_objects(tenant_id, &repo.id).await
+        {
+            warn!(error = %e, "failed to drop LFS object index rows of deleted repository");
+        }
 
         // Best-effort filesystem cleanup
         if let Err(e) = self
@@ -140,6 +158,22 @@ impl RepositoryService {
 
         // Persist — rollback git fork on failure
         if let Err(e) = self.repo_store.create_repository(&forked).await {
+            let _ = self
+                .git_storage
+                .delete_repo(tenant_id, dst_namespace, dst_name)
+                .await;
+            return Err(e);
+        }
+
+        // The fork holds the parent's history, so it holds the parent's LFS
+        // pointers: it inherits the parent's LFS objects. Without the rows the
+        // fork's LFS files would be unreadable, so a failure undoes the fork.
+        if let Some(lfs) = &self.lfs_objects
+            && let Err(e) = lfs
+                .copy_lfs_objects(tenant_id, &source.id, &forked.id)
+                .await
+        {
+            let _ = self.repo_store.delete_repository(&forked.id).await;
             let _ = self
                 .git_storage
                 .delete_repo(tenant_id, dst_namespace, dst_name)

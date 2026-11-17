@@ -150,6 +150,11 @@ CREATE TABLE IF NOT EXISTS tenant_daily_run_counts (
   count INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (tenant_id, run_date)
 );
+
+CREATE TABLE IF NOT EXISTS lfs_migrations (
+  name TEXT PRIMARY KEY,
+  done_at INTEGER NOT NULL
+);
 ";
 
 // --- Per-tenant DB DDL ---
@@ -207,6 +212,13 @@ CREATE TABLE IF NOT EXISTS repo_collaborators (
 );
 CREATE INDEX IF NOT EXISTS collabs_repo ON repo_collaborators(repo_id);
 CREATE INDEX IF NOT EXISTS collabs_user ON repo_collaborators(tenant_id, user_id);
+
+CREATE TABLE IF NOT EXISTS lfs_repo_objects (
+  repo_id TEXT NOT NULL,
+  oid TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (repo_id, oid)
+);
 
 CREATE TABLE IF NOT EXISTS tenant_users (
   id TEXT PRIMARY KEY,

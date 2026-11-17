@@ -11,7 +11,9 @@ use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
 use muli_core::git::{GitPermission, GitToken};
-use muli_core::traits::{CollaboratorStore, GitTokenStore, OrgMemberStore, OrgStore, SshKeyStore};
+use muli_core::traits::{
+    CollaboratorStore, GitTokenStore, LfsObjectStore, OrgMemberStore, OrgStore, SshKeyStore,
+};
 use muli_git::auth::{hash_token, token_prefix};
 
 use muli_git::storage::FilesystemStorage;
@@ -21,8 +23,8 @@ use muli_store::memory::{
     MemoryCollaboratorStore, MemoryOrgMemberStore, MemoryOrgStore, MemoryWebhookStore,
 };
 use muli_store::sqlite::{
-    SqliteGitTokenStore, SqlitePrCommentStore, SqlitePullRequestStore, SqliteRepositoryStore,
-    SqliteSshKeyStore, SqliteStoreFactory, SqliteWebhookStore,
+    SqliteGitTokenStore, SqliteLfsObjectStore, SqlitePrCommentStore, SqlitePullRequestStore,
+    SqliteRepositoryStore, SqliteSshKeyStore, SqliteStoreFactory, SqliteWebhookStore,
 };
 
 pub const TENANT: &str = "tenant-a";
@@ -48,6 +50,11 @@ pub struct TestServer {
     /// Token store for creating additional tokens in tests.
     #[allow(dead_code)]
     pub token_store: Arc<dyn GitTokenStore>,
+    /// LFS object index (which oids belong to which repository).
+    #[allow(dead_code)]
+    pub lfs_objects: Arc<dyn LfsObjectStore>,
+    #[allow(dead_code)]
+    pub lfs_storage: Arc<dyn muli_git::lfs::storage::LfsStorage>,
     pub cancel: CancellationToken,
 }
 
@@ -104,16 +111,18 @@ pub async fn start_server() -> TestServer {
     let pr_comment_store = Arc::new(SqlitePrCommentStore::new(factory.clone()));
 
     // Initialize LFS storage backed by the same git root
-    let lfs_storage: Option<Arc<dyn muli_git::lfs::storage::LfsStorage>> = Some(Arc::new(
+    let lfs_backend: Arc<dyn muli_git::lfs::storage::LfsStorage> = Arc::new(
         muli_git::lfs::storage::filesystem::FilesystemLfsStorage::new(git_root.path(), 0)
             .await
             .expect("lfs storage"),
-    ));
+    );
+    let lfs_storage = Some(lfs_backend.clone());
+    let lfs_objects: Arc<dyn LfsObjectStore> = Arc::new(SqliteLfsObjectStore::new(factory.clone()));
 
-    let repo_service = Arc::new(muli_core::service::RepositoryService::new(
-        repo_store.clone(),
-        storage.clone(),
-    ));
+    let repo_service = Arc::new(
+        muli_core::service::RepositoryService::new(repo_store.clone(), storage.clone())
+            .with_lfs_objects(lfs_objects.clone()),
+    );
 
     let app = git_router(GitRouterConfig {
         storage: storage.clone(),
@@ -128,6 +137,7 @@ pub async fn start_server() -> TestServer {
         cache_store: None,
         allow_localhost_webhooks: true,
         lfs_storage,
+        lfs_objects: Some(lfs_objects.clone()),
         public_url: None,
         pipeline_trigger: None,
         repo_service,
@@ -157,6 +167,8 @@ pub async fn start_server() -> TestServer {
         repo_store,
         storage,
         token_store,
+        lfs_objects,
+        lfs_storage: lfs_backend,
         cancel,
     }
 }
@@ -476,16 +488,18 @@ async fn start_server_with_acl_inner(anonymous_pull: bool) -> TestServerWithAcl 
     let pr_comment_store = Arc::new(SqlitePrCommentStore::new(factory.clone()));
 
     // Initialize LFS storage backed by the same git root
-    let lfs_storage: Option<Arc<dyn muli_git::lfs::storage::LfsStorage>> = Some(Arc::new(
+    let lfs_backend: Arc<dyn muli_git::lfs::storage::LfsStorage> = Arc::new(
         muli_git::lfs::storage::filesystem::FilesystemLfsStorage::new(git_root.path(), 0)
             .await
             .expect("lfs storage"),
-    ));
+    );
+    let lfs_storage = Some(lfs_backend.clone());
+    let lfs_objects: Arc<dyn LfsObjectStore> = Arc::new(SqliteLfsObjectStore::new(factory.clone()));
 
-    let repo_service = Arc::new(muli_core::service::RepositoryService::new(
-        repo_store.clone(),
-        storage.clone(),
-    ));
+    let repo_service = Arc::new(
+        muli_core::service::RepositoryService::new(repo_store.clone(), storage.clone())
+            .with_lfs_objects(lfs_objects.clone()),
+    );
 
     let app = git_router(GitRouterConfig {
         storage: storage.clone(),
@@ -500,6 +514,7 @@ async fn start_server_with_acl_inner(anonymous_pull: bool) -> TestServerWithAcl 
         cache_store: None,
         allow_localhost_webhooks: true,
         lfs_storage,
+        lfs_objects: Some(lfs_objects.clone()),
         public_url: None,
         pipeline_trigger: None,
         repo_service,
@@ -529,6 +544,8 @@ async fn start_server_with_acl_inner(anonymous_pull: bool) -> TestServerWithAcl 
         repo_store,
         storage,
         token_store,
+        lfs_objects,
+        lfs_storage: lfs_backend,
         cancel,
     };
 

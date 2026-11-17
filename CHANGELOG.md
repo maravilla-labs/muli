@@ -7,6 +7,33 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Security
+- Git LFS objects belong to repositories. Bytes stay stored once per tenant,
+  but batch, download and verify answer only for oids indexed for the
+  repository in the request path (new `lfs_repo_objects` table); an object
+  of another repository answers exactly like a missing one. Before, anyone
+  who could read ANY repository of a tenant (since 0.5.5 also a
+  repository-scoped token) could download any LFS object of that tenant by
+  its oid through their own repository's path, and upload/verify answers
+  told whether an oid existed anywhere in the tenant. A path naming no
+  repository now serves no LFS at all.
+- An LFS upload of an oid that is already stored is hashed like any other
+  (it was accepted unread), and a batch upload asks for the bytes unless
+  THIS repository owns the oid. S3 presigned uploads are no longer issued
+  (an unverified direct write could replace stored bytes); presigned
+  downloads are issued only after the ownership check.
+
+### Changed
+- Forks inherit their parent's LFS objects; deleting a repository drops its
+  index rows. A repository copied by push owns its LFS objects once they are
+  uploaded to it (`git lfs push --all`).
+- Upgrade: the first start runs a one-time backfill before the git HTTP port
+  binds, indexing every LFS pointer found in each repository's object
+  database whose object is stored; it never runs again (marker
+  `lfs_repo_index_v1` in `_global.db`). If it fails, LFS stays off for that
+  run and the next start retries. See docs/operations.md, "Git LFS: objects
+  belong to repositories".
+
 ## [0.5.5] - 2026-11-17
 
 ### Added

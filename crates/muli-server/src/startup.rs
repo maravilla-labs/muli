@@ -208,10 +208,10 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
             .clone()
             .map(|t| t as Arc<dyn muli_git::api::PipelineTriggerHook>);
 
-    let repo_service = Arc::new(muli_core::service::RepositoryService::new(
-        stores.repo_store.clone(),
-        git_storage.clone(),
-    ));
+    let repo_service = Arc::new(
+        muli_core::service::RepositoryService::new(stores.repo_store.clone(), git_storage.clone())
+            .with_lfs_objects(stores.lfs_object_store.clone()),
+    );
 
     let git_stores = GitStores {
         storage: git_storage.clone(),
@@ -226,6 +226,8 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
         org_store: stores.org_store.clone(),
         org_member_store: stores.org_member_store.clone(),
         collaborator_store: stores.collaborator_store.clone(),
+        lfs_objects: stores.lfs_object_store.clone(),
+        tenant_store: stores.tenant_store.clone(),
         repo_service: repo_service.clone(),
         quota_store: stores.tenant_quota_store.clone(),
     };
@@ -457,6 +459,8 @@ pub(crate) struct GitStores {
     pub org_store: Arc<dyn muli_core::traits::OrgStore>,
     pub org_member_store: Arc<dyn muli_core::traits::OrgMemberStore>,
     pub collaborator_store: Arc<dyn muli_core::traits::CollaboratorStore>,
+    pub lfs_objects: Arc<dyn muli_core::traits::LfsObjectStore>,
+    pub tenant_store: Arc<dyn muli_core::traits::TenantStore>,
     pub repo_service: Arc<muli_core::service::RepositoryService>,
     pub quota_store: Arc<dyn muli_core::traits::TenantQuotaStore>,
 }
@@ -489,6 +493,19 @@ async fn start_git_http(
             }
         }
     };
+    // Bind LFS objects that predate the per-repository index to their
+    // repositories, once, before anything is served. If it fails LFS stays off
+    // for this run (fail closed) and the next start repeats it.
+    let lfs_storage = match lfs_storage {
+        Some(lfs) => match backfill_lfs_index(config, git, &lfs).await {
+            Ok(()) => Some(lfs),
+            Err(e) => {
+                error!(error = %e, "LFS object index backfill failed, LFS disabled for this run");
+                None
+            }
+        },
+        None => None,
+    };
 
     let git_app = muli_git::git_router(muli_git::GitRouterConfig {
         storage: git.storage.clone(),
@@ -503,6 +520,7 @@ async fn start_git_http(
         cache_store: Some(git.cache_store.clone()),
         allow_localhost_webhooks: config.git_allow_localhost_webhooks,
         lfs_storage,
+        lfs_objects: Some(git.lfs_objects.clone()),
         public_url: config.git_public_url.clone(),
         pipeline_trigger: git.pipeline_trigger.clone(),
         repo_service: git.repo_service.clone(),
@@ -525,6 +543,46 @@ async fn start_git_http(
         }
     });
 
+    Ok(())
+}
+
+/// Run the one-time LFS object index backfill (no-op once it completed).
+async fn backfill_lfs_index(
+    config: &ServerConfig,
+    git: &GitStores,
+    lfs: &Arc<dyn muli_git::lfs::storage::LfsStorage>,
+) -> anyhow::Result<()> {
+    let mut tenant_ids: Vec<String> = git
+        .tenant_store
+        .list_tenants()
+        .await?
+        .into_iter()
+        .map(|t| t.id)
+        .collect();
+    if let Some(dt) = &config.default_tenant_id {
+        tenant_ids.push(dt.clone());
+    }
+    // Every tenant that holds LFS objects (`<git root>/<tenant>/lfs`), listed
+    // or not: their objects are the ones that need an owner.
+    if let Ok(mut entries) = tokio::fs::read_dir(config.effective_git_root()).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            if entry.path().join("lfs").is_dir()
+                && let Some(name) = entry.file_name().to_str()
+            {
+                tenant_ids.push(name.to_string());
+            }
+        }
+    }
+    tenant_ids.sort();
+    tenant_ids.dedup();
+    muli_git::lfs::backfill::run(
+        &tenant_ids,
+        &git.repo_store,
+        &git.storage,
+        lfs,
+        &git.lfs_objects,
+    )
+    .await?;
     Ok(())
 }
 

@@ -29,7 +29,7 @@ use axum::{
 };
 
 use muli_core::traits::{
-    GitTokenStore, PrCommentStore, PullRequestStore, RepositoryStore, SshKeyStore,
+    GitTokenStore, LfsObjectStore, PrCommentStore, PullRequestStore, RepositoryStore, SshKeyStore,
     TenantQuotaStore, TreeCommitCacheStore, WebhookStore,
 };
 
@@ -60,6 +60,9 @@ pub struct GitState {
     pub allow_localhost_webhooks: bool,
     /// LFS object storage backend (None = LFS disabled).
     pub lfs_storage: Option<Arc<dyn lfs::storage::LfsStorage>>,
+    /// Which LFS objects belong to which repository. LFS answers nothing
+    /// without it (None = LFS disabled, whatever `lfs_storage` says).
+    pub lfs_objects: Option<Arc<dyn LfsObjectStore>>,
     /// Public base URL of this service (e.g. `https://git.example.com`), used for
     /// LFS transfer hrefs. `None` derives them from the request's Host header.
     pub public_url: Option<String>,
@@ -85,6 +88,9 @@ pub struct GitRouterConfig {
     pub allow_localhost_webhooks: bool,
     /// LFS object storage backend (None = LFS disabled).
     pub lfs_storage: Option<Arc<dyn lfs::storage::LfsStorage>>,
+    /// Which LFS objects belong to which repository. LFS answers nothing
+    /// without it (None = LFS disabled, whatever `lfs_storage` says).
+    pub lfs_objects: Option<Arc<dyn LfsObjectStore>>,
     /// Public base URL of this service, used for LFS transfer hrefs
     /// (None = derive from the request's Host header).
     pub public_url: Option<String>,
@@ -111,6 +117,7 @@ pub fn git_router(cfg: GitRouterConfig) -> Router {
         cache_store,
         allow_localhost_webhooks,
         lfs_storage,
+        lfs_objects,
         public_url,
         pipeline_trigger,
         repo_service,
@@ -138,6 +145,7 @@ pub fn git_router(cfg: GitRouterConfig) -> Router {
         cache_store,
         allow_localhost_webhooks,
         lfs_storage,
+        lfs_objects,
         public_url,
         post_push_hooks,
         repo_service,

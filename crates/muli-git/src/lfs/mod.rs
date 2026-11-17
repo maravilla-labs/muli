@@ -4,9 +4,12 @@
 //! Git LFS 2.0 Batch API implementation.
 //!
 //! Provides content-addressable large file storage with pluggable backends
-//! (filesystem, S3) and multi-tenant isolation.
+//! (filesystem, S3) and multi-tenant isolation. Bytes are stored once per
+//! tenant; which repository may read them is the LFS object index
+//! (`muli_core::traits::LfsObjectStore`, see `api` and `backfill`).
 
 pub mod api;
+pub mod backfill;
 pub mod storage;
 pub mod types;
 

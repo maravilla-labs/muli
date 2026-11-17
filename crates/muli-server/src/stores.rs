@@ -11,19 +11,20 @@ use tracing::{info, warn};
 use muli_core::tenant::Tenant;
 use muli_core::traits::{
     ArtifactStore, CacheStore, CollaboratorStore, GitTokenStore, JobLogStore, JobStore,
-    OrgMemberStore, OrgSecretStore, OrgStore, PipelineRunStore, PipelineSecretStore, PipelineStore,
-    PrCommentStore, PullRequestStore, RegistryTokenStore, RegistryVisibilityStore, ReleaseStore,
-    RepositoryStore, SshKeyStore, StepRunStore, TenantLimitsStore, TenantQuotaStore, TenantStore,
-    TreeCommitCacheStore, UserStore, WebhookStore,
+    LfsObjectStore, OrgMemberStore, OrgSecretStore, OrgStore, PipelineRunStore,
+    PipelineSecretStore, PipelineStore, PrCommentStore, PullRequestStore, RegistryTokenStore,
+    RegistryVisibilityStore, ReleaseStore, RepositoryStore, SshKeyStore, StepRunStore,
+    TenantLimitsStore, TenantQuotaStore, TenantStore, TreeCommitCacheStore, UserStore,
+    WebhookStore,
 };
 use muli_store::sqlite::{
     SqliteArtifactStore, SqliteCacheStore, SqliteCollaboratorStore, SqliteGitTokenStore,
-    SqliteJobLogStore, SqliteJobStore, SqliteOrgMemberStore, SqliteOrgSecretStore, SqliteOrgStore,
-    SqlitePipelineRunStore, SqlitePipelineSecretStore, SqlitePipelineStore, SqlitePrCommentStore,
-    SqlitePullRequestStore, SqliteRegistryTokenStore, SqliteReleaseStore, SqliteRepositoryStore,
-    SqliteSshKeyStore, SqliteStepRunStore, SqliteStoreFactory, SqliteTenantLimitsStore,
-    SqliteRegistryVisibilityStore, SqliteTenantQuotaStore, SqliteTenantStore,
-    SqliteTreeCommitCacheStore, SqliteUserStore, SqliteWebhookStore,
+    SqliteJobLogStore, SqliteJobStore, SqliteLfsObjectStore, SqliteOrgMemberStore,
+    SqliteOrgSecretStore, SqliteOrgStore, SqlitePipelineRunStore, SqlitePipelineSecretStore,
+    SqlitePipelineStore, SqlitePrCommentStore, SqlitePullRequestStore, SqliteRegistryTokenStore,
+    SqliteRegistryVisibilityStore, SqliteReleaseStore, SqliteRepositoryStore, SqliteSshKeyStore,
+    SqliteStepRunStore, SqliteStoreFactory, SqliteTenantLimitsStore, SqliteTenantQuotaStore,
+    SqliteTenantStore, SqliteTreeCommitCacheStore, SqliteUserStore, SqliteWebhookStore,
 };
 
 use crate::config::ServerConfig;
@@ -42,6 +43,7 @@ pub(crate) struct Stores {
     pub ssh_key_store: Arc<dyn SshKeyStore>,
     pub webhook_store: Arc<dyn WebhookStore>,
     pub collaborator_store: Arc<dyn CollaboratorStore>,
+    pub lfs_object_store: Arc<dyn LfsObjectStore>,
     pub user_store: Arc<dyn UserStore>,
     pub org_store: Arc<dyn OrgStore>,
     pub org_member_store: Arc<dyn OrgMemberStore>,
@@ -102,6 +104,7 @@ pub(crate) async fn init_stores(config: &ServerConfig) -> anyhow::Result<Stores>
         ssh_key_store: Arc::new(SqliteSshKeyStore::new(factory.clone())),
         webhook_store: Arc::new(SqliteWebhookStore::new(factory.clone())),
         collaborator_store: Arc::new(SqliteCollaboratorStore::new(factory.clone())),
+        lfs_object_store: Arc::new(SqliteLfsObjectStore::new(factory.clone())),
         user_store: Arc::new(SqliteUserStore::new(factory.clone())),
         org_store: Arc::new(SqliteOrgStore::new(factory.clone())),
         org_member_store: Arc::new(SqliteOrgMemberStore::new(factory.clone())),

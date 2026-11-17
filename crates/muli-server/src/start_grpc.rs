@@ -96,10 +96,10 @@ pub(crate) async fn start_grpc(
         user_store: stores.user_store.clone(),
     };
 
-    let repo_service = Arc::new(muli_core::service::RepositoryService::new(
-        stores.repo_store.clone(),
-        git_storage.clone(),
-    ));
+    let repo_service = Arc::new(
+        muli_core::service::RepositoryService::new(stores.repo_store.clone(), git_storage.clone())
+            .with_lfs_objects(stores.lfs_object_store.clone()),
+    );
 
     let post_push_hooks = muli_git::hooks::PostPushHooks {
         pipeline_trigger: pipeline_trigger

@@ -13,6 +13,7 @@
 //! - `pr_lifecycle_tests`    — PR close, merge, and full lifecycle
 //! - `pr_diff_comment_tests` — PR structured diff and comments
 //! - `pr_error_tests`        — PR error cases (conflict, invalid action, missing fields)
+//! - `lfs_binding_tests`     — LFS objects belong to repositories (no cross-repo reads)
 //! - `ssh_tests`             — SSH clone and push
 
 #[path = "e2e/acl_tests.rs"]
@@ -27,6 +28,8 @@ mod git_fork_webhook_tests;
 mod git_protocol_tests;
 #[path = "e2e/harness.rs"]
 mod harness;
+#[path = "e2e/lfs_binding_tests.rs"]
+mod lfs_binding_tests;
 #[path = "e2e/lfs_tests.rs"]
 mod lfs_tests;
 #[path = "e2e/pr_crud_tests.rs"]

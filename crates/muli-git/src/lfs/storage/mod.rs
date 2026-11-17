@@ -42,7 +42,10 @@ pub type LfsStorageResult<T> = Result<T, LfsStorageError>;
 /// Pluggable storage backend for LFS objects.
 ///
 /// Objects are content-addressable by SHA-256 oid and stored per-tenant
-/// (not per-repo) for deduplication.
+/// (not per-repo) for deduplication. Storage answers only "are these bytes
+/// here"; which repository may read them is the LFS object index
+/// (`muli_core::traits::LfsObjectStore`), checked by the API before any call
+/// here.
 #[async_trait]
 pub trait LfsStorage: Send + Sync + 'static {
     /// Check if an object exists.
@@ -83,14 +86,8 @@ pub trait LfsStorage: Send + Sync + 'static {
         Ok(None)
     }
 
-    /// Return a presigned upload URL (S3 only; filesystem returns `None`).
-    async fn presigned_upload_url(
-        &self,
-        _tenant_id: &str,
-        _oid: &str,
-        _size: u64,
-        _expires_in_secs: u64,
-    ) -> LfsStorageResult<Option<String>> {
-        Ok(None)
-    }
+    // No presigned UPLOAD: a direct client-to-bucket write is not hashed by
+    // the server, so it would let a client replace the bytes stored under an
+    // oid (shared by every repository of the tenant) and would bind nothing
+    // to a repository. Uploads always go through `put_object`.
 }

@@ -13,7 +13,7 @@ mod tenant_limits;
 mod user;
 
 pub use git::{
-    CollaboratorStore, GitStorage, GitTokenStore, RepositoryStore, SshKeyStore,
+    CollaboratorStore, GitStorage, GitTokenStore, LfsObjectStore, RepositoryStore, SshKeyStore,
     TreeCommitCacheStore, WebhookStore,
 };
 pub use job::{AgentRegistry, JobLogStore, JobStore};
@@ -22,9 +22,7 @@ pub use pipeline::{
     ArtifactStore, CacheStore, OrgSecretStore, PipelineRunStore, PipelineSecretStore,
     PipelineStore, StepRunStore,
 };
-pub use registry::{
-    RegistryTokenStore, RegistryVisibilityStore, TenantQuotaStore, TenantStore,
-};
+pub use registry::{RegistryTokenStore, RegistryVisibilityStore, TenantQuotaStore, TenantStore};
 pub use release::ReleaseStore;
 pub use tenant_limits::TenantLimitsStore;
 pub use user::UserStore;
