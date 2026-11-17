@@ -14,7 +14,8 @@ use axum::{
 use serde::Deserialize;
 
 use crate::api::GitState;
-use crate::api::helpers::{resolve_repo, strip_git_suffix};
+use crate::api::helpers::repo_fs_path;
+use crate::repo_target::TargetRepo;
 use crate::ssh::{compute_ref_updates, read_refs};
 use crate::tenant::TenantContext;
 
@@ -30,20 +31,14 @@ pub struct InfoRefsQuery {
 pub async fn info_refs(
     State(state): State<Arc<GitState>>,
     Extension(tenant): Extension<TenantContext>,
-    Path((namespace, raw_repo)): Path<(String, String)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _raw_repo)): Path<(String, String)>,
     Query(query): Query<InfoRefsQuery>,
     headers: axum::http::HeaderMap,
 ) -> Response {
     let service = query.service.as_deref().unwrap_or("").to_string();
 
-    if let Err(r) = resolve_repo(&state, &tenant.tenant_id, &namespace, &raw_repo).await {
-        return r;
-    }
-    let repo_name = strip_git_suffix(&raw_repo);
-
-    let path = state
-        .storage
-        .repo_path(&tenant.tenant_id, &namespace, repo_name);
+    let path = repo_fs_path(&state, &target);
 
     if service.contains("git-receive-pack") {
         crate::protocol::receive_pack::info_refs_receive(path, &headers, &tenant.tenant_id)
@@ -59,18 +54,12 @@ pub async fn info_refs(
 /// POST /{namespace}/{repo}/git-upload-pack
 pub async fn upload_pack(
     State(state): State<Arc<GitState>>,
-    Extension(tenant): Extension<TenantContext>,
-    Path((namespace, raw_repo)): Path<(String, String)>,
+    Extension(_tenant): Extension<TenantContext>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _raw_repo)): Path<(String, String)>,
     request: axum::extract::Request,
 ) -> Response {
-    if let Err(r) = resolve_repo(&state, &tenant.tenant_id, &namespace, &raw_repo).await {
-        return r;
-    }
-    let repo_name = strip_git_suffix(&raw_repo);
-
-    let path = state
-        .storage
-        .repo_path(&tenant.tenant_id, &namespace, repo_name);
+    let path = repo_fs_path(&state, &target);
     let headers = request.headers().clone();
     let body = match axum::body::to_bytes(request.into_body(), MAX_GIT_BODY).await {
         Ok(b) => b.to_vec(),
@@ -89,18 +78,12 @@ pub async fn upload_pack(
 pub async fn receive_pack(
     State(state): State<Arc<GitState>>,
     Extension(tenant): Extension<TenantContext>,
-    Path((namespace, raw_repo)): Path<(String, String)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _raw_repo)): Path<(String, String)>,
     request: axum::extract::Request,
 ) -> Response {
-    let repo = match resolve_repo(&state, &tenant.tenant_id, &namespace, &raw_repo).await {
-        Ok(r) => r,
-        Err(r) => return r,
-    };
-    let repo_name = strip_git_suffix(&raw_repo).to_string();
-
-    let path = state
-        .storage
-        .repo_path(&tenant.tenant_id, &namespace, &repo_name);
+    let repo = target.clone();
+    let path = repo_fs_path(&state, &target);
     let headers = request.headers().clone();
     let body = match axum::body::to_bytes(request.into_body(), MAX_GIT_BODY).await {
         Ok(b) => b.to_vec(),
@@ -144,7 +127,7 @@ pub async fn receive_pack(
         state.post_push_hooks.fire(
             tenant.tenant_id.clone(),
             repo.id.clone(),
-            repo_name.clone(),
+            repo.name.clone(),
             ref_updates,
             repo_size_before,
             path,

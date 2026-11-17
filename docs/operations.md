@@ -148,7 +148,48 @@ Deployments that already set these variables explicitly are unaffected.
 3. Storage backends are initialised (SQLite DDL migration runs automatically).
 4. **Job recovery**: jobs left in `Scheduled`, `Pulling`, or `Running` state from the previous run are reset to `Pending` and re-enqueued. This is idempotent and safe to run on every startup.
 5. Background tasks start: scheduler dispatch loop, cleanup task, registry/git listeners (if enabled).
+   Before the git HTTP listener binds, the one-time **LFS object index backfill** runs (see below).
 6. gRPC server begins accepting connections.
+
+### Git LFS: objects belong to repositories
+
+LFS bytes are stored once per tenant (`{git_root}/{tenant}/lfs/objects`,
+content-addressed), but the LFS API serves, verifies and reports as present
+only the oids indexed for the repository in the request path (table
+`lfs_repo_objects` in the tenant DB). An oid stored for another repository
+answers exactly like one stored nowhere (`404`, `object not found`). A row is
+added when the server itself hashed an upload to that repository (also when
+the bytes were already stored: the client must send them), when a repository
+is forked (the fork inherits the parent's rows), and by the backfill below.
+Deleting a repository drops its rows.
+
+**Upgrade (backfill).** An installation that had LFS objects before the index
+existed has no rows, so nothing would be served. On the first start of a
+version with the index, before the git HTTP port binds, every repository of
+every tenant (listed tenants, the default tenant, and every `{git_root}/*`
+directory holding `lfs/`) is scanned: each blob of its object database that is
+an LFS pointer (`version https://git-lfs.github.com/spec/v1`, `oid sha256:...`)
+and whose object is stored becomes a row for that repository. When it
+completes, the installation-wide marker `lfs_repo_index_v1` is written to
+`_global.db` (table `lfs_migrations`) and the scan never runs again, for any
+tenant or repository, old or new: after the upgrade a pushed pointer grants
+nothing. The scan is idempotent; if it fails, the server logs
+`LFS object index backfill failed, LFS disabled for this run`, serves no LFS
+(fail closed, git itself works) and repeats the scan on the next start.
+
+Consequences to know:
+- A copy of a repository made by **pushing** (template copy, mirror, transfer
+  between installations) owns its LFS objects only once `git lfs push` has
+  uploaded them to the new repository. Objects already stored for the tenant
+  are uploaded again over the wire (the server hashes them, keeps one copy on
+  disk and adds the row); `git lfs push --all <remote>` repairs a copy whose
+  LFS files return 404.
+- A **fork** made through the API or gRPC needs nothing: it inherits the rows.
+- Re-running the backfill on purpose (e.g. after restoring an old data dir)
+  means deleting the marker row: `DELETE FROM lfs_migrations WHERE name =
+  'lfs_repo_index_v1'` in `_global.db`, then restart. Only do this while no
+  untrusted pushes can happen in between: the scan trusts every pointer in
+  history.
 
 ### Graceful shutdown (SIGTERM)
 
@@ -348,8 +389,8 @@ GetNamespaceUsage { tenant_id: "local", namespace: "alice" }
   repository. A cold call walks only the requested namespace's repositories.
 - Namespaces never overlap: the sum over all namespaces of a tenant equals the
   git repository bytes under `{git_root}/{tenant}`. `GetTenantUsage.storage_bytes`
-  is larger because it also counts registry blobs and Git LFS objects (LFS is
-  stored per tenant, not per namespace) and is reconciled hourly, so it can lag.
+  is larger because it also counts registry blobs and Git LFS objects (LFS
+  bytes are stored once per tenant, not per namespace) and is reconciled hourly, so it can lag.
   `tenant_storage_bytes` repeats that tenant figure for reference.
 - Repositories whose directory cannot be read count 0 and are reported in
   `unmeasured_repo_count`.

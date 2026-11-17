@@ -16,7 +16,8 @@ use serde_json::json;
 
 use crate::api::GitState;
 use crate::api::commits::{CommitInfo, commit_to_info};
-use crate::api::helpers::{error_response, resolve_repo};
+use crate::api::helpers::{error_response, repo_fs_path};
+use crate::repo_target::TargetRepo;
 use crate::tenant::TenantContext;
 
 #[derive(Debug, Clone, Serialize)]
@@ -115,18 +116,13 @@ pub struct TreeQuery {
 
 /// GET /api/v1/repos/{namespace}/{repo}/tree
 pub async fn list_tree(
-    Extension(tenant): Extension<TenantContext>,
+    Extension(_tenant): Extension<TenantContext>,
     State(state): State<Arc<GitState>>,
-    Path((namespace, repo_name)): Path<(String, String)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _repo_name)): Path<(String, String)>,
     Query(query): Query<TreeQuery>,
 ) -> Response {
-    if let Err(e) = resolve_repo(&state, &tenant.tenant_id, &namespace, &repo_name).await {
-        return e;
-    }
-
-    let repo_fs_path = state
-        .storage
-        .repo_path(&tenant.tenant_id, &namespace, &repo_name);
+    let repo_fs_path = repo_fs_path(&state, &target);
     let git_ref = query.git_ref.unwrap_or_else(|| "HEAD".to_string());
     let path = query.path.unwrap_or_default();
     let recursive = query.recursive.unwrap_or(false);
@@ -190,18 +186,14 @@ pub struct TreeCommitQuery {
 pub async fn list_tree_commits(
     Extension(tenant): Extension<TenantContext>,
     State(state): State<Arc<GitState>>,
-    Path((namespace, repo_name)): Path<(String, String)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _repo_name)): Path<(String, String)>,
     Query(query): Query<TreeCommitQuery>,
 ) -> Response {
-    let repo_record = match resolve_repo(&state, &tenant.tenant_id, &namespace, &repo_name).await {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
+    let repo_record = target.clone();
 
     let repo_id = repo_record.id.clone();
-    let repo_fs_path = state
-        .storage
-        .repo_path(&tenant.tenant_id, &namespace, &repo_name);
+    let repo_fs_path = repo_fs_path(&state, &target);
     let git_ref = query.git_ref.unwrap_or_else(|| "HEAD".to_string());
     let dir_path = query.path.unwrap_or_default();
 

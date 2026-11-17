@@ -12,23 +12,28 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
+use super::{OBJECT_NOT_FOUND, lfs_error, resolve};
 use crate::api::GitState;
 use crate::lfs::storage::LfsStorageError;
-use crate::lfs::types::{self, APPLICATION_VND_GIT_LFS_JSON, VerifyRequest};
+use crate::lfs::types::{self, VerifyRequest};
+use crate::repo_target::TargetRepo;
 use crate::tenant::TenantContext;
 
 /// PUT `/{namespace}/{repo}/info/lfs/objects/{oid}`
 ///
-/// Streaming upload of an LFS object. The body is the raw object bytes.
+/// Streaming upload of an LFS object. The body is the raw object bytes. The
+/// server hashes them (also when the oid is already stored), and only then
+/// records the oid for this repository.
 pub async fn upload(
     State(state): State<Arc<GitState>>,
     Extension(tenant): Extension<TenantContext>,
+    TargetRepo(target): TargetRepo,
     Path((_namespace, _raw_repo, oid)): Path<(String, String, String)>,
     request: axum::extract::Request,
 ) -> Response {
-    let lfs = match &state.lfs_storage {
-        Some(s) => s,
-        None => return lfs_error(StatusCode::NOT_FOUND, "LFS is not enabled"),
+    let repo = match resolve(&state, &target) {
+        Ok(r) => r,
+        Err(resp) => return resp,
     };
 
     if !types::validate_oid(&oid) {
@@ -44,21 +49,38 @@ pub async fn upload(
 
     let body = request.into_body();
 
-    match lfs
+    match repo
+        .storage
         .put_object(&tenant.tenant_id, &oid, content_length, body)
         .await
     {
-        Ok(()) => StatusCode::OK.into_response(),
-        Err(LfsStorageError::TooLarge { size, limit }) => lfs_error(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            &format!("object size {size} exceeds limit {limit}"),
-        ),
-        Err(LfsStorageError::DigestMismatch { expected, computed }) => lfs_error(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            &format!("digest mismatch: expected {expected}, got {computed}"),
-        ),
+        Ok(()) => {}
+        Err(LfsStorageError::TooLarge { size, limit }) => {
+            return lfs_error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                &format!("object size {size} exceeds limit {limit}"),
+            );
+        }
+        Err(LfsStorageError::DigestMismatch { expected, computed }) => {
+            return lfs_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                &format!("digest mismatch: expected {expected}, got {computed}"),
+            );
+        }
         Err(e) => {
             tracing::error!(error = %e, %oid, "LFS upload failed");
+            return lfs_error(StatusCode::INTERNAL_SERVER_ERROR, "upload failed");
+        }
+    }
+
+    match repo
+        .objects
+        .add_lfs_object(&repo.tenant_id, &repo.repo_id, &oid)
+        .await
+    {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, %oid, "LFS object index write failed");
             lfs_error(StatusCode::INTERNAL_SERVER_ERROR, "upload failed")
         }
     }
@@ -66,22 +88,32 @@ pub async fn upload(
 
 /// GET `/{namespace}/{repo}/info/lfs/objects/{oid}`
 ///
-/// Streaming download of an LFS object.
+/// Streaming download of an LFS object of this repository.
 pub async fn download(
     State(state): State<Arc<GitState>>,
     Extension(tenant): Extension<TenantContext>,
+    TargetRepo(target): TargetRepo,
     Path((_namespace, _raw_repo, oid)): Path<(String, String, String)>,
 ) -> Response {
-    let lfs = match &state.lfs_storage {
-        Some(s) => s,
-        None => return lfs_error(StatusCode::NOT_FOUND, "LFS is not enabled"),
+    let repo = match resolve(&state, &target) {
+        Ok(r) => r,
+        Err(resp) => return resp,
     };
 
     if !types::validate_oid(&oid) {
         return lfs_error(StatusCode::UNPROCESSABLE_ENTITY, "invalid oid");
     }
 
-    match lfs.get_object(&tenant.tenant_id, &oid).await {
+    match repo.owns(&oid).await {
+        Ok(true) => {}
+        Ok(false) => return lfs_error(StatusCode::NOT_FOUND, OBJECT_NOT_FOUND),
+        Err(e) => {
+            tracing::error!(error = %e, %oid, "LFS object index read failed");
+            return lfs_error(StatusCode::INTERNAL_SERVER_ERROR, "download failed");
+        }
+    }
+
+    match repo.storage.get_object(&tenant.tenant_id, &oid).await {
         Ok((stream, size)) => {
             let body = axum::body::Body::from_stream(stream);
             (
@@ -97,7 +129,7 @@ pub async fn download(
             )
                 .into_response()
         }
-        Err(LfsStorageError::NotFound(_)) => lfs_error(StatusCode::NOT_FOUND, "object not found"),
+        Err(LfsStorageError::NotFound(_)) => lfs_error(StatusCode::NOT_FOUND, OBJECT_NOT_FOUND),
         Err(e) => {
             tracing::error!(error = %e, %oid, "LFS download failed");
             lfs_error(StatusCode::INTERNAL_SERVER_ERROR, "download failed")
@@ -107,48 +139,43 @@ pub async fn download(
 
 /// POST `/{namespace}/{repo}/info/lfs/objects/verify`
 ///
-/// Verify that an uploaded object exists and has the correct size.
+/// Verify that an uploaded object belongs to this repository and has the
+/// correct size. Verify records nothing: the upload itself did, after hashing
+/// the bytes (an oid and a size are no proof of holding the object).
 pub async fn verify(
     State(state): State<Arc<GitState>>,
     Extension(tenant): Extension<TenantContext>,
-    Path((_namespace, _raw_repo)): Path<(String, String)>,
+    TargetRepo(target): TargetRepo,
     Json(req): Json<VerifyRequest>,
 ) -> Response {
-    let lfs = match &state.lfs_storage {
-        Some(s) => s,
-        None => return lfs_error(StatusCode::NOT_FOUND, "LFS is not enabled"),
+    let repo = match resolve(&state, &target) {
+        Ok(r) => r,
+        Err(resp) => return resp,
     };
 
     if !types::validate_oid(&req.oid) {
         return lfs_error(StatusCode::UNPROCESSABLE_ENTITY, "invalid oid");
     }
 
-    match lfs.object_size(&tenant.tenant_id, &req.oid).await {
+    match repo.owns(&req.oid).await {
+        Ok(true) => {}
+        Ok(false) => return lfs_error(StatusCode::NOT_FOUND, OBJECT_NOT_FOUND),
+        Err(e) => {
+            tracing::error!(error = %e, oid = %req.oid, "LFS object index read failed");
+            return lfs_error(StatusCode::INTERNAL_SERVER_ERROR, "verify failed");
+        }
+    }
+
+    match repo.storage.object_size(&tenant.tenant_id, &req.oid).await {
         Ok(Some(size)) if size == req.size => StatusCode::OK.into_response(),
         Ok(Some(actual)) => lfs_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             &format!("size mismatch: expected {}, got {actual}", req.size),
         ),
-        Ok(None) => lfs_error(StatusCode::NOT_FOUND, "object not found"),
+        Ok(None) => lfs_error(StatusCode::NOT_FOUND, OBJECT_NOT_FOUND),
         Err(e) => {
             tracing::error!(error = %e, oid = %req.oid, "LFS verify failed");
             lfs_error(StatusCode::INTERNAL_SERVER_ERROR, "verify failed")
         }
     }
-}
-
-fn lfs_error(status: StatusCode, msg: &str) -> Response {
-    let body = serde_json::json!({
-        "message": msg,
-        "request_id": "",
-    });
-    (
-        status,
-        [(
-            axum::http::header::CONTENT_TYPE,
-            APPLICATION_VND_GIT_LFS_JSON,
-        )],
-        Json(body),
-    )
-        .into_response()
 }

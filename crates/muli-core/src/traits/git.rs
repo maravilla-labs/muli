@@ -141,6 +141,47 @@ pub trait CollaboratorStore: Send + Sync {
     ) -> Result<Option<RepositoryCollaborator>>;
 }
 
+/// Which LFS objects belong to which repository.
+///
+/// LFS bytes are stored content-addressed per tenant (one copy per oid), so
+/// the bytes alone say nothing about who may read them. This index is the
+/// authority: the LFS API serves, verifies and reports as present only the
+/// oids indexed for the repository named in the request path. A row is
+/// written after the server itself hashed an upload for that repository, by a
+/// fork (the fork inherits its parent's rows), or by the one-time backfill
+/// that migrated installations from before the index existed.
+#[async_trait]
+pub trait LfsObjectStore: Send + Sync {
+    /// Record that `oid` belongs to `repo_id` (idempotent).
+    async fn add_lfs_object(&self, tenant_id: &str, repo_id: &str, oid: &str) -> Result<()>;
+
+    /// Record several oids for `repo_id` at once (idempotent).
+    async fn add_lfs_objects(&self, tenant_id: &str, repo_id: &str, oids: &[String]) -> Result<()>;
+
+    /// Whether `oid` is indexed for `repo_id`.
+    async fn has_lfs_object(&self, tenant_id: &str, repo_id: &str, oid: &str) -> Result<bool>;
+
+    /// Copy every row of `from_repo_id` to `to_repo_id` (a fork). Returns the
+    /// number of rows the target holds afterwards.
+    async fn copy_lfs_objects(
+        &self,
+        tenant_id: &str,
+        from_repo_id: &str,
+        to_repo_id: &str,
+    ) -> Result<u64>;
+
+    /// Drop every row of a repository (it was deleted).
+    async fn remove_repo_lfs_objects(&self, tenant_id: &str, repo_id: &str) -> Result<()>;
+
+    /// Whether the one-time backfill named `name` has completed on this
+    /// installation. Installation-wide on purpose: a tenant or repository
+    /// created later must never be backfilled from its own history.
+    async fn lfs_migration_done(&self, name: &str) -> Result<bool>;
+
+    /// Mark the one-time backfill `name` as completed.
+    async fn mark_lfs_migration_done(&self, name: &str) -> Result<()>;
+}
+
 /// Read-through cache for the last-commit-per-entry data returned by
 /// `GET /tree-commits`. Keys on (tenant_id, repo_id, commit_sha, dir_path).
 /// Entries are stored and returned as raw JSON strings to keep the

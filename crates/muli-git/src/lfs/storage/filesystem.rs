@@ -111,10 +111,18 @@ impl LfsStorage for FilesystemLfsStorage {
 
         let final_path = self.object_path(tenant_id, oid)?;
 
-        // Already stored — skip (content-addressable dedup).
+        // Already stored: keep the stored copy (content-addressable dedup),
+        // but still hash what the client sent. A successful upload is what
+        // binds an oid to a repository, so it must prove the client holds
+        // the bytes; the oid alone proves nothing.
         if final_path.exists() {
-            // Consume and discard the body to avoid connection reset.
-            consume_body(body).await;
+            let computed = hash_body(body, self.max_object_size).await?;
+            if computed != oid {
+                return Err(LfsStorageError::DigestMismatch {
+                    expected: oid.to_string(),
+                    computed,
+                });
+            }
             return Ok(());
         }
 
@@ -241,11 +249,24 @@ async fn file_sha256(path: &Path) -> LfsStorageResult<String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
-/// Consume and discard a body stream (prevents connection reset on dedup skip).
-async fn consume_body(body: axum::body::Body) {
+/// Hash a body stream without storing it (upload of an object already stored).
+async fn hash_body(body: axum::body::Body, max_size: u64) -> LfsStorageResult<String> {
     use futures::StreamExt;
+    let mut hasher = Sha256::new();
+    let mut read = 0u64;
     let mut stream = body.into_data_stream();
-    while let Some(_chunk) = stream.next().await {}
+    while let Some(chunk) = stream.next().await {
+        let data = chunk.map_err(|e| std::io::Error::other(format!("body read error: {e}")))?;
+        read += data.len() as u64;
+        if max_size > 0 && read > max_size {
+            return Err(LfsStorageError::TooLarge {
+                size: read,
+                limit: max_size,
+            });
+        }
+        hasher.update(&data);
+    }
+    Ok(hex::encode(hasher.finalize()))
 }
 
 /// Convert a file into an async byte stream (64 KiB chunks).
@@ -370,6 +391,36 @@ mod tests {
             .put_object("t", &oid, data.len() as u64, body)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn upload_of_stored_oid_still_needs_the_bytes() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let storage = FilesystemLfsStorage::new(tmp_dir.path(), 0).await.unwrap();
+
+        let data = b"someone else's object";
+        let oid = hex::encode(Sha256::digest(data));
+        storage
+            .put_object(
+                "t",
+                &oid,
+                data.len() as u64,
+                axum::body::Body::from(data.to_vec()),
+            )
+            .await
+            .unwrap();
+
+        // Knowing the oid is not enough: other bytes under that oid are refused
+        // and the stored copy is untouched.
+        let err = storage
+            .put_object("t", &oid, 3, axum::body::Body::from(b"bad".to_vec()))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LfsStorageError::DigestMismatch { .. }));
+        assert_eq!(
+            storage.object_size("t", &oid).await.unwrap(),
+            Some(data.len() as u64)
+        );
     }
 
     #[tokio::test]

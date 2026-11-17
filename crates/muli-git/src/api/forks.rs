@@ -14,8 +14,9 @@ use axum::{
 use serde::Deserialize;
 
 use crate::api::GitState;
-use crate::api::helpers::{self, domain_err_to_http, error_response, validate_path_component};
+use crate::api::helpers::{domain_err_to_http, error_response, validate_path_component};
 use crate::api::repos::RepoResponse;
+use crate::repo_target::TargetRepo;
 use crate::tenant::TenantContext;
 
 #[derive(Debug, Deserialize)]
@@ -28,12 +29,11 @@ pub struct ForkRequest {
 pub async fn fork_repo(
     Extension(tenant): Extension<TenantContext>,
     State(state): State<Arc<GitState>>,
-    Path((namespace, repo_name)): Path<(String, String)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _repo_name)): Path<(String, String)>,
     Json(req): Json<ForkRequest>,
 ) -> Response {
-    let dest_name = req
-        .dest_name
-        .unwrap_or_else(|| helpers::strip_git_suffix(&repo_name).to_string());
+    let dest_name = req.dest_name.unwrap_or_else(|| target.name.clone());
 
     if !validate_path_component(&req.dest_namespace) || !validate_path_component(&dest_name) {
         return error_response(
@@ -42,13 +42,12 @@ pub async fn fork_repo(
         );
     }
 
-    let src_name = helpers::strip_git_suffix(&repo_name);
     match state
         .repo_service
         .fork(
             &tenant.tenant_id,
-            &namespace,
-            src_name,
+            &target.namespace,
+            &target.name,
             &req.dest_namespace,
             &dest_name,
         )

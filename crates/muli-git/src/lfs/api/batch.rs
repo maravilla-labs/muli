@@ -7,18 +7,19 @@ use std::sync::Arc;
 
 use axum::{
     Extension, Json,
-    extract::{Path, State},
+    extract::State,
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 
+use super::{LfsRepo, resolve};
 use crate::api::GitState;
-use crate::api::helpers::strip_git_suffix;
 use crate::lfs::storage::LfsStorageError;
 use crate::lfs::types::{
     self, APPLICATION_VND_GIT_LFS_JSON, Action, Actions, BatchRequest, BatchResponse, ObjectError,
     ObjectResponse, Operation,
 };
+use crate::repo_target::TargetRepo;
 use crate::tenant::TenantContext;
 
 // `authenticated: true` tells git-lfs the action hrefs need no credentials, so it
@@ -29,22 +30,30 @@ use crate::tenant::TenantContext;
 /// Default presigned URL TTL in seconds.
 const PRESIGN_TTL_SECS: u64 = 3600;
 
+/// The per-object error of a download for an oid this repository does not
+/// own. Identical whether the oid is stored for another repository or nowhere.
+const NOT_FOUND_MESSAGE: &str = "Not found";
+
 /// POST `/{namespace}/{repo}/info/lfs/objects/batch`
 pub async fn batch(
     State(state): State<Arc<GitState>>,
-    Extension(tenant): Extension<TenantContext>,
-    Path((namespace, raw_repo)): Path<(String, String)>,
+    Extension(_tenant): Extension<TenantContext>,
+    TargetRepo(target): TargetRepo,
     headers: HeaderMap,
     Json(req): Json<BatchRequest>,
 ) -> Response {
-    let lfs = match &state.lfs_storage {
-        Some(s) => s,
-        None => return lfs_error(StatusCode::NOT_FOUND, "LFS is not enabled"),
+    let repo = match resolve(&state, &target) {
+        Ok(r) => r,
+        Err(resp) => return resp,
     };
 
-    let _repo_name = strip_git_suffix(&raw_repo);
-
-    let base_url = build_base_url(state.public_url.as_deref(), &headers, &namespace, &raw_repo);
+    // Hrefs name the resolved repository, never echo the request path.
+    let base_url = build_base_url(
+        state.public_url.as_deref(),
+        &headers,
+        &target.namespace,
+        &target.name,
+    );
 
     let mut objects = Vec::with_capacity(req.objects.len());
 
@@ -64,12 +73,8 @@ pub async fn batch(
         }
 
         let resp = match req.operation {
-            Operation::Download => {
-                build_download_response(lfs.as_ref(), &tenant.tenant_id, obj, &base_url).await
-            }
-            Operation::Upload => {
-                build_upload_response(lfs.as_ref(), &tenant.tenant_id, obj, &base_url).await
-            }
+            Operation::Download => build_download_response(&repo, obj, &base_url).await,
+            Operation::Upload => build_upload_response(&repo, obj, &base_url).await,
         };
         objects.push(resp);
     }
@@ -91,20 +96,60 @@ pub async fn batch(
         .into_response()
 }
 
+fn not_found_object(obj: &types::ObjectSpec) -> ObjectResponse {
+    ObjectResponse {
+        oid: obj.oid.clone(),
+        size: obj.size,
+        authenticated: None,
+        actions: None,
+        error: Some(ObjectError {
+            code: 404,
+            message: NOT_FOUND_MESSAGE.to_string(),
+        }),
+    }
+}
+
+fn index_error_object(obj: &types::ObjectSpec, e: &muli_core::error::MuliError) -> ObjectResponse {
+    tracing::error!(error = %e, oid = %obj.oid, "LFS object index read failed");
+    ObjectResponse {
+        oid: obj.oid.clone(),
+        size: obj.size,
+        authenticated: None,
+        actions: None,
+        error: Some(ObjectError {
+            code: 500,
+            message: "object index unavailable".to_string(),
+        }),
+    }
+}
+
 async fn build_download_response(
-    lfs: &dyn crate::lfs::storage::LfsStorage,
-    tenant_id: &str,
+    repo: &LfsRepo<'_>,
     obj: &types::ObjectSpec,
     base_url: &str,
 ) -> ObjectResponse {
-    // Check for presigned URL first (S3 backend).
-    if let Ok(Some(url)) = lfs
-        .presigned_download_url(tenant_id, &obj.oid, PRESIGN_TTL_SECS)
+    // Only an object of THIS repository is offered, whatever storage holds.
+    match repo.owns(&obj.oid).await {
+        Ok(true) => {}
+        Ok(false) => return not_found_object(obj),
+        Err(e) => return index_error_object(obj, &e),
+    }
+
+    let size = match repo.storage.object_size(&repo.tenant_id, &obj.oid).await {
+        Ok(Some(size)) => size,
+        Ok(None) => return not_found_object(obj),
+        Err(e) => return error_object(&obj.oid, obj.size, &e),
+    };
+
+    // Presigned URL (S3 backend), issued only after the ownership check.
+    if let Ok(Some(url)) = repo
+        .storage
+        .presigned_download_url(&repo.tenant_id, &obj.oid, PRESIGN_TTL_SECS)
         .await
     {
         return ObjectResponse {
             oid: obj.oid.clone(),
-            size: obj.size,
+            size,
             // The presigned URL authenticates itself; nothing else in this response does.
             authenticated: Some(true),
             actions: Some(Actions {
@@ -120,81 +165,50 @@ async fn build_download_response(
         };
     }
 
-    match lfs.object_size(tenant_id, &obj.oid).await {
-        Ok(Some(size)) => ObjectResponse {
-            oid: obj.oid.clone(),
-            size,
-            authenticated: None,
-            actions: Some(Actions {
-                download: Some(Action {
-                    href: format!("{base_url}/{}", obj.oid),
-                    header: None,
-                    expires_in: None,
-                }),
-                upload: None,
-                verify: None,
+    ObjectResponse {
+        oid: obj.oid.clone(),
+        size,
+        authenticated: None,
+        actions: Some(Actions {
+            download: Some(Action {
+                href: format!("{base_url}/{}", obj.oid),
+                header: None,
+                expires_in: None,
             }),
-            error: None,
-        },
-        Ok(None) => ObjectResponse {
-            oid: obj.oid.clone(),
-            size: obj.size,
-            authenticated: None,
-            actions: None,
-            error: Some(ObjectError {
-                code: 404,
-                message: "Not found".to_string(),
-            }),
-        },
-        Err(e) => error_object(&obj.oid, obj.size, &e),
+            upload: None,
+            verify: None,
+        }),
+        error: None,
     }
 }
 
 async fn build_upload_response(
-    lfs: &dyn crate::lfs::storage::LfsStorage,
-    tenant_id: &str,
+    repo: &LfsRepo<'_>,
     obj: &types::ObjectSpec,
     base_url: &str,
 ) -> ObjectResponse {
-    // If object already exists, return empty actions (dedup — no upload needed).
-    match lfs.has_object(tenant_id, &obj.oid).await {
-        Ok(true) => {
-            return ObjectResponse {
-                oid: obj.oid.clone(),
-                size: obj.size,
-                authenticated: None,
-                actions: None,
-                error: None,
-            };
+    // Nothing to send only when THIS repository already owns the object and
+    // the bytes are there. An oid stored for another repository is answered
+    // like an unknown one: the client uploads it, the server hashes it (and
+    // keeps one copy), and the upload binds it to this repository.
+    let owned = match repo.owns(&obj.oid).await {
+        Ok(owned) => owned,
+        Err(e) => return index_error_object(obj, &e),
+    };
+    if owned {
+        match repo.storage.has_object(&repo.tenant_id, &obj.oid).await {
+            Ok(true) => {
+                return ObjectResponse {
+                    oid: obj.oid.clone(),
+                    size: obj.size,
+                    authenticated: None,
+                    actions: None,
+                    error: None,
+                };
+            }
+            Ok(false) => {}
+            Err(e) => return error_object(&obj.oid, obj.size, &e),
         }
-        Ok(false) => {}
-        Err(e) => return error_object(&obj.oid, obj.size, &e),
-    }
-
-    // Check for presigned upload URL (S3 backend).
-    if let Ok(Some(url)) = lfs
-        .presigned_upload_url(tenant_id, &obj.oid, obj.size, PRESIGN_TTL_SECS)
-        .await
-    {
-        return ObjectResponse {
-            oid: obj.oid.clone(),
-            size: obj.size,
-            authenticated: None,
-            actions: Some(Actions {
-                upload: Some(Action {
-                    href: url,
-                    header: None,
-                    expires_in: Some(PRESIGN_TTL_SECS),
-                }),
-                download: None,
-                verify: Some(Action {
-                    href: format!("{base_url}/verify"),
-                    header: None,
-                    expires_in: None,
-                }),
-            }),
-            error: None,
-        };
     }
 
     ObjectResponse {
@@ -227,12 +241,12 @@ fn build_base_url(
     public_url: Option<&str>,
     headers: &HeaderMap,
     namespace: &str,
-    raw_repo: &str,
+    name: &str,
 ) -> String {
     if let Some(public_url) = public_url {
         return format!(
             "{}/objects",
-            crate::lfs::lfs_endpoint(public_url, namespace, raw_repo)
+            crate::lfs::lfs_endpoint(public_url, namespace, name)
         );
     }
     let scheme = if headers
@@ -249,7 +263,7 @@ fn build_base_url(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("localhost");
 
-    format!("{scheme}://{host}/{namespace}/{raw_repo}/info/lfs/objects")
+    format!("{scheme}://{host}/{namespace}/{name}.git/info/lfs/objects")
 }
 
 fn error_object(oid: &str, size: u64, e: &LfsStorageError) -> ObjectResponse {
@@ -263,22 +277,6 @@ fn error_object(oid: &str, size: u64, e: &LfsStorageError) -> ObjectResponse {
             message: e.to_string(),
         }),
     }
-}
-
-fn lfs_error(status: StatusCode, msg: &str) -> Response {
-    let body = serde_json::json!({
-        "message": msg,
-        "request_id": "",
-    });
-    (
-        status,
-        [(
-            axum::http::header::CONTENT_TYPE,
-            APPLICATION_VND_GIT_LFS_JSON,
-        )],
-        Json(body),
-    )
-        .into_response()
 }
 
 #[cfg(test)]
@@ -299,7 +297,7 @@ mod tests {
                 Some("https://git.example.com"),
                 &gateway_headers(),
                 "acme",
-                "site.git"
+                "site"
             ),
             "https://git.example.com/acme/site.git/info/lfs/objects"
         );
@@ -308,7 +306,7 @@ mod tests {
     #[test]
     fn base_url_falls_back_to_host_header() {
         assert_eq!(
-            build_base_url(None, &gateway_headers(), "acme", "site.git"),
+            build_base_url(None, &gateway_headers(), "acme", "site"),
             "https://local.git.example.com/acme/site.git/info/lfs/objects"
         );
     }

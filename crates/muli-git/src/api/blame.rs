@@ -6,7 +6,8 @@
 use std::sync::Arc;
 
 use crate::api::GitState;
-use crate::api::helpers::{error_response, resolve_repo};
+use crate::api::helpers::{error_response, repo_fs_path};
+use crate::repo_target::TargetRepo;
 use crate::tenant::TenantContext;
 use axum::{
     Extension, Json,
@@ -57,18 +58,13 @@ fn format_git_time(commit: &git2::Commit) -> String {
 
 /// GET /api/v1/repos/{namespace}/{repo}/blame/{*path}
 pub async fn get_blame(
-    Extension(tenant): Extension<TenantContext>,
+    Extension(_tenant): Extension<TenantContext>,
     State(state): State<Arc<GitState>>,
-    Path((namespace, repo_name, file_path)): Path<(String, String, String)>,
+    TargetRepo(target): TargetRepo,
+    Path((_namespace, _repo_name, file_path)): Path<(String, String, String)>,
     Query(query): Query<BlameQuery>,
 ) -> Response {
-    if let Err(e) = resolve_repo(&state, &tenant.tenant_id, &namespace, &repo_name).await {
-        return e;
-    }
-
-    let repo_fs_path = state
-        .storage
-        .repo_path(&tenant.tenant_id, &namespace, &repo_name);
+    let repo_fs_path = repo_fs_path(&state, &target);
     let git_ref = query.git_ref.unwrap_or_else(|| "HEAD".to_string());
     let file_path_clone = file_path.clone();
     let git_ref_clone = git_ref.clone();

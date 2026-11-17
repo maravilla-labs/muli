@@ -8,6 +8,7 @@ pub mod auth;
 pub mod hooks;
 pub mod lfs;
 pub mod protocol;
+pub mod repo_target;
 pub mod ssh;
 pub mod storage;
 pub mod tenant;

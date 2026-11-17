@@ -283,35 +283,6 @@ impl LfsStorage for S3LfsStorage {
 
         Ok(Some(presigned.uri().to_string()))
     }
-
-    async fn presigned_upload_url(
-        &self,
-        tenant_id: &str,
-        oid: &str,
-        _size: u64,
-        expires_in_secs: u64,
-    ) -> LfsStorageResult<Option<String>> {
-        if !self.presign_enabled {
-            return Ok(None);
-        }
-        if !validate_oid(oid) {
-            return Err(LfsStorageError::InvalidOid(oid.to_string()));
-        }
-        let key = Self::object_key(tenant_id, oid);
-        let presign_config = PresigningConfig::expires_in(Duration::from_secs(expires_in_secs))
-            .map_err(|e| LfsStorageError::Backend(e.to_string()))?;
-
-        let presigned = self
-            .client
-            .put_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .presigned(presign_config)
-            .await
-            .map_err(|e| LfsStorageError::Backend(e.to_string()))?;
-
-        Ok(Some(presigned.uri().to_string()))
-    }
 }
 
 /// Check if an S3 SDK error is a "not found" (NoSuchKey / 404).
