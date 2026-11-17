@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-11-17
+
 ### Added
 - `CreateAccessToken` takes an optional `repo_id`: a token bound to no user
   that fetches, and with `GIT_PERMISSION_PUSH` also pushes to, exactly that
